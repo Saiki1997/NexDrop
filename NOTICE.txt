@@ -1,0 +1,18 @@
+NEXDROP
+One interface. Multiple sources. Real-time control.
+
+This package includes cyberdrop-dl-patched 10.10.0.
+That program is licensed under GPL-3.0-only.
+Copyright remains with its authors. NEXDROP does not replace that copyright.
+The patched sources shipped with this package are the copies supplied for this
+project. They were not replaced with a newer upstream download.
+
+Source for the patched engine is in engine/vendor/cyberdrop_dl.
+The GPL-3.0 license text is in licenses/GPL-3.0.txt.
+
+Cairn (MIT, Saiki1997/Cairn) influenced the workflow only.
+Cairn is not included, installed, or contacted.
+
+NEXDROP interface code is the application wrapper around that engine.
+Do not remove the GPL notice when you redistribute the engine or a binary
+that contains it.

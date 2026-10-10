@@ -1,0 +1,15 @@
+# SHA256  size  name
+# Extract every part zip into the same folder. See RESTORE.txt.
+ea056e18d313f6fcac32f7c187455b0fa32823dbc0ea976d6a308e3f39389fae     1424989  NexDrop-windows-x64-part01-app.zip
+6cd041a7a9784818b01a32e6a587d83fd369f9d7aa4fbc728a690a3f9a9b157a     2669314  NexDrop-windows-x64-part02-python.zip
+160720a86d7ef7d56f447290ddd8723c07466dd798591d1fe9d9f1acf2c8f1a3      657135  NexDrop-windows-x64-part03-python.zip
+2b593058b5e89333402e2e6df618960cde6b75e9e27b8064ae58f3a9a5da7418     2504406  NexDrop-windows-x64-part04-python.zip
+925f64b9789e3ae5e636c36b24a13af9e3a2aa5cff1fa5ee31b0d6e9f32b27c5     5152420  NexDrop-windows-x64-part05-python.zip
+0d00acd6966e760e7b4fbbafc4ec49ff40279832243638380f6a328e67b684eb     2664950  NexDrop-windows-x64-part06-packages.zip
+75340070094f6ce3de49edc3876a5ee39e35e198af889b621c848d6cb10a56a8     2998074  NexDrop-windows-x64-part07-packages.zip
+ee5b25b10d9c3ecf2d610a1e003e27c16ae8a4bfdc3a5cd8078b02739a9ead36      948819  NexDrop-windows-x64-part08-packages.zip
+e86ec12b3e239acb37816602c0a4094e93e336f5e622207edcd65ae0753b84fd      768969  NexDrop-windows-x64-part09-packages.zip
+30e0610d448a1a6aa075abf5cadeb197379db14da21862ec9d0f575901ce4a11     2462080  NexDrop-windows-x64-part10-packages.zip
+e3cc044dea9698c80eac2c0c1360431678fa065d233bb4b16393e3d6ce26f3d4     1255320  NexDrop-windows-x64-part11-packages.zip
+38c68ee12d13f6dd3ba736bcffeec7dc1c0dedad462e3a78212ade299ee5f838     1315980  NexDrop-windows-x64-part12-packages.zip
+64ab55829c2e439c2cf8c371230de3ebfe354291c92e627f5e9c98a69b23b64b     1063003  NexDrop-source.zip
