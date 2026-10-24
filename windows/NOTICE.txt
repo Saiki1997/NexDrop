@@ -1,0 +1,22 @@
+NEXDROP
+One interface. Multiple sources. Real-time control.
+
+This package includes cyberdrop-dl-patched 10.10.0.
+That program is licensed under GPL-3.0-only.
+Copyright remains with its authors. NEXDROP does not replace that copyright.
+The patched sources shipped with this package are the copies supplied for this
+project. They were not replaced with a newer upstream download.
+
+Source for the patched engine is in engine/vendor/cyberdrop_dl.
+The GPL-3.0 license text is in licenses/GPL-3.0.txt.
+
+Cairn (MIT, Saiki1997/Cairn) influenced the workflow only.
+Cairn is not included, installed, or contacted.
+
+The desktop window is drawn by the bundled Microsoft Edge WebView2 Fixed
+Version Runtime 155.0.4283.45 (x64) in runtime\webview2. That runtime is
+Microsoft software and is not the Edge browser window. NEXDROP does not
+launch Chrome, Edge, or another external browser. WebView2's own license
+terms apply to those runtime files. The window helper uses the MIT-licensed
+webview library; see licenses\webview-LICENSE.txt.
+

@@ -1,0 +1,9 @@
+{
+  "name": "nexdrop",
+  "productName": "NEXDROP",
+  "version": "2.2.0",
+  "private": true,
+  "description": "NEXDROP desktop interface powered by patched Cyberdrop-DL 10.10.0",
+  "main": "main.js",
+  "author": "NEXDROP"
+}

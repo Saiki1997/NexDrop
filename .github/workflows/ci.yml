@@ -1,0 +1,49 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    name: Windows (Python 3.13, Node 22)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: windows/requirements-win.txt
+
+      - name: Install engine dependencies
+        run: python -m pip install -r windows/requirements-win.txt pyflakes
+
+      - name: Lint (undefined names, unused imports)
+        run: python -m pyflakes desktop engine/bridge.py
+
+      - name: Engine imports and registers its site handlers
+        shell: bash
+        env:
+          PYTHONPATH: engine/vendor
+          CDL_APPDATA_FOLDER: ${{ runner.temp }}/cdl
+        run: python -c "from cyberdrop_dl.scrape_mapper import get_crawlers_mapping as m; n=len(m()); print(n, 'handlers'); assert n > 300"
+
+      - name: Python tests
+        env:
+          CDL_APPDATA_FOLDER: ${{ runner.temp }}/cdl
+        run: python tests/test_desktop.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check window scripts
+        shell: bash
+        run: for f in electron/*.js electron/renderer/*.js; do node --check "$f"; done
+
+      - name: Node tests
+        run: node --test tests/format.test.js

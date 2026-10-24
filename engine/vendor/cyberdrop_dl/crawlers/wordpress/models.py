@@ -1,0 +1,81 @@
+from __future__ import annotations
+
+import datetime
+from enum import StrEnum
+from typing import Annotated, Literal, NewType
+
+from pydantic import AfterValidator, AliasPath, BaseModel, Field
+from pydantic.type_adapter import TypeAdapter
+
+from cyberdrop_dl.utils import css
+
+
+def add_utc_tz(parsed_date: datetime.datetime) -> datetime.datetime:
+    return parsed_date.replace(tzinfo=datetime.UTC)
+
+
+TitleFromHTML = Annotated[str, AfterValidator(css.unescape)]
+AwareDatetimeUTC = Annotated[datetime.datetime, AfterValidator(add_utc_tz)]
+
+
+class ColletionType(StrEnum):
+    TAG = "tag"
+    CATEGORY = "category"
+
+
+HTML = NewType("HTML", str)
+
+
+class WordPressModel(BaseModel):
+    id: int | None = None
+    slug: str
+    link: str
+
+
+class Post(WordPressModel):
+    title: TitleFromHTML = Field(validation_alias=AliasPath("title", "rendered"))
+    content: HTML = Field(validation_alias=AliasPath("content", "rendered"))
+    thumbnail: str | None = Field(default=None, validation_alias=AliasPath("acf", "fifu_image_url"))
+    date_gmt: AwareDatetimeUTC
+
+
+class Collection(WordPressModel):
+    description: str = ""
+    taxonomy: str
+
+
+class Category(Collection):
+    taxonomy: Literal["category"] = "category"  # pyright: ignore[reportIncompatibleVariableOverride]
+    _type: ColletionType = ColletionType.CATEGORY
+
+
+class Tag(Category):
+    taxonomy: Literal["post_tag"] = "post_tag"  # pyright: ignore[reportIncompatibleVariableOverride]
+    _type: ColletionType = ColletionType.TAG
+
+
+PostSequence = TypeAdapter(list[Post])
+
+
+TagSequence = TypeAdapter(list[Tag])
+
+
+CategorySequence = TypeAdapter(list[Category])
+
+
+class PostExtraData(Post):
+    # Not used at the moment
+    date: datetime.datetime
+    modified: datetime.datetime
+    modified_gmt: AwareDatetimeUTC
+    status: Literal["publish", "future", "draft", "pending", "private"]
+    type: str
+    categories: list[int] = []
+    tags: list[int] = []
+    format: Literal["standard", "aside", "chat", "gallery", "link", "image", "quote", "status", "video", "audio"]
+
+
+class CollectionExtraData(Collection):
+    # Not used at the moment
+    count: int
+    parent: int

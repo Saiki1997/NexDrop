@@ -1,0 +1,5 @@
+[console_scripts]
+cyberdrop = cyberdrop_dl.__main__:main
+cyberdrop-dl = cyberdrop_dl.__main__:main
+cyberdrop-dl-patched = cyberdrop_dl.__main__:main
+

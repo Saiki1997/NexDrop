@@ -38,6 +38,35 @@ Keep `NexDrop.exe` beside `app`, `engine`, and `runtime`. A short folder path av
 
 Preview testing has previously confirmed a real download and history-based duplicate skipping. The packaged Windows executable has not yet been tested on Windows; successful operation is not guaranteed until that testing is completed.
 
+## Source code
+
+This repository holds the full source of the Windows build:
+
+| Folder | What it is |
+| --- | --- |
+| `electron/` | The NEXDROP window: main process, preload bridge, and the page in `renderer/` |
+| `desktop/` | Python that runs one download session, sign-in cookies, job history, the site registry |
+| `engine/bridge.py` | Adapter between NEXDROP and the bundled engine |
+| `engine/vendor/` | Patched Cyberdrop-DL 10.10.0 (GPL-3.0), with the fixes from `engine/vendor-patches/` applied |
+| `windows/` | `build-electron-portable.sh` and the pinned Python requirements |
+| `tests/` | Python and Node tests, run on Windows by GitHub Actions on every push |
+
+What changed in each version is in `CHANGELOG.md`.
+
+### Running the tests
+
+```
+python -m pip install -r windows/requirements-win.txt
+python tests/test_desktop.py
+node --test tests/format.test.js
+```
+
+### Building the portable folder
+
+`windows/build-electron-portable.sh` downloads Electron 42.2.0 for Windows and assembles the
+portable folder. It expects the embeddable Python, ffmpeg and FlareSolverr in
+`release/NexDrop/runtime/` (they are too large for this repository; take them from a release zip).
+
 ## Licensing
 
 See the included GPL-3.0 and third-party license notices for licensing terms and source-code information. `NexDrop-source.zip` is the corresponding source archive.
