@@ -1,0 +1,52 @@
+name: Release
+
+# Builds the portable Windows zip and publishes a GitHub release.
+# Run it by hand: Actions > Release > Run workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      base_tag:
+        description: "Release whose NexDrop-windows-x64.zip supplies Electron, Python, ffmpeg and FlareSolverr"
+        default: "v2.0.0"
+        required: true
+      draft:
+        description: "Create the release as a draft (publish it yourself afterwards)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the version
+        id: version
+        run: |
+          version=$(python3 -c "import json; print(json.load(open('electron/package.json'))['version'])")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          test -f "docs/release-notes/$version.md" || { echo "::error::docs/release-notes/$version.md is missing"; exit 1; }
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "::error::Release v$version already exists. Bump electron/package.json first."; exit 1
+          fi
+
+      - name: Download the base runtime
+        run: gh release download "${{ inputs.base_tag }}" --pattern NexDrop-windows-x64.zip --dir base
+
+      - name: Build the portable zip
+        run: sh windows/make-release.sh base/NexDrop-windows-x64.zip dist
+
+      - name: Publish the release
+        run: |
+          gh release create "v${{ steps.version.outputs.version }}" \
+            dist/NexDrop-windows-x64.zip dist/NexDrop-source.zip dist/SHA256SUMS.txt \
+            --title "NEXDROP ${{ steps.version.outputs.version }}" \
+            --notes-file "docs/release-notes/${{ steps.version.outputs.version }}.md" \
+            --target "$GITHUB_SHA" \
+            ${{ inputs.draft && '--draft' || '' }}

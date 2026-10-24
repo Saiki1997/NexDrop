@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NEXDROP</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app" id="app" data-state="idle">
+
+    <!-- Command bar: what to download, and the one action -->
+    <header class="command">
+      <div class="brand">
+        <img class="brand-mark" src="assets/mark.svg" alt="" width="30" height="30">
+        <span class="brand-word">NEXDROP</span>
+      </div>
+
+      <div class="links">
+        <label class="visually-hidden" for="urls">Links to download</label>
+        <textarea id="urls" rows="1" wrap="off" spellcheck="false" placeholder="Paste thread, album, or file links. One per line."></textarea>
+        <span class="links-count" id="links-count" hidden></span>
+      </div>
+
+      <div class="command-actions">
+        <button class="btn btn-quiet" id="btn-import" type="button" title="Load links from a .txt file">Import</button>
+        <button class="btn btn-primary" id="btn-start" type="button">Start</button>
+        <button class="btn btn-quiet" id="btn-queue" type="button" hidden title="Download these links after the current run">Add to queue</button>
+        <button class="btn btn-stop" id="btn-stop" type="button" hidden title="Stop for now. Resume continues where it left off, even after closing NEXDROP.">Pause</button>
+        <button class="btn btn-icon" id="btn-settings" type="button" aria-label="Settings" title="Settings">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h9M15 5h2M3 10h3M9 10h8M3 15h7M13 15h4"/><circle cx="13.5" cy="5" r="1.6"/><circle cx="7.5" cy="10" r="1.6"/><circle cx="11.5" cy="15" r="1.6"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Run options that change most often, kept one click away -->
+    <div class="run-options">
+      <div class="seg" role="radiogroup" aria-label="Download order" id="order-seg">
+        <button type="button" role="radio" data-order="source" aria-checked="false" title="One file at a time, in the order the page lists them. Slow.">Page order</button>
+        <button type="button" role="radio" data-order="parallel" aria-checked="true" title="Keeps page-order numbering (001, 002…) and downloads many files at once">Parallel</button>
+        <button type="button" role="radio" data-order="fastest" aria-checked="false" title="Whatever finishes first">Fastest</button>
+      </div>
+      <label class="opt" title="Forum threads that use /page-N. Other sites ignore this.">
+        Pages
+        <input id="start-page" type="number" min="1" value="1" aria-label="First page">
+        <span aria-hidden="true">to</span>
+        <input id="end-page" type="number" min="1" placeholder="end" aria-label="Last page">
+      </label>
+      <label class="opt check" title="Download files again even if they were saved before">
+        <input type="checkbox" id="redownload"> Download again
+      </label>
+      <button class="folder-link" id="btn-folder" type="button" title="Open the download folder">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 5.5h5l1.5 2h8.5v8h-15z"/></svg>
+        <span id="folder-path">downloads</span>
+      </button>
+    </div>
+
+    <!-- Paused run and waiting links -->
+    <div class="notice" id="resume" role="status" hidden>
+      <span class="notice-text" id="resume-text"></span>
+      <button class="btn btn-primary btn-small" id="btn-resume" type="button">Resume</button>
+      <button class="btn btn-quiet btn-small" id="btn-discard" type="button">Discard</button>
+    </div>
+    <div class="queue" id="queue" hidden>
+      <span class="queue-title">Up next <span id="queue-count"></span></span>
+      <ol class="queue-list" id="queue-list"></ol>
+      <button class="btn btn-quiet btn-small" id="btn-queue-clear" type="button">Clear</button>
+    </div>
+
+    <!-- The four real phases of a run -->
+    <ol class="phases" id="phases" aria-label="Run progress">
+      <li data-phase="start">Prepare</li>
+      <li data-phase="crawl">Find files</li>
+      <li data-phase="download">Download</li>
+      <li data-phase="finalize">Finish</li>
+    </ol>
+
+    <main class="workspace">
+      <section class="files" aria-label="Files">
+        <div class="tally" id="tally">
+          <div class="tally-main">
+            <span class="tally-num" id="t-done">0</span>
+            <span class="tally-of">of <span id="t-total">0</span> files saved</span>
+          </div>
+          <dl class="tally-stats">
+            <div><dt>Speed</dt><dd id="t-speed">–</dd></div>
+            <div><dt>Downloaded</dt><dd id="t-bytes">0 B</dd></div>
+            <div><dt>Time</dt><dd id="t-time">0:00</dd></div>
+          </dl>
+        </div>
+
+        <div class="filter-bar">
+          <div class="tabs" role="tablist" id="file-tabs">
+            <button role="tab" type="button" data-filter="all" aria-selected="true">All <span data-count="all">0</span></button>
+            <button role="tab" type="button" data-filter="active" aria-selected="false">Active <span data-count="active">0</span></button>
+            <button role="tab" type="button" data-filter="done" aria-selected="false">Saved <span data-count="done">0</span></button>
+            <button role="tab" type="button" data-filter="skipped" aria-selected="false">Skipped <span data-count="skipped">0</span></button>
+            <button role="tab" type="button" data-filter="failed" aria-selected="false">Unfinished <span data-count="failed">0</span></button>
+          </div>
+          <select id="host-filter" class="select" aria-label="Filter by site">
+            <option value="">All sites</option>
+          </select>
+          <button class="btn btn-quiet btn-small" id="btn-watch" type="button" hidden title="Check this thread for new posts every few hours while NEXDROP is open">Watch for new posts</button>
+          <button class="btn btn-quiet btn-small" id="btn-retry-failed" type="button" hidden>Retry unfinished</button>
+        </div>
+
+        <div class="list" id="list" tabindex="0" aria-label="Files in this run">
+          <div class="list-spacer" id="list-spacer"></div>
+          <div class="list-rows" id="list-rows"></div>
+          <div class="empty" id="empty">
+            <img class="empty-mark" src="assets/mark.svg" alt="" width="56" height="56">
+            <h2 class="empty-title">Paste links above to start</h2>
+            <p class="empty-text">Threads, albums, profiles and direct file links all work. Files you already saved are skipped unless you tick Download again.</p>
+            <div class="recent" id="recent" hidden>
+              <h3 class="recent-title">Recent links</h3>
+              <ul class="recent-list" id="recent-list"></ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="activity" id="activity" aria-label="Activity">
+        <header class="activity-head">
+          <h2 class="pane-title">Activity</h2>
+          <div class="mini-seg" role="radiogroup" aria-label="Show" id="log-filter">
+            <button type="button" role="radio" data-level="all" aria-checked="true">All</button>
+            <button type="button" role="radio" data-level="problems" aria-checked="false">Problems</button>
+          </div>
+        </header>
+        <ol class="log" id="log"></ol>
+        <footer class="activity-foot">
+          <span class="flare-pill" id="flare-pill" data-state="off" title="FlareSolverr solves bot checks such as DDoS-Guard">Bot check: off</span>
+          <button class="btn btn-quiet btn-small" id="btn-log-open" type="button" title="Open this run's full log">Open log</button>
+          <button class="btn btn-quiet btn-small" id="btn-log-folder" type="button" title="Open the folder with every run log">Logs folder</button>
+          <button class="btn btn-quiet btn-small" id="btn-log-copy" type="button">Copy</button>
+          <button class="btn btn-quiet btn-small" id="btn-log-clear" type="button">Clear</button>
+        </footer>
+      </aside>
+    </main>
+  </div>
+
+  <!-- Previously downloaded -->
+  <dialog class="dialog" id="seen-dialog" aria-labelledby="seen-title">
+    <form method="dialog">
+      <h2 id="seen-title">You've downloaded this before</h2>
+      <p class="dialog-text" id="seen-text"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-quiet" value="cancel" type="submit">Cancel</button>
+        <button class="btn btn-quiet" value="again" type="submit">Download everything again</button>
+        <button class="btn btn-primary" value="new" type="submit" autofocus>Get new files only</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Settings -->
+  <div class="sheet-scrim" id="sheet-scrim" hidden></div>
+  <aside class="sheet" id="settings" aria-labelledby="settings-title" aria-hidden="true" inert>
+    <header class="sheet-head">
+      <h2 id="settings-title">Settings</h2>
+      <button class="btn btn-icon" id="btn-settings-close" type="button" aria-label="Close settings">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>
+      </button>
+    </header>
+    <nav class="sheet-tabs" role="tablist" id="sheet-tabs">
+      <button role="tab" type="button" data-pane="downloads" aria-selected="true">Downloads</button>
+      <button role="tab" type="button" data-pane="network" aria-selected="false">Speed</button>
+      <button role="tab" type="button" data-pane="accounts" aria-selected="false">Sign-ins</button>
+      <button role="tab" type="button" data-pane="watched" aria-selected="false">Watched</button>
+      <button role="tab" type="button" data-pane="sources" aria-selected="false">Sites</button>
+    </nav>
+
+    <div class="sheet-body">
+      <section class="pane" data-pane="downloads">
+        <div class="field">
+          <span class="field-label">Save files to</span>
+          <div class="field-row">
+            <input type="text" id="downloads-dir" readonly>
+            <button class="btn btn-quiet" id="btn-pick-dir" type="button">Change</button>
+          </div>
+        </div>
+        <label class="switch"><input type="checkbox" id="sequence-prefix" checked><span class="switch-text">Number files in page order<small>Adds 001_, 002_ so files sort the way the post shows them.</small></span></label>
+        <div class="field">
+          <span class="field-label">File types to download</span>
+          <div class="check-row">
+            <label class="check"><input type="checkbox" id="type-images" checked> Images</label>
+            <label class="check"><input type="checkbox" id="type-videos" checked> Videos</label>
+            <label class="check"><input type="checkbox" id="type-audio" checked> Audio</label>
+            <label class="check"><input type="checkbox" id="type-other" checked> Other files</label>
+          </div>
+        </div>
+        <label class="field">
+          <span class="field-label">Skip images smaller than, KB</span>
+          <input type="number" id="min-image-kb" min="0" max="100000" value="0">
+          <small class="field-help">Skips thumbnails and icons. 0 keeps every image.</small>
+        </label>
+        <label class="switch"><input type="checkbox" id="type-folders"><span class="switch-text">Sort into Images, Videos, Audio and Other folders<small>New files only. Files from earlier runs stay where they are.</small></span></label>
+        <label class="switch"><input type="checkbox" id="auto-retry" checked><span class="switch-text">Retry temporary errors automatically<small>Files that fail because a server is busy or times out are tried once more, 45 seconds after the run.</small></span></label>
+        <label class="switch"><input type="checkbox" id="tiktok-audio"><span class="switch-text">TikTok sounds<small>Also saves each TikTok post's background sound as an .mp3. Off saves time; the videos keep their audio either way.</small></span></label>
+        <label class="switch"><input type="checkbox" id="deep-scrape"><span class="switch-text">Deep scan<small>Makes extra requests per page to find more files. Slower.</small></span></label>
+        <label class="switch"><input type="checkbox" id="flare" checked><span class="switch-text">Get past bot checks<small>Runs the bundled FlareSolverr in the background for sites behind DDoS-Guard or Cloudflare. Its first start takes a minute or two.</small></span></label>
+        <p class="status-line" id="flare-status" role="status"></p>
+        <label class="field">
+          <span class="field-label">Nested threads to follow</span>
+          <input type="number" id="thread-depth" min="0" max="3" value="0">
+          <small class="field-help">0 downloads only the thread you pasted. Up to 3 levels.</small>
+        </label>
+      </section>
+
+      <section class="pane" data-pane="network" hidden>
+        <div class="field-grid">
+          <label class="field"><span class="field-label">Downloads at once</span><input type="number" id="max-downloads" min="1" max="32" value="16"><small class="field-help">Up to 32. Page order always uses 1.</small></label>
+          <label class="field"><span class="field-label">Per site</span><input type="number" id="per-host" min="1" max="16" value="6"><small class="field-help">Up to 16. Lower it if a site starts refusing (429 errors).</small></label>
+          <label class="field"><span class="field-label">Connections per server</span><input type="number" id="server-slots" min="1" max="6" value="3"><small class="field-help">For Bunkr and similar hosts that serve each file from one server. Drops to 1 by itself if a server says to slow down.</small></label>
+          <label class="field"><span class="field-label">Attempts per file</span><input type="number" id="attempts" min="1" max="3" value="2"></label>
+          <label class="field"><span class="field-label">Speed cap, MB/s</span><input type="number" id="speed-limit" min="0" max="1000" value="0"><small class="field-help">0 means no cap.</small></label>
+          <label class="field"><span class="field-label">Connect timeout, s</span><input type="number" id="connect-timeout" min="10" max="30" value="15"></label>
+          <label class="field"><span class="field-label">Read timeout, s</span><input type="number" id="read-timeout" min="30" max="300" value="60"></label>
+        </div>
+      </section>
+
+      <section class="pane" data-pane="accounts" hidden>
+        <p class="pane-intro">Only needed for sites that ask you to sign in. Tokens and passwords are encrypted on this computer and never shown again.</p>
+        <label class="field">
+          <span class="field-label">Website</span>
+          <select id="account-site" class="select"></select>
+        </label>
+        <p class="note" id="account-note"></p>
+        <label class="field">
+          <span class="field-label">Sign-in method</span>
+          <select id="account-method" class="select"></select>
+        </label>
+        <label class="field" data-for="api_key"><span class="field-label">API token</span><input type="password" id="account-key" autocomplete="off"></label>
+        <label class="field" data-for="password"><span class="field-label">Email</span><input type="text" id="account-email" autocomplete="off"></label>
+        <label class="field" data-for="password"><span class="field-label">Password</span><input type="password" id="account-password" autocomplete="off"></label>
+        <label class="field" data-for="cookies-host"><span class="field-label">Site address</span><input type="text" id="account-host" placeholder="example.com"></label>
+        <div class="field-row actions">
+          <button class="btn btn-primary" id="btn-account-save" type="button">Save sign-in</button>
+          <button class="btn btn-quiet" id="btn-account-cookie" type="button">Import cookie file</button>
+          <button class="btn btn-quiet" id="btn-account-test" type="button">Check</button>
+          <button class="btn btn-quiet btn-danger" id="btn-account-remove" type="button">Remove</button>
+        </div>
+        <p class="status-line" id="account-status" role="status"></p>
+
+        <div class="divider"></div>
+        <div class="field">
+          <span class="field-label">Cookie files for every site</span>
+          <small class="field-help">Netscape cookies.txt or storage_state.json. Used alongside the site sign-ins above.</small>
+          <ul class="file-list" id="cookie-files"></ul>
+          <div class="field-row"><button class="btn btn-quiet" id="btn-add-cookie" type="button">Add cookie file</button></div>
+        </div>
+      </section>
+
+      <section class="pane" data-pane="watched" hidden>
+        <p class="pane-intro">NEXDROP checks watched forum threads for new posts and downloads only what's new. Checks run while NEXDROP is open.</p>
+        <div class="field">
+          <span class="field-label">Thread link</span>
+          <div class="field-row">
+            <input type="text" id="watch-url" placeholder="https://simpcity.cr/threads/…" spellcheck="false">
+            <select class="select" id="watch-every" aria-label="How often to check">
+              <option value="1">Every hour</option>
+              <option value="3">Every 3 hours</option>
+              <option value="6" selected>Every 6 hours</option>
+              <option value="12">Every 12 hours</option>
+              <option value="24">Every 24 hours</option>
+            </select>
+            <button class="btn btn-quiet" id="btn-watch-add" type="button">Watch</button>
+          </div>
+        </div>
+        <p class="status-line" id="watch-status" role="status"></p>
+        <ul class="watch-list" id="watch-list"></ul>
+      </section>
+
+      <section class="pane" data-pane="sources" hidden>
+        <p class="pane-intro">NEXDROP uses the bundled Cyberdrop-DL 10.10.0 engine with local patches. Links that no site handler accepts are logged here so you can see what is missing.</p>
+        <p class="status-line" id="source-status">Not checked yet.</p>
+        <div class="field-row actions">
+          <button class="btn btn-quiet" id="btn-source-check" type="button">Check sites</button>
+          <button class="btn btn-quiet" id="btn-source-backlog" type="button">Show unsupported links</button>
+          <button class="btn btn-quiet" id="btn-source-open" type="button">Open report folder</button>
+          <button class="btn btn-quiet btn-danger" id="btn-source-clear" type="button">Clear log</button>
+        </div>
+        <pre class="report" id="source-report" hidden></pre>
+      </section>
+    </div>
+  </aside>
+
+  <input type="file" id="import-file" accept=".txt,text/plain" hidden>
+  <script src="format.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

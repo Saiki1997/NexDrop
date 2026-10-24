@@ -1,0 +1,13 @@
+NEXDROP source-order audit
+The supplied screenshots are the reference: a post is read left to right, images before the videos under them, and a file grid is read left to right then down. Filename order is not used.
+
+Guaranteed by the shared forum walker, not by a live download
+XenForo boards, including SimpCity, walk each post's attachments, images, videos, and links, then sort those URLs by where they appear in the post HTML. Posts on a page are handled from top to bottom. In Source page order, the next post waits and only one download runs. This was checked with mocked HTML in the same shape as the screenshots. No SimpCity thread was crawled.
+
+Best-effort
+Every other adapter keeps the order in which it already calls the downloader. The queue then shows that sequence instead of whichever file finishes first. Their pages were not opened, so this is extraction order, not a checked visual order. vBulletin already walks its image list from the API and waits for each post.
+
+Not claimed
+A site whose HTML does not contain the final file URL is marked best-effort. The unknown URL stays after the ones that were found in the page. Parallel mode can finish files out of order. The list still shows the sequence numbers. Fastest mode does not wait for source order.
+
+Sequential mode sets downloads to 1. That limit is in the bridge and was not run as a Windows app.

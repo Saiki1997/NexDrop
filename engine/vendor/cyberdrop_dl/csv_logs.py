@@ -1,0 +1,198 @@
+from __future__ import annotations
+
+import asyncio
+import csv
+import dataclasses
+import logging
+from collections import defaultdict
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Self
+
+from cyberdrop_dl import constants
+from cyberdrop_dl.filepath import sanitize_filename
+from cyberdrop_dl.utils import json
+from cyberdrop_dl.utils.dataclass import DictDataclass
+
+if TYPE_CHECKING:
+    import datetime
+    from collections.abc import Iterable
+
+    import yarl
+
+    from cyberdrop_dl.clients.response import AbstractResponse
+    from cyberdrop_dl.config import Config
+    from cyberdrop_dl.url_objects import AbsoluteHttpURL
+
+
+logger = logging.getLogger(__name__)
+
+_CSV_DELIMITER = ","
+
+
+@dataclasses.dataclass(slots=True, frozen=True, kw_only=True)
+class CSVFiles:
+    unsupported_urls: Path
+    download_errors: Path
+    scrape_errors: Path
+    last_forum_post: Path
+    dedupe: Path
+    jsonl_file: Path
+
+    __iter__ = DictDataclass.__iter__
+
+    @classmethod
+    def from_config(cls, config: Config) -> Self:
+        files = config.logs.files
+        return cls(
+            unsupported_urls=files.unsupported,
+            download_errors=files.download_errors,
+            scrape_errors=files.scrape_errors,
+            jsonl_file=files.jsonl_file,
+            last_forum_post=files.last_forum_post,
+            dedupe=files.dedupe,
+        )
+
+
+@dataclasses.dataclass(slots=True)
+class CSVLogsManager:
+    files: CSVFiles
+    task_group: asyncio.TaskGroup
+    _file_locks: dict[Path, asyncio.Lock] = dataclasses.field(
+        init=False, default_factory=lambda: defaultdict(asyncio.Lock)
+    )
+    _has_headers: set[Path] = dataclasses.field(init=False, default_factory=set)
+    _ready: bool = dataclasses.field(init=False, default=False)
+    _responses_folder: Path = dataclasses.field(init=False)
+
+    def __post_init__(self) -> None:
+        self._responses_folder = self.files.jsonl_file.parent / "cdl_responses"
+
+    @classmethod
+    def from_config(cls, config: Config, task_group: asyncio.TaskGroup) -> Self:
+        return cls(CSVFiles.from_config(config), task_group)
+
+    def delete_old_logs(self) -> None:
+        if self._ready:
+            return
+
+        path: Path
+        for name, path in self.files:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            else:
+                logger.warning("Deleted conflicting old %s log file: '%s'", name, path)
+
+        self._ready = True
+
+    async def write_jsonl(self, data: Iterable[dict[str, Any]]) -> None:
+        async with self._file_locks[self.files.jsonl_file]:
+            await asyncio.to_thread(json.dump_jsonl, data, self.files.jsonl_file)
+
+    async def _write_to_csv(self, file: Path, **row: object) -> None:
+        async with self._file_locks[file]:
+            is_first_write = file not in self._has_headers
+            self._has_headers.add(file)
+
+            await asyncio.to_thread(_write_to_csv, file, row, write_headers=is_first_write)
+
+    def write_unsupported(self, url: AbsoluteHttpURL, origin: yarl.URL | Path | None = None) -> None:
+        _ = self.task_group.create_task(self._write_to_csv(self.files.unsupported_urls, url=url, origin=origin))
+
+    def write_last_forum_post(self, url: AbsoluteHttpURL) -> None:
+        _ = self.task_group.create_task(self._write_to_csv(self.files.last_forum_post, url=url))
+
+    def write_dedupe(self, duplicate: Path, original: Path, file_hash: str) -> None:
+        _ = self.task_group.create_task(
+            self._write_to_csv(self.files.dedupe, duplicate=duplicate, original=original, hash=file_hash)
+        )
+
+    def write_download_error(
+        self,
+        url: AbsoluteHttpURL,
+        referer: AbsoluteHttpURL,
+        error_message: str,
+        origin: yarl.URL | Path | None = None,
+    ) -> None:
+        _ = self.task_group.create_task(
+            self._write_to_csv(
+                self.files.download_errors,
+                url=url,
+                error=error_message,
+                referer=referer,
+                origin=origin,
+            )
+        )
+
+    def write_scrape_error(
+        self,
+        url: yarl.URL | str,
+        error_message: str,
+        origin: yarl.URL | Path | None = None,
+    ) -> None:
+        _ = self.task_group.create_task(
+            self._write_to_csv(
+                self.files.scrape_errors,
+                url=url,
+                error=error_message,
+                origin=origin,
+            )
+        )
+
+    def write_response(
+        self,
+        url: AbsoluteHttpURL,
+        response: AbstractResponse[Any],
+        exc: Exception | None = None,
+    ) -> None:
+        _ = self.task_group.create_task(
+            asyncio.to_thread(
+                _write_resp_to_disk,
+                self._responses_folder,
+                url,
+                response,
+                exc,
+            )
+        )
+
+
+def _write_resp_to_disk(
+    folder: Path,
+    url: AbsoluteHttpURL,
+    response: AbstractResponse[Any],
+    exc: Exception | None = None,
+) -> None:
+    ext = ".json" if "json" in response.content_type else ".html"
+    file = _prepare_resp_file(folder, url, response.created_at, ext)
+    file.parent.mkdir(exist_ok=True)
+    try:
+        _ = file.write_text(response.create_report(exc), "utf8")
+    except OSError as e:
+        logger.warning(f"Unable to write response from {url} to disk ({e!r})")
+    else:
+        logger.debug(f"Saved response from {url} to '{file}'")
+
+
+def _prepare_resp_file(folder: Path, url: AbsoluteHttpURL, created_at: datetime.datetime, ext: str = ".html") -> Path:
+    max_stem_len = 245 - len(str(folder)) + len(constants.STARTUP_TIME_STR) + 10
+    log_date = created_at.strftime(constants.LOGS_DATETIME_FORMAT)
+    path_safe_url = sanitize_filename(Path(str(url)).as_posix().replace("/", "-"))
+    filename = f"{path_safe_url[:max_stem_len]}_{log_date}{ext}"
+    return folder / filename
+
+
+def _write_to_csv(file: Path, row: dict[str, object], *, write_headers: bool) -> None:
+    if write_headers:
+        file.parent.mkdir(parents=True, exist_ok=True)
+
+    with file.open("a", encoding="utf8", newline="") as csv_file:
+        writer = csv.DictWriter(
+            csv_file,
+            fieldnames=tuple(row),
+            delimiter=_CSV_DELIMITER,
+            quoting=csv.QUOTE_ALL,
+        )
+        if write_headers:
+            writer.writeheader()
+        writer.writerow(row)

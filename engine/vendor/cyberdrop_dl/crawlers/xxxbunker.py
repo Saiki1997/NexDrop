@@ -1,0 +1,94 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, ClassVar, final
+
+from cyberdrop_dl import aio
+from cyberdrop_dl.clients.http import HTTPConfig
+from cyberdrop_dl.crawlers.crawler import Crawler, DownloadConfig, SupportedPaths
+from cyberdrop_dl.exceptions import ScrapeError
+from cyberdrop_dl.url_objects import AbsoluteHttpURL
+from cyberdrop_dl.utils import css, open_graph
+from cyberdrop_dl.utils.errors import error_handling_wrapper
+
+if TYPE_CHECKING:
+    from bs4 import BeautifulSoup
+
+    from cyberdrop_dl.url_objects import ScrapeItem
+
+
+@final
+class Selector:
+    VIDEOS = ".videolist a[data-anim]"
+    VIDEO_IFRAME = "div.player-frame iframe"
+    NEXT_PAGE = "div.page-list a:-soup-contains('Next')"
+
+
+@HTTPConfig(rate_limit=(1, 6))
+@DownloadConfig(slots=2)
+class XXXBunkerCrawler(Crawler):
+    SUPPORTED_PATHS: ClassVar[SupportedPaths] = {
+        "Video": "/<video_id>",
+        "Search": "/search/<video_id>",
+        "Category": "/categories/<category>",
+        "User Favorites": "/<username>/favoritevideos",
+    }
+    PRIMARY_URL: ClassVar[AbsoluteHttpURL] = AbsoluteHttpURL("https://xxxbunker.com")
+    DOMAIN: ClassVar[str] = "xxxbunker"
+    FOLDER_DOMAIN: ClassVar[str] = "XXXBunker"
+    NEXT_PAGE_SELECTOR: ClassVar[str] = Selector.NEXT_PAGE
+
+    async def __async_post_init__(self) -> None:
+        self.update_cookies({"ageconfirm": "True"})
+
+    async def fetch(self, scrape_item: ScrapeItem) -> None:
+        match scrape_item.url.parts[1:]:
+            case ["search" | "categories" as type_, name]:
+                await self.playlist(scrape_item, name, type_)
+            case [username, "favoritevideos" as type_]:
+                await self.playlist(scrape_item, f"user {username}", type_)
+            case [_]:
+                await self.video(scrape_item)
+            case _:
+                raise ValueError
+
+    @error_handling_wrapper
+    async def video(self, scrape_item: ScrapeItem) -> None:
+        if await self.check_complete_from_referer(scrape_item.url):
+            return
+
+        soup = await self.request_soup(scrape_item.url)
+        _check_video_is_available(soup)
+        title = open_graph.title(soup)
+        iframe_url = self.parse_url(css.select(soup, Selector.VIDEO_IFRAME, "data-src"))
+        iframe_soup = await self.request_soup(iframe_url)
+        src = self.parse_url(css.select(iframe_soup, "source", "src"))
+        video_id = iframe_url.name
+        custom_filename = self.create_custom_filename(title, ".mp4", file_id=video_id)
+        await self.handle_file(
+            iframe_url,
+            scrape_item,
+            f"{video_id}.mp4",
+            custom_filename=custom_filename,
+            debrid_link=src,
+        )
+
+    @error_handling_wrapper
+    async def playlist(self, scrape_item: ScrapeItem, name: str, type_: str) -> None:
+        soup, pages = await aio.peek_first(self.web_pager(scrape_item.url))
+        name = name.replace("+", " ")
+        category = {"search": "search", "categories": "category", "favoritevideos": "favorites"}[type_]
+        title = self.create_title(f"{name} [{category}]")
+        scrape_item.setup_as_album(title)
+
+        async for soup in pages:
+            for new_scrape_item in self.iter_children(scrape_item, soup, Selector.VIDEOS):
+                self.create_task(self.run(new_scrape_item))
+
+
+def _check_video_is_available(soup: BeautifulSoup) -> None:
+    soup_text = soup.get_text()
+    if "TRAFFIC VERIFICATION" in soup_text:
+        raise ScrapeError(429)
+
+    if "VIDEO NOT AVAILABLE" in soup_text:
+        raise ScrapeError(404)

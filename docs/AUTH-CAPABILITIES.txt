@@ -1,0 +1,19 @@
+NEXDROP authentication capabilities
+Bundled engine: cyberdrop-dl 10.10.0
+A row is what the handler can consume. It is not a successful login.
+
+GoFile | optional API token | public downloads use a temporary account when no token is saved | not live-tested
+Pixeldrain | optional API token | public files need no token | not live-tested
+Nova | optional API token | not live-tested
+Real-Debrid | API token | required for Real-Debrid hosts | Test calls https://api.real-debrid.com/rest/1.0/user | not live-tested here
+MEGA | optional email and password | public links need no account | no remote check in this build | partial files still cannot resume
+SimpCity | optional Netscape cookie file for simpcity.cr and simpcity.su | public threads need no login | Chrome import is refused because the cookie database is encrypted | not a bypass of site rules
+One other site | Netscape cookie file filtered to the host you type | other domains in the file are dropped
+JDownloader | not offered | the desktop client is not bundled, so a password would never be used
+OAuth | not offered | no bundled handler completes an OAuth flow
+Username/password for other sites | not offered | the engine has no field for them
+
+Storage
+API tokens and the MEGA password are encrypted with Electron safeStorage before they are written. On Windows that uses the operating system credential protection. They are not shown again and are not written into the download log.
+Imported cookies are filtered to one site and written as a Netscape file, because the downloader reads that format. The file is local, is not shown in the window, and is deleted when you remove the account. This is not the same as keeping the cookie values inside the encrypted token store.
+NEXDROP does not decrypt Chrome's cookie database, copy the profile, or read passwords and payment data.

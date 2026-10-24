@@ -1,0 +1,124 @@
+from __future__ import annotations
+
+import dataclasses
+import itertools
+from typing import TYPE_CHECKING, ClassVar, override
+from xml.etree import ElementTree as ET
+
+from cyberdrop_dl.crawlers.xenforo.xenforo import XenforoCrawler
+from cyberdrop_dl.exceptions import ScrapeError
+from cyberdrop_dl.utils.errors import error_handling_wrapper
+
+if TYPE_CHECKING:
+    import datetime
+    from collections.abc import Iterable
+
+    from cyberdrop_dl.crawlers._forum import Thread
+    from cyberdrop_dl.crawlers.crawler import SupportedPaths
+    from cyberdrop_dl.url_objects import AbsoluteHttpURL, ScrapeItem
+
+_N_POSTS_PER_PAGE = 15
+
+
+@dataclasses.dataclass(frozen=True, slots=True, order=True)
+class Post:
+    id: int
+    title: str
+    xml: ET.Element[str]
+    date: datetime.datetime | None = None
+
+    @staticmethod
+    def new(element: ET.Element[str]) -> Post:
+        title, id_ = element.attrib["title"], int(element.attrib["id"])
+        return Post(id_, title, element)
+
+    @property
+    def images(self) -> Iterable[str]:
+        return (image.attrib["main_url"] for image in self.xml.iter("image"))
+
+
+# TODO: make a super class of Xenforo an inherit from that instead of Xenforo itself
+class vBulletinCrawler(XenforoCrawler, is_abc=True):  # noqa: N801
+    # TODO: Make this crawler more general, potentially scraping the actual html of a page like xenforo
+    # Current limitations
+    # 1. It can't get the content (text) of the actual post. (It's not included in the API response of most sites)
+    # 2. Must vBulletin sites have the API disabled
+    # 3. It has no date information
+    SUPPORTED_PATHS: ClassVar[SupportedPaths] = {
+        "Threads": (
+            "/threads/<thread_name>",
+            "/posts/<post_id>",
+            "/goto/<post_id>",
+        ),
+    }
+    VBULLETIN_LOGIN_COOKIE_NAME: ClassVar[str] = ""
+    VBULLETIN_THREAD_QUERY_PARAM: ClassVar[str] = "t"
+    VBULLETIN_POST_QUERY_PARAM: ClassVar[str] = "p"
+    VBULLETIN_API_ENDPOINT: ClassVar[AbsoluteHttpURL]
+    POST_URL_PART_NAME: ClassVar[str] = "post"
+    PAGE_URL_PART_NAME: ClassVar[str] = "page"
+
+    async def __async_post_init__(self) -> None:
+        if not self._logged_in:
+            login_url = self.PRIMARY_URL / "login.php"
+            await self.login(login_url)
+
+    @override
+    async def check_login_with_request(self, *_: object, **_kwargs: object) -> tuple[str, bool]:
+        # TODO: Support login
+        return "", False
+
+    async def fetch(self, scrape_item: ScrapeItem) -> None:
+        # TODO: Handle more URLs
+        if self.login_required and not self._logged_in:
+            return
+        await self._fetch_thread(scrape_item)
+
+    @override
+    async def _thread(self, scrape_item: ScrapeItem, thread: Thread) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
+        title: str = ""
+        api_url = self.VBULLETIN_API_ENDPOINT.with_query({self.VBULLETIN_THREAD_QUERY_PARAM: str(thread.id)})
+
+        root_xml = _parse_xml(await self.request_text(api_url))
+        if (thread_element := root_xml.find("thread")) is not None:
+            title = self.create_title(thread_element.attrib["title"], thread_id=thread.id)
+            scrape_item.setup_as_forum(title)
+        else:
+            raise ScrapeError(422)
+
+        await self._posts(scrape_item, thread, root_xml)
+
+    async def _posts(self, scrape_item: ScrapeItem, thread: Thread, root_xml: ET.Element[str]) -> None:
+        if thread.page:
+            posts = itertools.islice(root_xml.iter("post"), (thread.page - 1) * _N_POSTS_PER_PAGE, None)
+        else:
+            posts = root_xml.iter("post")
+
+        for element in posts:
+            post = Post.new(element)
+            if thread.post_id and thread.post_id > post.id:
+                continue
+            new_scrape_item = scrape_item.create_child(
+                thread.url.update_query({self.VBULLETIN_POST_QUERY_PARAM: str(post.id)})
+            )
+            await self.post(new_scrape_item, post)
+            scrape_item.add_children()
+
+    @override
+    @error_handling_wrapper
+    async def post(self, scrape_item: ScrapeItem, post: Post) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
+        title = self.create_separate_post_title(post.title, str(post.id), None)
+        scrape_item.setup_as_post(title)
+        for image in post.images:
+            new_scrap_item = scrape_item.create_child(self.parse_url(image))
+            self.handle_external_links(new_scrap_item)
+            scrape_item.add_children()
+
+
+def _parse_xml(content: str) -> ET.Element[str]:
+    root_xml = ET.XML(content)
+    if error := root_xml.find("error"):
+        details = error.attrib["details"]
+        error_code = 403 if error.attrib["type"] == "permissions" and "unknown" not in details.casefold() else 422
+        raise ScrapeError(error_code, message=details)
+    return root_xml

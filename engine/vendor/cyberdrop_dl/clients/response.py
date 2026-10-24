@@ -1,0 +1,486 @@
+from __future__ import annotations
+
+import asyncio
+import copy
+import dataclasses
+import datetime
+import json
+from abc import ABC, abstractmethod
+from enum import StrEnum
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Generic, Literal, Self, final, override
+
+import aiohttp.multipart
+from aiohttp import ClientResponse, hdrs
+from multidict import CIMultiDict, CIMultiDictProxy
+from typing_extensions import TypeVar
+
+from cyberdrop_dl.clients import get_logger, wreq
+from cyberdrop_dl.clients.flaresolverr import Solution as FlaresolverrSolution
+from cyberdrop_dl.exceptions import InvalidContentTypeError, ScrapeError
+from cyberdrop_dl.url_objects import AbsoluteHttpURL
+from cyberdrop_dl.utils import css, parse_url, truncated_preview
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from bs4 import BeautifulSoup
+    from curl_cffi.requests.models import Response as CurlResponse
+else:
+    try:
+        from curl_cffi.requests.models import Response as CurlResponse
+    except ImportError:
+
+        class CurlResponse: ...
+
+
+logger = get_logger(__name__)
+
+_ResponseT = TypeVar(
+    "_ResponseT",
+    bound=ClientResponse | CurlResponse | FlaresolverrSolution | wreq.Response,
+    infer_variance=True,
+    default=Any,
+)
+
+
+class ContentPlaceHolder(StrEnum):
+    EMPTY = ""
+    ERROR = "<ERROR DECODING CONTENT>"
+    PENDING = "<DID NOT AWAIT FOR CONTENT YET>"
+
+
+@dataclasses.dataclass(slots=True, frozen=True)
+class ContentDisposition:
+    type: str | None
+    parameters: MappingProxyType[str, str]
+    raw_filename: str | None
+
+    @property
+    def filename(self) -> str:
+        if self.raw_filename:
+            return self.raw_filename
+
+        msg = "Content disposition has no filename information"
+        raise ScrapeError(422, msg)
+
+
+@dataclasses.dataclass(slots=True)
+class AbstractResponse(ABC, Generic[_ResponseT]):
+    """
+    Class to represent common methods and attributes between:
+        - `aiohttp.ClientResponse`
+        - `curl_cffi.Response`
+        - `FlareSolverrSolution`
+    """
+
+    content_type: str
+    status: int
+    headers: CIMultiDictProxy[str]
+    url: AbsoluteHttpURL
+    location: AbsoluteHttpURL | None
+    id: str = dataclasses.field(init=False, default="")
+
+    _resp: _ResponseT
+    _text: str = ContentPlaceHolder.EMPTY
+    _cache: dict[str, Any] = dataclasses.field(init=False, compare=False, default_factory=dict)
+    _lock: asyncio.Lock = dataclasses.field(init=False, compare=False, default_factory=asyncio.Lock)
+    _serialized: bool = False
+    _fully_serialized: bool = False
+    created_at: datetime.datetime = dataclasses.field(
+        init=False,
+        compare=False,
+        default_factory=lambda: datetime.datetime.now(datetime.UTC).replace(microsecond=0),
+    )
+
+    def __post_init__(self) -> None: ...
+
+    def __repr__(self) -> str:
+        return f"<{type(self).__name__} [{self.status}] ({self.url})>"
+
+    def _get_content(self) -> Any:
+        if self._text:
+            if "json" in self.content_type and "aes" not in self.content_type:
+                return json.loads(self._text)
+
+            if "html" in self.content_type:
+                return css.soup(self._text).prettify(formatter="html")
+
+        if not any(cont in self.content_type for cont in ("json", "html", "text")):
+            return f"<{self.content_type or 'application/octet-stream'} payload>"
+
+        return self._text
+
+    @final
+    @property
+    def has_content_not_logged(self) -> bool:
+        return self._serialized and not self._fully_serialized and self._text is not ContentPlaceHolder.EMPTY
+
+    def __json__(self) -> dict[str, Any]:
+        try:
+            content = self._get_content()
+        except ValueError as e:
+            logger.error("Unable to decode content of response %s: %s", self.id, truncated_preview(repr(e)))
+            content = ContentPlaceHolder.ERROR
+
+        self._serialized = True
+        if content is ContentPlaceHolder.EMPTY:
+            content = ContentPlaceHolder.PENDING
+        else:
+            self._fully_serialized = True
+
+        return {
+            "url": str(self.url),
+            "status_code": self.status,
+            "created_at": str(self.created_at),
+            "response_headers": dict(self.headers),
+            "content": content,
+        }
+
+    @abstractmethod
+    async def _read(self) -> bytes: ...
+
+    @abstractmethod
+    async def _read_text(self, encoding: str | None = None) -> str: ...
+
+    @abstractmethod
+    def iter_chunked(self, size: int) -> AsyncIterator[bytes]: ...
+
+    @abstractmethod
+    async def aclose(self) -> None: ...
+
+    @classmethod
+    def create(cls, resp: _ResponseT, /) -> _AIOHTTPResponse | FlareSolverrResponse | _CurlResponse | _WreqResponse:
+        try:
+            cls_ = {
+                ClientResponse: _AIOHTTPResponse,
+                FlaresolverrSolution: FlareSolverrResponse,
+                CurlResponse: _CurlResponse,
+                wreq.Response: _WreqResponse,
+            }[type(resp)]
+        except LookupError:
+            raise TypeError(resp) from None
+
+        return cls_.create(resp)  # pyright: ignore[reportArgumentType]
+
+    @final
+    @property
+    def content_disposition(self) -> ContentDisposition:
+        try:
+            header = self.headers[hdrs.CONTENT_DISPOSITION]
+        except KeyError:
+            msg = f"No content disposition header found in response from {self.url}"
+            raise ScrapeError(422, msg) from None
+
+        disposition_type, params = aiohttp.multipart.parse_content_disposition(header)
+        params = MappingProxyType(params)
+        filename = aiohttp.multipart.content_disposition_filename(params)
+        return ContentDisposition(disposition_type, params, filename)
+
+    @final
+    @property
+    def aiohttp_resp(self) -> ClientResponse:
+        if type(self._resp) is ClientResponse:
+            return self._resp
+        raise RuntimeError(f"Unexpected response type: {type(self._resp)!r}")
+
+    @property
+    def ok(self) -> bool:
+        """Returns `True` if `status` is less than `400`, `False` if not.
+
+        This is **not** a check for ``200 OK``
+        """
+        return self.status < 400
+
+    @final
+    async def read(self) -> bytes:
+        async with self._lock:
+            return await self._read()
+
+    @final
+    async def text(self, encoding: str | None = None) -> str:
+        if self._text:
+            return self._text
+
+        async with self._lock:
+            if not self._text:
+                self._text = await self._read_text(encoding)
+            return self._text
+
+    @final
+    async def soup(self, encoding: str | None = None) -> BeautifulSoup:
+        self.__check_content_type("text", "html", expecting="HTML")
+        if content := await self.text(encoding):
+            return await css.asoup(content)
+
+        raise ScrapeError(204, "Received empty HTML response")
+
+    async def json(
+        self,
+        encoding: str | None = None,
+        content_type: tuple[str, ...] | str | Literal[False] | None = ("text/plain", "json"),
+    ) -> Any:
+        self._check_json(content_type)
+        return json.loads(await self.text(encoding))
+
+    def _check_json(
+        self,
+        content_type: tuple[str, ...] | str | Literal[False] | None = ("text/plain", "json"),
+    ) -> None:
+        if self.status == 204:
+            raise ScrapeError(204)
+
+        if not content_type:
+            return
+        if isinstance(content_type, str):
+            content_type = (content_type,)
+
+        self.__check_content_type(*content_type, expecting="JSON")
+
+    @final
+    def create_report(self, exc: Exception | None = None, **extras: Any) -> str:
+
+        me = self.__json__()
+        if exc:
+            me |= {"error": str(exc), "exception": repr(exc)}
+
+        if extras:
+            me |= extras
+
+        if "json" in self.content_type:
+            return json.dumps(me, indent=2, ensure_ascii=False)
+
+        body: str = me.pop("content")
+        resp_info = json.dumps(me, indent=2, ensure_ascii=False)
+        return f"<!-- cyberdrop-dl request response \n{resp_info}\n-->\n{body}"
+
+    def __check_content_type(self, content_type: str, *additional_content_types: str, expecting: str) -> None:
+        if not any(type_ in self.content_type for type_ in (content_type, *additional_content_types)):
+            msg = f"Received {self.content_type}, was expecting {expecting}"
+            raise InvalidContentTypeError(message=msg)
+
+
+class _AIOHTTPResponse(AbstractResponse[ClientResponse]):
+    __slots__ = ()
+
+    @override
+    async def _read(self) -> bytes:
+        return await self._resp.read()
+
+    @override
+    async def _read_text(self, encoding: str | None = None) -> str:
+        return await self._resp.text(encoding)
+
+    @override
+    def iter_chunked(self, size: int) -> AsyncIterator[bytes]:
+        return self._resp.content.iter_chunked(size)
+
+    @override
+    async def aclose(self) -> None:
+        self._resp.release()
+        await self._resp.wait_for_close()
+
+    @override
+    @classmethod
+    def create(cls, resp: ClientResponse, /) -> Self:
+        url = AbsoluteHttpURL(resp.url)
+        content_type, location = _parse_headers(url, resp.headers)
+        return cls(
+            content_type=content_type,
+            status=resp.status,
+            headers=resp.headers,
+            url=url,
+            location=location,
+            _resp=resp,
+        )
+
+
+class _CurlResponse(AbstractResponse[CurlResponse]):
+    __slots__ = ()
+
+    @override
+    async def _read(self) -> bytes:
+        return await self._resp.acontent()
+
+    @override
+    async def _read_text(self, encoding: str | None = None) -> str:
+        if encoding:
+            self._resp.encoding = encoding
+        return await self._resp.atext()
+
+    @override
+    def iter_chunked(self, size: int) -> AsyncIterator[bytes]:
+        # Curl does not support size. We get chunks as they come
+        return self._resp.aiter_content()
+
+    @override
+    async def aclose(self) -> None:
+        await self._resp.aclose()
+
+    @override
+    @classmethod
+    def create(cls, resp: CurlResponse, /) -> Self:
+        headers = CIMultiDictProxy(
+            CIMultiDict(((name, value) for name, value in resp.headers.multi_items() if value is not None))
+        )
+        url = AbsoluteHttpURL(resp.url, encoded="%" in resp.url)
+        content_type, location = _parse_headers(url, headers)
+        return cls(
+            content_type=content_type,
+            status=resp.status_code,
+            headers=headers,
+            url=url,
+            location=location,
+            _resp=resp,
+        )
+
+
+class _WreqResponse(AbstractResponse[wreq.Response]):
+    __slots__ = ()
+
+    @override
+    async def _read(self) -> bytes:
+        return await self._resp.bytes()
+
+    @override
+    async def _read_text(self, encoding: str | None = None) -> str:
+        return await self._resp.text(encoding)
+
+    @override
+    async def iter_chunked(self, size: int) -> AsyncIterator[bytes]:
+        # does not support size. We get chunks as they come
+        async with self._resp.stream() as streamer:
+            async for chunk in streamer:
+                if isinstance(chunk, bytes):
+                    yield chunk
+
+    @override
+    async def aclose(self) -> None:
+        await self._resp.close()
+
+    @override
+    @classmethod
+    def create(cls, resp: wreq.Response, /) -> Self:
+        headers = CIMultiDictProxy(
+            CIMultiDict(((name.decode("utf-8"), value.decode("utf-8")) for name, value in resp.headers))
+        )
+        url = AbsoluteHttpURL(resp.url, encoded="%" in resp.url)
+        content_type, location = _parse_headers(url, headers)
+        return cls(
+            content_type=content_type,
+            status=resp.status.as_int(),
+            headers=headers,
+            url=url,
+            location=location,
+            _resp=resp,
+        )
+
+
+class FlareSolverrResponse(AbstractResponse[FlaresolverrSolution]):
+    __slots__ = ()
+
+    @property
+    def solution(self) -> FlaresolverrSolution:
+        return self._resp
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.id: str = self._resp.id
+        if not self.content_type:
+            self.content_type: str = "text/html"
+            logger.warning(
+                "Unable to detect content type of Flaresolverr response [id=%s], assuming '%s'",
+                self.id,
+                self.content_type,
+            )
+
+    @override
+    async def _read(self) -> bytes:
+        return self._text.encode()
+
+    @override
+    async def _read_text(self, encoding: str | None = None) -> str:
+        return self._text
+
+    @override
+    async def iter_chunked(self, size: int) -> AsyncIterator[bytes]:
+        yield self._text.encode()
+
+    @override
+    async def aclose(self) -> None: ...
+
+    async def json(
+        self,
+        encoding: str | None = None,  # noqa: ARG002
+        content_type: tuple[str, ...] | str | Literal[False] | None = ("text/plain", "json"),
+    ) -> Any:
+        if not self._text:
+            # Resp content is already parsed JSON
+            assert "json" in self.content_type
+            return self._resp.content
+
+        try:
+            return await self._load_json(self._text)
+        finally:
+            self._check_json(content_type)
+
+    async def _load_json(self, text: str) -> Any:
+        try:
+            return json.loads(text)
+        except ValueError:
+            if "html" not in self.content_type:
+                raise
+
+            text = (await css.asoup(text)).text
+            data = json.loads(text)
+            self.content_type = "application/json"
+            self._text = text
+            self._resp.content = copy.deepcopy(data)
+            logger.warning(
+                "Detected wrapped JSON in Flaresolverr response [id=%s], overriding content type to '%s'",
+                self.id,
+                self.content_type,
+            )
+            logger.traffic("Content from Flaresolverr request [id=%s]\n%s", self.id, {"content": self._resp.content})
+            return data
+
+    def _get_content(self) -> Any:
+        return super()._get_content() or self._resp.content
+
+    @override
+    @classmethod
+    def create(cls, solution: FlaresolverrSolution, /) -> Self:
+        content_type, location = _parse_headers(solution.url, solution.headers)
+        if type(solution.content) is str:
+            text = solution.content
+            if not content_type and text:
+                content_type = _infer_content_type_from_body(text)
+        else:
+            text = ""
+            content_type = content_type or "application/json"
+
+        return cls(
+            content_type=content_type,
+            status=solution.status,
+            headers=solution.headers,
+            url=solution.url,
+            location=location,
+            _text=text,
+            _resp=solution,
+        )
+
+
+def _parse_headers(url: AbsoluteHttpURL, headers: CIMultiDictProxy[str]) -> tuple[str, AbsoluteHttpURL | None]:
+    location = parse_url(location, url.origin(), trim=False) if (location := headers.get(hdrs.LOCATION)) else None
+
+    content_type = (headers.get(hdrs.CONTENT_TYPE) or "").lower()
+    return content_type, location
+
+
+def _infer_content_type_from_body(content: str) -> str:
+    sample = content.lstrip()[:20]
+    if sample.startswith("<html") or (sample.startswith("<") and "html>" in sample):
+        return "text/html"
+    if sample.startswith(("{", "[")):
+        return "application/json"
+    return ""

@@ -1,0 +1,7 @@
+engine/appdata/
+downloads/
+node_modules/
+__pycache__/
+engine/.venv
+runtime/
+logs/

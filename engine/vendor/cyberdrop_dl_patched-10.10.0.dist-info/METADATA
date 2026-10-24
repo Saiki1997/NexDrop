@@ -1,0 +1,101 @@
+Metadata-Version: 2.4
+Name: cyberdrop-dl-patched
+Version: 10.10.0
+Summary: Bulk downloader for multiple file hosts
+Keywords: asyncio,bunkr,cyberdrop,downloader,mega.nz
+Author: Jacob B
+Author-email: Jacob B <admin@script-ware.net>
+License-Expression: GPL-3.0-only
+License-File: LICENSE
+Classifier: Development Status :: 5 - Production/Stable
+Classifier: Environment :: Console
+Classifier: Framework :: AsyncIO
+Classifier: Intended Audience :: Developers
+Classifier: Intended Audience :: End Users/Desktop
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Programming Language :: Python :: 3.14
+Requires-Dist: aiodns>=4.0.4 ; sys_platform != 'android' and sys_platform != 'win32'
+Requires-Dist: aiohappyeyeballs>=2.7.1
+Requires-Dist: aiohttp>=3.14.3
+Requires-Dist: aiolimiter>=1.3.0
+Requires-Dist: aiosqlite>=0.22.1
+Requires-Dist: async-mega-py>=2.4.1
+Requires-Dist: backports-zstd>=1.7.0 ; python_full_version < '3.14' and implementation_name == 'cpython'
+Requires-Dist: beautifulsoup4>=4.15.0
+Requires-Dist: brotli>=1.2.0 ; implementation_name == 'cpython' and sys_platform != 'ios'
+Requires-Dist: cffi==2.1.1
+Requires-Dist: curl-cffi>=0.16.3 ; implementation_name == 'cpython'
+Requires-Dist: cyclopts==4.25.3
+Requires-Dist: idna>=3.19
+Requires-Dist: imagesize>=2.0.1
+Requires-Dist: m3u8>=6.0.0
+Requires-Dist: multidict>=6.9.0
+Requires-Dist: propcache>=0.5.4
+Requires-Dist: psutil>=7.2.1 ; sys_platform != 'android'
+Requires-Dist: pycryptodome>=3.23.0
+Requires-Dist: pydantic==2.13.4
+Requires-Dist: pyyaml>=6.0.3
+Requires-Dist: questionary>=2.1.1
+Requires-Dist: rich>=15.0.0
+Requires-Dist: rich-rst==2.0.2
+Requires-Dist: send2trash>=2.0.0
+Requires-Dist: soupsieve>=2.9.2
+Requires-Dist: typing-extensions>=4.16.0
+Requires-Dist: wassima>=2.1.3
+Requires-Dist: xxhash>=4.0.1
+Requires-Dist: yarl>=1.25.1
+Requires-Dist: apprise>=1.13.1,<2.0.0 ; extra == 'apprise'
+Requires-Dist: click==8.5.0 ; extra == 'apprise'
+Requires-Dist: urllib3>=2.8.0 ; extra == 'apprise'
+Requires-Dist: pywin32>=312 ; sys_platform == 'win32' and extra == 'apprise'
+Requires-Dist: tzdata>=2026.3 ; sys_platform == 'win32' and extra == 'apprise'
+Requires-Dist: wreq>=0.12.2 ; extra == 'wreq'
+Maintainer: NTFSvolume
+Maintainer-email: NTFSvolume <NTFSvolume@proton.me>
+Requires-Python: >=3.12
+Project-URL: Changelog, https://github.com/Cyberdrop-DL/cyberdrop-dl/blob/main/CHANGELOG.md
+Project-URL: Funding, https://github.com/sponsors/jbsparrow
+Project-URL: Issues, https://github.com/Cyberdrop-DL/cyberdrop-dl/issues
+Project-URL: Repository, https://github.com/Cyberdrop-DL/cyberdrop-dl
+Provides-Extra: apprise
+Provides-Extra: wreq
+Description-Content-Type: text/markdown
+
+<div align="center">
+
+# `cyberdrop-dl`
+
+_Bulk asynchronous downloader for multiple file hosts_
+
+[![PyPI - Version](https://img.shields.io/pypi/v/cyberdrop-dl-patched)](https://pypi.org/project/cyberdrop-dl-patched/)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/cyberdrop-dl-patched)](https://pypi.org/project/cyberdrop-dl-patched/)
+[![Docs](https://img.shields.io/badge/docs-wiki-blue?link=https%3A%2F%2Fscript-ware.gitbook.io%2Fcyberdrop-dl)](https://script-ware.gitbook.io/cyberdrop-dl)
+[![GitHub License](https://img.shields.io/github/license/Cyberdrop-DL/cyberdrop-dl)](https://github.com/Cyberdrop-DL/cyberdrop-dl/blob/main/LICENSE)
+[![linting - Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/Cyberdrop-DL/cyberdrop-dl/actions/workflows/ruff.yaml)
+[![tests](https://github.com/Cyberdrop-DL/cyberdrop-dl/actions/workflows/ci.yaml/badge.svg?event=push)](https://github.com/Cyberdrop-DL/cyberdrop-dl/actions/workflows/ci.yaml)
+[![PyPI - Downloads](https://img.shields.io/pypi/dm/cyberdrop-dl-patched)](https://pypistats.org/packages/cyberdrop-dl-patched)
+
+[![Discord](https://discordapp.com/api/guilds/1070206871564197908/widget.png?style=banner2)](https://discord.com/invite/P5nsbKErwy)
+
+Brand new and improved! `cyberdrop-dl` now has an updated paint job, fantastic new look. It's now easier to use than ever before!
+
+![Cyberdrop-DL TUI Preview](https://raw.githubusercontent.com/Cyberdrop-DL/cyberdrop-dl/refs/heads/main/docs/assets/cyberdrop-dl_tui_preview.png)
+
+</div>
+
+## Supported Sites
+
+See the [list of supported sites](https://script-ware.gitbook.io/cyberdrop-dl/reference/supported-websites) on the official wiki
+
+## Getting Started
+
+Follow the [getting-started guide](https://script-ware.gitbook.io/cyberdrop-dl/getting-started) for instructions on how to install and configure Cyberdrop-DL
+
+## Contributing
+
+If there is a feature you want, you've discovered a bug, or if you have other general feedback, please create an issue for it!
+
+See [CONTRIBUTING.md](https://github.com/Cyberdrop-DL/cyberdrop-dl/blob/main/CONTRIBUTING.md) for instructions on [opening an Issue](https://github.com/Cyberdrop-DL/cyberdrop-dl/blob/main/CONTRIBUTING.md#submitting-an-issue). If you want to submit code to the project, follow the [guidelines on how to contribute](https://github.com/Cyberdrop-DL/cyberdrop-dl/blob/main/CONTRIBUTING.md#submitting-a-pull-request-pr).

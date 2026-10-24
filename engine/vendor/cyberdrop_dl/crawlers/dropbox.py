@@ -1,0 +1,174 @@
+from __future__ import annotations
+
+import dataclasses
+from typing import TYPE_CHECKING, Any, ClassVar
+
+from cyberdrop_dl.crawlers.crawler import Crawler, SupportedPaths
+from cyberdrop_dl.exceptions import LoginError, ScrapeError
+from cyberdrop_dl.url_objects import AbsoluteHttpURL
+from cyberdrop_dl.utils.dataclass import DictDataclass
+from cyberdrop_dl.utils.errors import error_handling_wrapper
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
+    from cyberdrop_dl.url_objects import ScrapeItem
+
+
+_PRIMARY_URL = AbsoluteHttpURL("https://www.dropbox.com")
+_FOLDERS_API_ENDPOINT = _PRIMARY_URL / "list_shared_link_folder_entries"
+
+
+@dataclasses.dataclass(slots=True)
+class Node(DictDataclass):
+    is_dir: bool
+    href: str
+    filename: str
+    secureHash: str = ""  # noqa: N815
+
+
+class DropboxCrawler(Crawler):
+    SUPPORTED_PATHS: ClassVar[SupportedPaths] = {
+        "File": (
+            "/s/...",
+            "/scl/fi/<link_key>?rlkey=...",
+            "/scl/fo/<link_key>/<secure_hash>?preview=<filename>&rlkey=...",
+        ),
+        "Folder": (
+            "/sh/...",
+            "/scl/fo/<link_key>/<secure_hash>?rlkey=...",
+        ),
+    }
+    PRIMARY_URL: ClassVar[AbsoluteHttpURL] = _PRIMARY_URL
+    DOMAIN: ClassVar[str] = "dropbox"
+
+    async def __async_post_init__(self) -> None:
+        self._token: str = ""
+        await self._get_web_token()
+
+    async def fetch(self, scrape_item: ScrapeItem) -> None:
+        match scrape_item.url.parts[1:]:
+            case ["s" | "sh", _, *_]:
+                await self.follow_db_redirect(scrape_item)
+            case ["scl", "fi", _, *_]:
+                await self.file(scrape_item)
+            case ["scl", "fo", link_key, secure_hash]:
+                await self.folder(scrape_item, link_key, secure_hash)
+            case ["scl", "fo", link_key, secure_hash, _]:
+                await self.file(scrape_item)
+            case _:
+                raise ValueError
+
+    @error_handling_wrapper
+    async def follow_db_redirect(self, scrape_item: ScrapeItem) -> None:
+        async with self.request(scrape_item.url) as resp:
+            if "s" in resp.url.parts or "sh" in resp.url.parts:
+                if "error_pages/no_access" in await resp.text():
+                    raise ScrapeError(401)
+                raise ScrapeError(422, "Infinite redirect")
+        scrape_item.url = resp.url
+        self.create_task(self.run(scrape_item))
+
+    @error_handling_wrapper
+    async def folder(self, scrape_item: ScrapeItem, link_key: str, secure_hash: str) -> None:
+        scrape_item.url = await self._ensure_rlkey(scrape_item.url)
+        rlkey = scrape_item.url.query["rlkey"]
+        scrape_item.setup_as_album("")
+        await self._walk_folder(scrape_item, link_key, secure_hash, rlkey)
+
+    @error_handling_wrapper
+    async def file(self, scrape_item: ScrapeItem) -> None:
+        scrape_item.url = await self._ensure_rlkey(scrape_item.url)
+        async with self.request(scrape_item.url.update_query(dl=1)) as resp:
+            await self._file(scrape_item, resp.content_disposition.filename)
+
+    @error_handling_wrapper
+    async def _file(self, scrape_item: ScrapeItem, filename: str) -> None:
+        scrape_item.url = view_url = scrape_item.url.with_query(rlkey=scrape_item.url.query["rlkey"], dl=0)
+        download_url = view_url.update_query(dl=1)
+        custom_filename, ext = self.get_filename_and_ext(filename)
+        await self.handle_file(
+            view_url,
+            scrape_item,
+            filename,
+            ext,
+            debrid_link=download_url,
+            custom_filename=custom_filename,
+        )
+
+    async def _ensure_rlkey(self, url: AbsoluteHttpURL) -> AbsoluteHttpURL:
+        if url.query.get("rlkey"):
+            return url
+        async with self.request(url) as resp:
+            url = resp.url
+        if url.query.get("rlkey"):
+            return url
+        raise ScrapeError(401)
+
+    async def _walk_folder(
+        self,
+        scrape_item: ScrapeItem,
+        link_key: str,
+        secure_hash: str,
+        rlkey: str,
+        subpath: str = "",
+    ) -> None:
+        async for resp in self._web_api_pager(link_key, secure_hash, rlkey, subpath):
+            if "folder" not in resp:
+                return await self.file(scrape_item)
+            folder_name: str = resp["folder"]["filename"]
+            scrape_item.append_folders(self.create_title(folder_name))
+
+            for entry, token in zip(resp["entries"], resp["share_tokens"], strict=True):
+                node = Node.from_dict(token | entry)
+                view_url = self.parse_url(node.href)
+                new_scrape_item = scrape_item.create_child(view_url)
+                if node.is_dir:
+                    self.create_task(
+                        self._walk_folder(
+                            new_scrape_item,
+                            link_key,
+                            node.secureHash,
+                            rlkey,
+                            f"{subpath}/{node.filename}",
+                        )
+                    )
+                    continue
+
+                self.create_eager_task(self._file(new_scrape_item, node.filename))
+                scrape_item.add_children()
+
+    async def _web_api_pager(
+        self, link_key: str, secure_hash: str, rlkey: str, subpath: str = ""
+    ) -> AsyncGenerator[dict[str, Any]]:
+        payload = {
+            "is_xhr": "true",
+            "t": self._token,
+            "sub_path": subpath,
+            "link_key": link_key,
+            "secure_hash": secure_hash,
+            "rlkey": rlkey,
+            "link_type": "s",
+        }
+        while True:
+            resp: dict[str, Any] = await self.request_json(
+                _FOLDERS_API_ENDPOINT,
+                method="POST",
+                data=payload,
+                headers={
+                    "Origin": str(self.PRIMARY_URL),
+                },
+            )
+
+            yield resp
+            if not resp["has_more_entries"]:
+                break
+            payload["voucher"] = resp["next_request_voucher"]
+
+    async def _get_web_token(self) -> None:
+        with self.catch_errors(self.PRIMARY_URL), self.disable_on_error("Unable to get token from dropbox"):
+            async with self.request(self.PRIMARY_URL, method="HEAD"):
+                token = self.cookies.get("t")
+                if not token:
+                    raise LoginError
+                self._token = token

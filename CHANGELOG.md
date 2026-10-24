@@ -1,0 +1,127 @@
+# NEXDROP 2.2.0
+
+## New
+- **Queue.** While a run is going, paste more links and press **Add to queue**. They start one after another. The queue is shown under the links box, items can be removed, and it is kept if NEXDROP closes. With an empty links box, **Start** runs the queue.
+- **Pause and resume, even after closing NEXDROP.** Stop is now **Pause**. A paused run, or one interrupted by closing the window or a crash, shows a **Resume** bar the next time NEXDROP opens. Resume skips files that already finished (also for runs started with Download again) and continues half-downloaded files from where they stopped.
+- **Watched threads.** After running a forum thread, **Watch for new posts** adds it to Settings > Watched (or paste a thread link there). NEXDROP checks each watched thread every 1–24 hours while it is open, starting from the last post it saw, so only new posts are scanned. Checks wait in the queue behind your own runs. Each shows when it was last checked and how many new files it found.
+- **Taskbar progress and a "finished" notification.** The NEXDROP taskbar button fills up during a run (red if files failed), and a Windows notification appears when a run finishes or pauses while the window isn't in front. Clicking it brings NEXDROP back.
+- **Automatic retry for temporary errors.** Files that fail because a server is busy (503, 502, 500, 504), rate-limited (429) or timed out are tried once more 45 seconds after the run, by re-opening the album, post or thread they came from. The log reports how many the retry saved. On by default (Settings > Downloads).
+- **File types and folders** (Settings > Downloads): choose Images, Videos, Audio and Other files; skip images smaller than a size (thumbnails, icons); and optionally sort new files into Images, Videos, Audio and Other folders inside their usual folder. Files left out by a filter show as Skipped with the reason and are not written to history, so turning the type back on downloads them.
+
+## Fixed
+- A second engine pass in the same run overwrote that run's engine log. The retry pass now writes its own `.retry.engine.log`.
+- A link with a trailing colon in an engine message created a duplicate row.
+- Files a page listed but the engine never attempted could stay "Waiting" after a run finished.
+- The new strip under the links box no longer leaves a gap above the file list.
+
+## Project
+- The full source is now in the GitHub repository, including the patched engine, with tests that run on Windows through GitHub Actions on every push.
+
+# NEXDROP 2.1.3
+
+From the third SimpCity run (allecakes: 4,457 files, 17.3 GB saved, 82 failed).
+
+## Faster
+- **Bunkr downloaded one file at a time per server.** The engine's Bunkr handler locks each CDN server to one download. This thread's 1,675 Bunkr files (11 GB) sat on two servers, so from 12:34 to 13:18 the run crawled at 0.2–6 MB/s after peaking at 43 MB/s. Now 3 connections per server (Settings > Speed > Connections per server, 1–6). If a server answers 429 or 503, that server alone drops back to 1 connection and the log says so.
+- **TikTok sounds are optional and off by default.** 913 of the 1,850 TikTok files were each post's background sound saved as a separate .mp3, and all 11 TikTok failures (403 Forbidden) were these. Videos keep their audio. Turn them back on under Settings > Downloads > TikTok sounds.
+
+## Clearer
+- SimpCity's "Oops! We ran into some problems." page is the forum's own error page (the attachment was removed, or the account can't view it), not a bot check. NEXDROP no longer retries it through FlareSolverr, and the summary says what it means and how to check it in a browser.
+- Temporary server errors (503, 502, 429) get their own line suggesting Retry unfinished later.
+
+# NEXDROP 2.1.2
+
+From the second SimpCity run (allecakes, 1,158 files).
+
+## Fixed
+- **SimpCity attachments failed with "Invalid Content Type".** The sign-in cookie was valid, but DDoS-Guard's short-lived clearance cookies had expired. The engine retries through FlareSolverr when scanning pages, but not when downloading files, so every attachment got the bot-check page. Downloads now do the same: one FlareSolverr visit per site refreshes the clearance, and the file is fetched again. Tested against a stand-in protected site: 3 of 3 files saved after one clearance.
+- When a site still sends a web page instead of a file, its page title is written to the log, so a login wall or a deleted attachment can be told apart from a bot check.
+- **Turbo albums failed with `NameError: name 'aio' is not defined`.** A bug in the bundled engine's `crawler.py` affected every site that opens a task group (Turbo, GoonBox albums, Kemono, Kick, SpankBang and more). Fixed in `engine/vendor-patches`.
+- **TikTok profiles failed with `Empty URL`** when a post had no music track. Fixed in `engine/vendor-patches`.
+- "Failed with several errors" now lists the actual errors (for example `404 Not Found; 404 Not Found`).
+- The thread summary showed as a raw `[SimpCity] Forum result ...` warning; it now reads "Scanned /threads/...: 104 posts, 797 files".
+- 33 images on `simp1.cuckcapital.cr` returned 404: the host deleted them. The end-of-run summary now says so instead of suggesting a retry.
+
+## Faster
+- New defaults: Parallel, 16 downloads at once, 6 per site (were Page order, 2, 1). Settings saved by earlier versions are moved to these once. Limits raised to 32 at once and 16 per site.
+- Global request cap raised from 25 to 100 per second. SimpCity's own slow scan rate is kept to avoid bans.
+- Direct files handled by NEXDROP's own HTTP fallback now download several at a time instead of one by one.
+- Measured on the same 29 MB: Page order 5.9 MB/s, new defaults 73 MB/s.
+
+## Progress
+- Every file has its own progress bar with downloaded / total size, current speed in MB/s, time left and a large percentage. The bar changes colour as it fills: copper, then brass, then green; red if it fails.
+- Speed is the current speed (smoothed), not the average since the file started.
+- Files that are fully received but still being written show "Saving" instead of sitting at 100%.
+- Total speed in MB/s.
+
+# NEXDROP 2.1.1
+
+Fixes from the first real SimpCity run (allecakes, 797 files).
+
+## Logs
+- Every run now writes a complete log to `engine\appdata\logs\runs\<date>_<time>.log`: settings (no secrets), links, every phase and message, and one line per file with its number, name, link and result. The engine's own detailed log (requests, tracebacks) is written beside it as `.engine.log`. The 30 most recent runs are kept.
+- **Open log** and **Logs folder** buttons in the Activity panel.
+- FlareSolverr's output now goes to `engine\appdata\logs\flaresolverr.log`, and when it fails its last lines are shown in Activity.
+
+## Fixed
+- FlareSolverr gave up after 30 s, while its first start on Windows (it launches its own Chrome) can take longer. NEXDROP now starts it in the background as soon as the window opens, keeps it running between runs, and waits up to 150 s. A status dot in the Activity panel shows starting, ready or failed. Without it, TikTok hit a Turnstile wall and SimpCity attachments came back as an HTML challenge page ("Invalid Content Type").
+- A whole-browser cookie export was handed to the engine as is (about 300 sites, including Google, Visa and banking) and every domain was logged. Only cookies for sites the engine supports, or for the pasted links, are now used: in the test, 4 of 260 sites. One summary line replaces the 300-line list.
+- The engine database grew to about 525 MB (262 MB file plus 264 MB write-ahead log) holding about 1 MB of history. Cyberdrop-DL reserves 250 MB inside the database on every start. The reserve is now 16 MB, the existing file is compacted once, and the write-ahead log is folded back after each run. Measured: 262 MB to 17 MB, stable across runs.
+- Clear next steps at the end of a run instead of raw engine errors: attachments that came back as a web page, MEGA's 509 bandwidth quota, linked threads skipped because Nested threads to follow is 0, bot-check blocks, and a hint to use Parallel for large threads in Page order.
+- "Too many downloads queued" is shown once, as information. Skipped linked threads and unsupported link types are information, not warnings. Thread scans read "Scanned /threads/x: 104 posts, 797 files, 2 linked threads."
+
+# NEXDROP 2.1.0
+
+Built on 2.0.0. Every 2.0 feature is kept: source page order and numbering, forum page range, website sign-ins, job history, the source registry, and magnet rejection.
+
+## Fixed
+
+**Security**
+- The HTTP fallback could write outside the download folder. A link ending in `..%2F..%2FStartup%2Fevil.jpg` was decoded into a path that climbed out of `Loose Files`. File names are now sanitised (no path separators, Windows reserved names, or invalid characters) and existing files are never overwritten.
+- The private-address check did not apply to redirects. `urllib` followed redirects automatically, so a public link could redirect to `127.0.0.1` or a LAN address. Redirects are now followed by hand and every hop is checked.
+- Removing a sign-in built a file path from an unchecked id, so a crafted id could delete any `.txt` file. Ids are now checked against the account list.
+- Clicking a downloaded file opened it, which would run a downloaded program. Files are now revealed in Explorer; only folders open.
+- The window now has a Content Security Policy, a single-instance lock (two windows would share one engine database), and external links open in the browser instead of being silently blocked.
+
+**Downloads**
+- Importing a cookie file always failed. `auth_cookies.py` read an `--probe` option that was never defined, so it crashed and the app reported "No cookies for this site were in that file".
+- Cookie filtering dropped `#HttpOnly_` lines, which is where session and login cookies (including SimpCity's `ogaddgmetaprof_user`) live. JSON storage-state files are now accepted too.
+- A changed fallback cookie file was ignored after the first run: `fallback.txt` was written once into the sign-in folder and never refreshed. Each run now builds a fresh cookie folder.
+- A failed download was shown and recorded as Completed. Success was inferred from the progress bar closing, which also happens on failure. Success now comes only from the engine recording a saved file.
+- Failures logged as `Download attempt (unsupported domain) Failed:` were not recognised.
+- Warnings from the engine arrived as `warn` and were displayed as normal messages.
+- Pages skipped from history ("already been scrapped") were counted as skipped files.
+- HLS videos showed no progress.
+- During parallel downloads only one file's progress updated per tick, so other bars looked frozen.
+- Fallback files restarted numbering at 001 instead of continuing the engine's sequence, and ignored the "numbered filenames" setting.
+- Stop killed the session outright, so history and the job database were not saved for files that had finished. Stop is now graceful: the engine is cancelled, history is saved, and a summary is reported. Unfinished files are marked Stopped, not Failed.
+- Events from a stopped run could reach the next run, and a UTF-8 character split across two pipe reads was corrupted.
+- Over 40 links were silently dropped; the limit is now 200 and you are told when it applies.
+- A host that does not resolve said "Private and local addresses are blocked"; it now says it could not be resolved.
+- The order manifest grew without limit; it is now trimmed.
+- If FlareSolverr could not start (for example, antivirus blocked or quarantined the exe), the whole run crashed. It now warns and continues without it.
+
+## Faster
+- Progress is sent as one batch of changed files four times a second instead of one message per chunk per file.
+- The file list only creates the rows you can see. 5,000 files render with about 23 row elements and scroll at 60 fps.
+- Activity log updates are batched per frame and capped at 500 visible lines.
+- The window no longer freezes while Python runs: the site check (up to 2 minutes), cookie import, sign-in check, the "downloaded before" lookup and startup job recovery all run in the background or without Python.
+- The job database uses WAL mode and a quick startup check.
+- The window log is written through one stream and rotated at 5 MB.
+- Interface images went from 1.26 MB to 230 KB.
+
+## Redesigned window
+- Copper on basalt, taken from the NEXDROP logo. Rows fill with copper as they download and cool to verdigris (copper's patina) when saved; rust marks failures.
+- One command bar: links box, Start or Stop, Settings. Order, page range and Download again sit right below it.
+- A four-step phase track: Prepare, Find files, Download, Finish.
+- Downloads are the main view, with a running tally (files saved, speed, size, time), tabs for Active, Saved, Skipped and Unfinished, and a site filter.
+- Recent links appear on the empty screen and can be added again with one click.
+- "Downloaded before" asks once: Get new files only, or Download everything again.
+- Settings moved to a side panel with four tabs: Downloads, Speed, Sign-ins, Sites.
+- Removed controls that did nothing: Live Browser, Update extractors, Headless, Resolve links, Same-host links, Chrome CDP, Storage state, Performer, Crawl jobs, Resolve workers, Delay, Max pages, resume-from-page, and the cookie prompt on every launch.
+- Ctrl+Enter starts, Ctrl+, opens settings, links or a .txt file can be dropped on the window.
+- Parallel modes allow up to 8 downloads and 4 per site (was 4 and 2). Page order still uses 1.
+
+## Build
+- `windows/build-electron-portable.sh` now copies every v2 file (credential store, sign-in list, the four helper modules) and FlareSolverr. The previous script would have produced a build that failed at startup.
+- Added `tests/` (Python and Node).

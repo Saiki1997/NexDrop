@@ -1,0 +1,248 @@
+NEXDROP source registry
+Bundled engine: cyberdrop-dl 10.10.0 with local patches.
+Documentation compared: script-ware gitbook supported-websites, labeled 10.11.0.
+Status is registration in this build, not a successful live download.
+
+10.11.0 was not installed over the patched engine.
+Backported: Dropbox scrape errors no longer skip the await (a folder error was crashing the run), Fileditch proof-of-work form detection, PornHub HLS browser impersonation.
+Added: VimeoCrawler from 10.11.0. Import check passed. No live Vimeo download was run.
+Not added: the 10.11.0 Reddit package. It replaces the working v.redd.it handler and needs a new config model. reddit.com pages remain unsupported. v.redd.it videos stay on RedditMediaCrawler.
+SimpCity is not in the 10.11.0 supported-site list. This build still registers SimpCityCrawler for simpcity.cr and simpcity.su. It was not live-tested in this pass.
+
+1fichier: Supported but not live-tested | OneFichierCrawler | https://1fichier.com
+4chan: Supported but not live-tested | FourChanCrawler | https://boards.4chan.org
+8Muses: Supported but not live-tested | EightMusesCrawler | https://comics.8muses.com
+ABStream: Supported but not live-tested | ABStreamCrawler | https://abstream.to
+Acast.com: Supported but not live-tested | ACastCrawler | https://www.acast.com
+Adobe Lightroom: Supported but not live-tested | AdobeLightroomCrawler | https://lightroom.adobe.com
+AllPornComix: Supported but not live-tested | AllPornComixCrawler | https://forum.allporncomix.com
+AnySex: Supported but not live-tested | AnySexCrawler | https://anysex.com
+APK Mirror: Supported but not live-tested | APKMirrorCrawler | https://www.apkmirror.com
+Archive.org: Supported but not live-tested | ArchiveOrgCrawler | https://archive.org
+ArchiveBate: Supported but not live-tested | ArchiveBateCrawler | https://www.archivebate.store
+aShemaleTube: Supported but not live-tested | AShemaleTubeCrawler | https://www.ashemaletube.com
+Bandcamp: Supported but not live-tested | BandcampCrawler | https://bandcamp.com
+Beeg.com: Supported but not live-tested | BeegComCrawler | https://beeg.com
+Bellazon: Supported but not live-tested | BellazonCrawler | https://www.bellazon.com/main/
+BestPrettyGirl: Supported but not live-tested | BestPrettyGirlCrawler | https://bestprettygirl.com/
+BlueSky: Supported but not live-tested | BlueskyCrawler | https://bsky.app
+Box: Supported but not live-tested | BoxDotComCrawler | https://www.box.com
+Bunkr: Supported but not live-tested | BunkrCrawler | https://bunkr.cr
+Bunkr-Albums: Supported but not live-tested | BunkrAlbumsCrawler | https://balbums.st
+BuzzHeavier: Supported but not live-tested | BuzzHeavierCrawler | https://buzzheavier.com
+Camwhores.tv: Supported but not live-tested | CamwhoresTVCrawler | https://www.camwhores.tv
+Cara.app: Supported but not live-tested | CaraCrawler | https://cara.app
+Catbox: Supported but not live-tested | CatboxCrawler | https://catbox.moe
+CelebForum: Supported but not live-tested | CelebForumCrawler | https://celebforum.cc
+Chevereto: Partially supported | generic base CheveretoCrawler, used when a Chevereto site is configured. Not live-tested
+Clonr: Supported but not live-tested | ClonrCrawler | https://clonr.co
+cloud.mail.ru: Supported but not live-tested | CloudMailRuCrawler | https://cloud.mail.ru
+CloudflareStream: Supported but not live-tested | CloudflareStreamCrawler | https://cloudflarestream.com
+Clyp.it: Supported but not live-tested | ClypItCrawler | https://clyp.it
+CrazyShit: Supported but not live-tested | CrazyShitCrawler | https://crazyshit.com
+Cyberdrop: Supported but not live-tested | CyberdropCrawler | https://cyberdrop.cr/
+Cyberfile: Supported but not live-tested | CyberfileCrawler | https://cyberfile.me/
+Daftporn: Supported but not live-tested | DaftPornCrawler | https://www.daftporn.com
+Dailymotion: Supported but not live-tested | DailyMotionCrawler | https://www.dailymotion.com
+DesiVideo: Supported but not live-tested | DesiVideoCrawler | https://desivideo.net
+DirectHttpFile: Partially supported | DirectHttpFileCrawler downloads a direct media URL when no site crawler matches. Not live-tested this pass
+DirtyShip: Supported but not live-tested | DirtyShipCrawler | https://dirtyship.com
+Discourse: Partially supported | generic DiscourseCrawler. A specific forum still has to match its host. Not live-tested
+DoodStream: Supported but not live-tested | DoodStreamCrawler | https://doodstream.com/
+Dropbox: Supported but not live-tested | DropboxCrawler | https://www.dropbox.com
+E-Hentai: Supported but not live-tested | EHentaiCrawler | https://e-hentai.org/
+E621: Supported but not live-tested | E621Crawler | https://e621.net
+eFukt: Supported but not live-tested | EfuktCrawler | https://efukt.com
+ePorner: Supported but not live-tested | EpornerCrawler | https://www.eporner.com/
+Erome: Supported but not live-tested | EromeCrawler | https://www.erome.com
+Erome.fan: Supported but not live-tested | EromeFanCrawler | https://erome.fan
+EveriaClub: Supported but not live-tested | EveriaClubCrawler | https://everia.club/
+F95Zone: Supported but not live-tested | F95ZoneCrawler | https://f95zone.to
+Fapello.com: Supported but not live-tested | FapelloComCrawler | https://fapello.com
+Fileditch: Supported but not live-tested | FileditchCrawler | https://fileditchfiles.me/
+Fileditch: Supported but not live-tested | FileditchCrawler | https://fileditchfiles.me/
+Filester: Supported but not live-tested | FilesterCrawler | https://filester.me
+Firestream: Supported but not live-tested | FireStreamCrawler | https://firestream.site
+Flickr: Supported but not live-tested | FlickrCrawler | https://www.flickr.com
+Forums.plex.tv: Supported but not live-tested | PlexTVCrawler | https://forums.plex.tv
+FSIBlog: Supported but not live-tested | FSIBlogCrawler | https://www.fsiblogxx.com
+FuckingFast: Supported but not live-tested | FuckingFastCrawler | https://fuckingfast.co
+FuXXX: Supported but not live-tested | FuXXXCrawler | https://fuxxx.com
+Fyptt: Supported but not live-tested | FYPTTCrawler | https://fyptt.to
+GenericKVS: Partially supported | generic Kernel Video Sharing base. Not a site by itself. Not live-tested
+GenericVideo: Partially supported | generic video base. Not a site by itself. Not live-tested
+GifHQ: Supported but not live-tested | GifHQCrawler | https://gifhq.com
+Giphy: Supported but not live-tested | GiPhyCrawler | https://giphy.com
+GirlsReleased: Supported but not live-tested | GirlsReleasedCrawler | https://www.girlsreleased.com
+GoFile: Supported but not live-tested | GoFileCrawler | https://gofile.io
+GoogleDrive: Supported but not live-tested | GoogleDriveCrawler | https://drive.google.com
+GooglePhotos: Supported but not live-tested | GooglePhotosCrawler | https://photos.google.com
+GoonBox: Supported but not live-tested | GoonBoxCrawler | https://goonbox.cr
+GUpload: Supported but not live-tested | GUploadCrawler | https://gupload.xyz
+HClips: Supported but not live-tested | HClipsCrawler | https://hclips.com
+HDZog: Supported but not live-tested | HDZogCrawler | https://hdzog.com
+Hitomi.la: Supported but not live-tested | HitomiLaCrawler | https://hitomi.la
+Hohoj: Supported but not live-tested | HohojTVCrawler | https://hohoj.tv
+HotLeaksTV: Supported but not live-tested | HotLeaksTVCrawler | https://hotleaks.tv
+HotLeakVip: Supported but not live-tested | HotLeakVipCrawler | https://hotleak.vip
+HotMovs: Supported but not live-tested | HotMovsCrawler | https://hotmovs.com
+HotPic: Supported but not live-tested | HotPicCrawler | https://hotpic.cc
+Iceyfile: Supported but not live-tested | IceyFileCrawler | https://iceyfile.com/
+ImageBam: Supported but not live-tested | ImageBamCrawler | https://www.imagebam.com/
+ImagePond: Supported but not live-tested | ImagePondCrawler | https://www.imagepond.net
+ImageVenue: Supported but not live-tested | ImageVenueCrawler | https://www.imagevenue.com
+ImgBB: Supported but not live-tested | ImgBBCrawler | https://ibb.co
+ImgBox: Supported but not live-tested | ImgBoxCrawler | https://imgbox.com
+ImgLike: Supported but not live-tested | ImgLikeCrawler | https://imglike.com
+Imgur: Supported but not live-tested | ImgurCrawler | https://imgur.com/
+Imx.to: Supported but not live-tested | ImxToCrawler | https://imx.to
+InPorn: Supported but not live-tested | InPornCrawler | https://inporn.com
+Kick: Supported but not live-tested | KickCrawler | https://kick.com
+Koofr: Supported but not live-tested | KooFrCrawler | https://koofr.eu
+LeakedModels: Supported but not live-tested | LeakedModelsCrawler | https://leakedmodels.com/forum/
+LeakedZone: Supported but not live-tested | LeakedZoneCrawler | https://leakedzone.com
+LiveCamRips: Supported but not live-tested | LiveCamRipsCrawler | https://livecamrips.to
+Livestreamfails.com: Supported but not live-tested | LivestreamFailsCrawler | https://livestreamfails.com
+Livid.com: Supported but not live-tested | LividCrawler | https://livid.com
+Lulustream: Supported but not live-tested | LuluStreamCrawler | https://lulustream.com
+Luscious: Supported but not live-tested | LusciousCrawler | https://members.luscious.net
+LuxureTV: Supported but not live-tested | LuxureTVCrawler | https://luxuretv.com
+Masahub: Supported but not live-tested | MasahubCrawler | https://lalamasa.mobi/
+Mediafire: Supported but not live-tested | MediaFireCrawler | https://www.mediafire.com/
+Megacloud: Supported but not live-tested | MegaCloudCrawler | https://megacloud.blog
+MegaNz: Supported but not live-tested | MegaNzCrawler | https://mega.nz
+MissAV: Supported but not live-tested | MissAVCrawler | https://missav.ws
+Mitaku.net: Supported but not live-tested | MitakuCrawler | https://mitaku.net
+MixDrop: Supported but not live-tested | MixDropCrawler | https://mixdrop.sb
+Monstercat: Supported but not live-tested | MonstercatCrawler | https://www.monstercat.com
+Multporn.net: Supported but not live-tested | MultPornCrawler | https://multporn.net
+MyDesi: Supported but not live-tested | MyDesiCrawler | https://lolpol.com
+Naughtymachinima: Supported but not live-tested | NaughtyMachinimaCrawler | https://www.naughtymachinima.com
+nHentai: Supported but not live-tested | NHentaiCrawler | https://nhentai.net/
+NoodleMagazine: Supported but not live-tested | NoodleMagazineCrawler | https://noodlemagazine.com
+Nova: Supported but not live-tested | NovaStorageCrawler | https://nova.storage
+nsfw\.xxx: Supported but not live-tested | NsfwXXXCrawler | https://nsfw.xxx
+Nudeleted: Supported but not live-tested | NudeletedCrawler | https://nudeleted.com
+NudoStar: Supported but not live-tested | NudoStarCrawler | https://nudostar.com/forum/
+NudoStarTV: Supported but not live-tested | NudoStarTVCrawler | https://nudostar.tv
+OctaveMusic: Supported but not live-tested | OctaveMusicCrawler | https://music.octavestreaming.com
+Odysee: Supported but not live-tested | OdyseeCrawler | https://odysee.com
+ok.ru: Supported but not live-tested | OdnoklassnikiCrawler | https://ok.ru
+OmegaScans: Supported but not live-tested | OmegaScansCrawler | https://omegascans.org
+OneDrive: Supported but not live-tested | OneDriveCrawler | https://onedrive.com/
+OnePace: Supported but not live-tested | OnePaceCrawler | https://onepace.net
+OnlyHaven: Supported but not live-tested | OnlyHavenCrawler | https://cum.st
+Origrid: Supported but not live-tested | OrigridCrawler | https://origrid.io
+OwnCloud: Partially supported | generic OwnCloudCrawler. Needs the server host. Not live-tested
+Patreon: Supported but not live-tested | PatreonCrawler | https://www.patreon.com
+Pawchive: Supported but not live-tested | PawchiveCrawler | https://pawchive.pw
+pCloud: Supported but not live-tested | PCloudCrawler | https://www.pcloud.com
+Peertube: Supported but not live-tested | PeerTubeCrawler | https://joinpeertube.org
+PeerTubeGeneric: Supported but not live-tested | PeerTubeCrawler | https://joinpeertube.org
+PillowCase: Supported but not live-tested | PillowCaseCrawler | https://pillows.su
+PimpAndHost: Supported but not live-tested | PimpAndHostCrawler | https://pimpandhost.com
+PimpBunny: Supported but not live-tested | PimpBunnyCrawler | https://pimpbunny.com
+Pinterest: Supported but not live-tested | PinterestCrawler | https://www.pinterest.com
+PixelDrain: Supported but not live-tested | PixelDrainCrawler | https://pixeldrain.com
+Pixeldrain-proxy: Supported but not live-tested | PixelDrainProxyCrawler | https://pd.1drv.eu.org
+PixHost: Supported but not live-tested | PixHostCrawler | https://pixhost.cc
+Pkmncards: Supported but not live-tested | PkmncardsCrawler | https://pkmncards.com
+Playmate: Supported but not live-tested | PlaymateCrawler | https://playmate.to
+Pluto.tv: Supported but not live-tested | PlutoCrawler | https://pluto.tv
+PMVHaven: Supported but not live-tested | PMVHavenCrawler | https://pmvhaven.com
+PornHub: Supported but not live-tested | PornHubCrawler | https://www.pornhub.com
+PornPics: Supported but not live-tested | PornPicsCrawler | https://pornpics.com
+Porntrex: Supported but not live-tested | PorntrexCrawler | https://www.porntrex.com
+PornZog: Supported but not live-tested | PornZogCrawler | https://pornzog.com
+PostImg: Supported but not live-tested | PostImgCrawler | https://postimg.cc
+RealBooru: Supported but not live-tested | RealBooruCrawler | https://realbooru.com
+RealDebrid: Supported but not live-tested | RealDebridCrawler | https://real-debrid.com
+Recordplay: Supported but not live-tested | RecordPlayCrawler | https://recordplay.biz
+Reddit: Partially supported | RedditMediaCrawler handles v.redd.it videos only. reddit.com posts, users, and subreddits are the 10.11.0 arctic-shift crawler and are not in this build. Not live-tested
+Reddit: Partially supported | RedditMediaCrawler handles v.redd.it videos only. reddit.com posts, users, and subreddits are the 10.11.0 arctic-shift crawler and are not in this build. Not live-tested
+Reddit: Partially supported | RedditMediaCrawler handles v.redd.it videos only. reddit.com posts, users, and subreddits are the 10.11.0 arctic-shift crawler and are not in this build. Not live-tested
+RedGifs: Supported but not live-tested | RedGifsCrawler | https://www.redgifs.com/
+Redtube: Supported but not live-tested | RedtubeCrawler | https://www.redtube.com
+Rootz.so: Supported but not live-tested | RootzCrawler | https://www.rootz.so
+Rule34Vault: Supported but not live-tested | Rule34VaultCrawler | https://rule34vault.com
+Rule34Video: Supported but not live-tested | Rule34VideoCrawler | https://rule34video.com/
+Rule34XXX: Supported but not live-tested | Rule34XXXCrawler | https://rule34.xxx
+Rule34XYZ: Supported but not live-tested | Rule34XYZCrawler | https://rule34.xyz
+Rumble: Supported but not live-tested | RumbleCrawler | https://rumble.com
+Rutube: Supported but not live-tested | RutubeCrawler | https://rutube.ru
+Scrolller: Supported but not live-tested | ScrolllerCrawler | https://scrolller.com
+SendNow: Supported but not live-tested | SendNowCrawler | https://send.now/
+SendVid: Supported but not live-tested | SendVidCrawler | https://sendvid.com/
+Sex.com: Supported but not live-tested | SexDotComCrawler | https://sex.com
+SocialMediaGirls: Supported but not live-tested | SocialMediaGirlsCrawler | https://forums.socialmediagirls.com
+Soundgasm: Supported but not live-tested | SoundGasmCrawler | https://soundgasm.net
+SpankBang: Supported but not live-tested | SpankBangCrawler | https://spankbang.com
+Streamable: Supported but not live-tested | StreamableCrawler | https://streamable.com
+Streamfile: Supported but not live-tested | StreamFileCrawler | https://streamfile.net
+Streamtape: Supported but not live-tested | StreamtapeCrawler | https://streamtape.com
+Suvobox: Supported but not live-tested | SuvoboxCrawler | https://www.suvobox.com
+T.co: Supported but not live-tested | TwitterShortURLCrawler | https://t.co
+TabooTube: Supported but not live-tested | TabooTubeCrawler | https://www.tabootube.xxx
+ThisVid: Supported but not live-tested | ThisVidCrawler | https://thisvid.com
+ThotHub: Supported but not live-tested | ThotHubCrawler | https://thothub.to
+TikTok: Supported but not live-tested | TikTokCrawler | https://www.tiktok.com/
+TitsInTops: Supported but not live-tested | TitsInTopsCrawler | https://titsintops.com/phpBB2
+TNAFlix: Supported but not live-tested | TNAFlixCrawler | https://www.tnaflix.com
+Tokyomotion: Supported but not live-tested | TokioMotionCrawler | https://www.tokyomotion.net
+Toonily: Supported but not live-tested | ToonilyCrawler | https://toonily.com
+Tranny.One: Supported but not live-tested | TrannyOneCrawler | https://www.tranny.one
+TrannyGem: Supported but not live-tested | TrannyGemCrawler | https://www.trannygem.com
+Transfer.it: Supported but not live-tested | TransferItCrawler | https://transfer.it
+TransFlix: Supported but not live-tested | TransflixCrawler | https://transflix.net
+TubePornClassic: Supported but not live-tested | TubePornClassicCrawler | https://tubepornclassic.com
+TurboVid: Supported but not live-tested | TurboVidCrawler | https://turbo.cr
+Twitch: Supported but not live-tested | TwitchCrawler | https://www.twitch.tv
+Twitter: Supported but not live-tested | TwitterCrawler | https://x.com
+TwitterImages: Supported but not live-tested | TwitterCrawler | https://x.com
+TWPornStars: Supported but not live-tested | TwPornstarsCrawler | https://www.twpornstars.com
+TXXX: Supported but not live-tested | TXXXCrawler | https://txxx.com
+Upload.ee: Supported but not live-tested | UploadEECrawler | https://www.upload.ee
+UPornia: Supported but not live-tested | UPorniaCrawler | https://upornia.com
+Vidara: Supported but not live-tested | VidaraCrawler | https://vidara.to
+Vidstack: Supported but not live-tested | VidStackCrawler | https://videosh.upns.live
+Vimeo: Supported but not live-tested | VimeoCrawler | https://vimeo.com
+ViperGirls: Supported but not live-tested | ViperGirlsCrawler | https://vipergirls.to
+Vipr.im: Supported but not live-tested | ViprImCrawler | https://vipr.im
+VJav: Supported but not live-tested | VJavCrawler | https://vjav.com
+Voe.sx: Supported but not live-tested | VoeSxCrawler | https://voe.sx
+VoyeurHit: Supported but not live-tested | VoyeurHitCrawler | https://voyeurhit.com
+VSCO: Supported but not live-tested | VSCOCrawler | https://vsco.co
+VXXX: Supported but not live-tested | VXXXCrawler | https://vxxx.com
+Webmshare: Supported but not live-tested | WebmShareCrawler | https://webmshare.com
+WeTransfer: Supported but not live-tested | WeTransferCrawler | https://wetransfer.com/
+Whyp.it: Supported but not live-tested | WhypItCrawler | https://whyp.it
+Wikifeet: Supported but not live-tested | WikiFeetCrawler | https://wikifeet.com
+Wikifeet Men: Supported but not live-tested | WikiFeetMenCrawler | https://men.wikifeet.com
+Wikifeet X: Supported but not live-tested | WikiFeetXCrawler | https://wikifeetx.com
+WordPressHTML: Partially supported | generic WordPressHTMLCrawler. Not live-tested
+WordPressMedia: Partially supported | generic WordPressMediaCrawler. Not live-tested
+Xasiat: Supported but not live-tested | XasiatCrawler | https://www.xasiat.com
+XBunker: Supported but not live-tested | XBunkerCrawler | https://xbunker.cc
+XGroovy: Supported but not live-tested | XGroovyCrawler | https://xgroovy.com
+xHamster: Supported but not live-tested | XhamsterCrawler | https://xhamster.com/
+XMegaDrive: Supported but not live-tested | XMegaDriveCrawler | https://www.xmegadrive.com
+XMilf: Supported but not live-tested | XMilfCrawler | https://xmilf.com
+Xpornium: Supported but not live-tested | XPorniumCrawler | https://xpornium.net
+xVideos: Supported but not live-tested | XVideosCrawler | https://www.xvideos.com
+XXXBunker: Supported but not live-tested | XXXBunkerCrawler | https://xxxbunker.com
+YandexDisk: Supported but not live-tested | YandexDiskCrawler | https://disk.yandex.com.tr/
+YouJizz: Supported but not live-tested | YouJizzCrawler | https://www.youjizz.com/
+YourLesbians: Supported but not live-tested | YourLesbiansCrawler | https://yourlesbians.com
+YTboob: Supported but not live-tested | YTboobCrawler | https://ytboob.com
+Yurivan: Supported but not live-tested | YuriVanCrawler | https://www.yurivan.com
+
+Authentication or configuration required, not live-tested:
+- Real-Debrid: needs an API token. Extra hosts are not bundled.
+- JDownloader: not bundled. Unsupported sites are not sent to it.
+- Password hosts (GoFile, Cyberfile, Filester, ImgLike, Iceyfile, Imagepond, Koofr, Transfer.it): the password is a ?password= query on the URL.
+- SimpCity login posts: Netscape cookies file. Nested thread depth defaults to 0.
+- MEGA: public file and folder links. Partial downloads cannot be resumed.
+- Magnet and .torrent: unsupported. No BitTorrent client.
+
+Documented headings: 226. No site heading was missing a handler except reddit.com pages, which stay on the older v.redd.it video handler.
+The generic bases above are present and are not separate websites.
