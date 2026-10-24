@@ -1069,6 +1069,7 @@
     $$("#sheet-tabs button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.pane === name)));
     $$(".sheet .pane").forEach((p) => { p.hidden = p.dataset.pane !== name; });
     if (name === "accounts") loadAccounts();
+    if (name === "sources") loadSites();
   }
   $("#btn-settings").addEventListener("click", () => openSheet());
   $("#btn-settings-close").addEventListener("click", closeSheet);
@@ -1370,6 +1371,130 @@
     showSourceReport(await api.sourceMaintenance("status"));
   });
   $("#btn-source-open").addEventListener("click", () => api.openLogs());
+
+  // ─── site policy ──────────────────────────────────────────────────────────
+  const SITE_STATE_LABEL = { supported: "Supported", review: "Review required", unsupported: "Unsupported" };
+  let siteKinds = {};
+
+  function siteForm() {
+    return { url: $("#site-url").value.trim(), kind: $("#site-kind").value, items: $("#site-items").value.trim(), next: $("#site-next").value.trim() };
+  }
+
+  function renderSites(data) {
+    if (!data) return;
+    siteKinds = data.kinds || {};
+    const kindSelect = $("#site-kind");
+    if (!kindSelect.options.length) {
+      for (const [value, label] of Object.entries(siteKinds)) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label.split(" (")[0];
+        option.title = label;
+        kindSelect.appendChild(option);
+      }
+    }
+    const list = $("#site-list");
+    list.textContent = "";
+    const userHosts = new Set((data.user || []).map((s) => s.host));
+    const entries = [...(data.user || []), ...(data.builtin || []).filter((s) => !userHosts.has(s.host))];
+    for (const site of entries) {
+      const li = document.createElement("li");
+      li.className = "site-item";
+      const head = document.createElement("div");
+      head.className = "site-head";
+      const name = document.createElement("strong");
+      name.textContent = site.host;
+      const kind = document.createElement("span");
+      kind.className = "site-kind";
+      kind.textContent = site.source === "nexdrop" ? `assessed ${site.assessed || ""}` : (siteKinds[site.kind] || site.kind || "").split(" (")[0];
+      const state = document.createElement("span");
+      state.className = "site-state";
+      state.dataset.state = site.state;
+      state.textContent = SITE_STATE_LABEL[site.state] || site.state;
+      head.append(name, kind, state);
+      li.appendChild(head);
+      const text = (note) => { const p = document.createElement("p"); p.textContent = note; li.appendChild(p); };
+      if (site.reason) text(site.reason);
+      if (site.reassess_when) text(`Reassessed when: ${site.reassess_when}`);
+      if (site.source === "user" && site.state === "review") {
+        text(site.testedAt ? "Page test passed. Turn on downloads once you've confirmed you may save this content." : "Test a page on this site before turning on downloads.");
+      }
+      if (site.source === "user" && site.state !== "unsupported") {
+        const row = document.createElement("div");
+        row.className = "field-row actions";
+        if (site.state === "review" && site.testedAt) {
+          const label = document.createElement("label");
+          label.className = "site-confirm";
+          const box = document.createElement("input");
+          box.type = "checkbox";
+          label.append(box, document.createTextNode("I own this content or am authorized to download it, and it contains no one under 18 or anyone who didn't consent."));
+          li.appendChild(label);
+          const enable = document.createElement("button");
+          enable.className = "btn btn-primary";
+          enable.type = "button";
+          enable.textContent = "Turn on downloads";
+          enable.addEventListener("click", async () => {
+            const result = await api.sitesAuthorize({ host: site.host, enable: true, confirmed: box.checked });
+            setStatus("#site-status", result.ok ? `${site.host} is supported. Paste its links to download.` : result.error, result.ok ? "ok" : "bad");
+            if (result.ok) renderSites(result.sites);
+          });
+          row.appendChild(enable);
+        }
+        if (site.state === "supported") {
+          const off = document.createElement("button");
+          off.className = "btn btn-quiet";
+          off.type = "button";
+          off.textContent = "Turn off downloads";
+          off.addEventListener("click", async () => renderSites((await api.sitesAuthorize({ host: site.host, enable: false })).sites));
+          row.appendChild(off);
+        }
+        const edit = document.createElement("button");
+        edit.className = "btn btn-quiet";
+        edit.type = "button";
+        edit.textContent = "Edit";
+        edit.addEventListener("click", () => {
+          $("#site-url").value = site.url;
+          $("#site-kind").value = site.kind;
+          $("#site-items").value = site.items || "";
+          $("#site-next").value = site.next || "";
+          if (site.items || site.next) $(".site-advanced").open = true;
+          $("#site-url").focus();
+        });
+        const remove = document.createElement("button");
+        remove.className = "btn btn-quiet btn-danger";
+        remove.type = "button";
+        remove.textContent = "Remove";
+        remove.addEventListener("click", async () => renderSites((await api.sitesRemove(site.host)).sites));
+        row.append(edit, remove);
+        li.appendChild(row);
+      }
+      list.appendChild(li);
+    }
+  }
+
+  async function loadSites() {
+    renderSites(await api.sitesList().catch(() => null));
+  }
+
+  $("#btn-site-test").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    setStatus("#site-status", "Reading the page (nothing is downloaded)…", null);
+    try {
+      const result = await api.sitesTest(siteForm());
+      const counts = Object.entries(result.counts || {}).map(([kind, n]) => `${n} ${kind}`).join(", ");
+      const extra = [counts && `Media: ${counts}.`, ...(result.notes || [])].filter(Boolean).join(" ");
+      setStatus("#site-status", `${result.message || ""} ${extra}`.trim(), result.ok ? "ok" : "bad");
+      loadSites();
+    } finally {
+      button.disabled = false;
+    }
+  });
+  $("#btn-site-add").addEventListener("click", async () => {
+    const result = await api.sitesSave(siteForm());
+    setStatus("#site-status", result.ok ? "Added for review. Test a page, then turn on downloads." : result.error, result.ok ? "ok" : "bad");
+    if (result.ok) renderSites(result.sites);
+  });
 
   // ─── helpers ──────────────────────────────────────────────────────────────
   function flash(el) {

@@ -32,7 +32,9 @@ rm -f "$APP/renderer/preview-api.js" "$APP/renderer/finish-text.js"
 mkdir -p "$STAGE/engine/appdata" "$STAGE/desktop" "$STAGE/downloads/nexdrop" "$STAGE/licenses"
 cp "$ROOT/engine/bridge.py" "$STAGE/engine/bridge.py"
 cp "$ROOT/engine/user-config.yaml" "$STAGE/engine/user-config.yaml"
-cp "$ROOT"/desktop/*.py "$ROOT/desktop/auth-catalog.json" "$STAGE/desktop/"
+cp "$ROOT"/desktop/*.py "$ROOT"/desktop/*.json "$STAGE/desktop/"
+mkdir -p "$STAGE/docs"
+cp -r "$ROOT/docs/site-assessments" "$STAGE/docs/site-assessments"
 python3 - <<PY
 import os, shutil
 from pathlib import Path

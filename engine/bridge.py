@@ -10,6 +10,7 @@ import shutil
 import sys
 import threading
 import time
+from urllib.parse import urlsplit
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -131,6 +132,21 @@ class _LogBridge(logging.Handler):
             parts = raw.split("\t")
             if len(parts) >= 3 and parts[1].isdigit():
                 emit({"type": "order", "sequence": int(parts[1]), "url": parts[2], "name": parts[3] if len(parts) > 3 else ""})
+            return
+        if "as it is a blocked domain" in message and message.startswith("Skipping "):
+            url = _http_url(message) or ""
+            if url:
+                emit({"type": "blocked", "url": url})
+            return
+        if raw.startswith("Generic media note\t"):
+            parts = raw.split("\t")
+            if len(parts) >= 3:
+                emit({"type": "log", "level": "warning", "message": f"{parts[1]}: {parts[2]}"})
+            return
+        if raw.startswith("Generic media result\t"):
+            parts = raw.split("\t")
+            if len(parts) >= 3:
+                emit({"type": "log", "level": "info", "message": f"Scanned {parts[1]}: {parts[2]}"})
             return
         if raw.startswith("Telegram needs sign-in\t"):
             parts = raw.split("\t")
@@ -505,6 +521,105 @@ def _install_resume_skip(urls: list) -> None:
     Downloader._check_skip_by_config = check
 
 
+def _install_site_policy(blocked_hosts: list, approved: list) -> list:
+    """NEXDROP's blocked domains and the user's approved sites.
+
+    Blocked domains join the engine's own blocklist, so links to them found on
+    any page are skipped before a request is made. Approved sites get a generic
+    handler each, built the same way as the engine's config-driven generic
+    crawlers. Returns [(host, handler name)] for the approved sites.
+    """
+    from cyberdrop_dl import scrape_mapper
+
+    hosts = {str(h).lower() for h in blocked_hosts or [] if h}
+    if hosts:
+        scrape_mapper.BLOCKED_DOMAINS = frozenset(set(scrape_mapper.BLOCKED_DOMAINS) | hosts)
+        from cyberdrop_dl.crawlers.crawler import Crawler
+
+        original_handle = Crawler.handle_file
+
+        def _blocked(host: str) -> bool:
+            host = (host or "").lower()
+            return any(host == h or host.endswith("." + h) for h in hosts)
+
+        async def handle_file(self, url, scrape_item, *args, **kwargs):
+            # Pages can embed files hosted elsewhere; those never reach the scrape mapper's check.
+            if _blocked(url.host) or _blocked(getattr(scrape_item.url, "host", "")):
+                logging.getLogger("cyberdrop_dl").info("Skipping %s as it is a blocked domain", url)
+                return None
+            return await original_handle(self, url, scrape_item, *args, **kwargs)
+
+        Crawler.handle_file = handle_file
+
+    from cyberdrop_dl.crawlers import create_crawlers
+
+    bases = {}
+    try:
+        from cyberdrop_dl.crawlers._generic_media import GenericMediaCrawler
+
+        bases["media"] = GenericMediaCrawler
+    except Exception as error:  # noqa: BLE001
+        emit({"type": "log", "level": "error", "message": f"The generic media handler could not load: {error}"})
+    loaders = {
+        "video": ("cyberdrop_dl.crawlers._video", "GenericVideoCrawler"),
+        "kvs": ("cyberdrop_dl.crawlers._kvs", "GenericKVSCrawler"),
+        "chevereto": ("cyberdrop_dl.crawlers._chevereto", "CheveretoCrawler"),
+        "wordpress_html": ("cyberdrop_dl.crawlers.wordpress", "WordPressHTMLCrawler"),
+        "wordpress_media": ("cyberdrop_dl.crawlers.wordpress", "WordPressMediaCrawler"),
+        "discourse": ("cyberdrop_dl.crawlers.discourse", "DiscourseCrawler"),
+    }
+    extra = []
+    report = []
+    for site in approved or []:
+        url, kind = str(site.get("url") or ""), str(site.get("kind") or "")
+        if not url or any(h in url.lower() for h in hosts):
+            continue
+        try:
+            if kind == "media" and "media" in bases:
+                (cls,) = create_crawlers([url], bases["media"])
+                if site.get("items"):
+                    cls.ITEM_SELECTOR = str(site["items"])
+                if site.get("next"):
+                    cls.NEXT_SELECTOR = str(site["next"])
+            elif kind in loaders:
+                import importlib
+
+                module, name = loaders[kind]
+                (cls,) = create_crawlers([url], getattr(importlib.import_module(module), name))
+            else:
+                continue
+        except Exception as error:  # noqa: BLE001
+            emit({"type": "log", "level": "error", "message": f"Approved site {url} could not be set up: {error}"})
+            continue
+        extra.append(cls)
+        report.append((cls.PRIMARY_URL.host, kind))
+    if extra:
+        original = scrape_mapper._create_generic_crawlers
+
+        def with_approved(generics_config):
+            yield from original(generics_config)
+            yield from extra
+
+        scrape_mapper._create_generic_crawlers = with_approved
+    return report
+
+
+def _report_handlers(urls: list, mapping: dict, approved: list) -> None:
+    """One Activity line per pasted link: which handler takes it."""
+    from cyberdrop_dl.scrape_mapper import _best_match
+
+    approved_hosts = {host.removeprefix("www."): kind for host, kind in approved}
+    lookup = dict(mapping)
+    for url in urls[:50]:
+        host = (urlsplit(url).hostname or "").removeprefix("www.")
+        if host in approved_hosts:
+            name = f"approved site ({approved_hosts[host]} handler)"
+        else:
+            crawler = _best_match(lookup, host) if host else None
+            name = crawler.NAME if crawler is not None else "no site handler: tried as a direct file"
+        emit({"type": "handler", "url": url, "handler": name})
+
+
 RESERVE_MB = 16
 
 
@@ -789,7 +904,10 @@ def _run() -> int:
     from cyberdrop_dl.scrape_mapper import get_crawlers_mapping
 
     mapping = get_crawlers_mapping()
-    fields_cookie = _filter_cookies(fields_cookie, mapping, urls)
+    approved = _install_site_policy(payload.get("blockedHosts") or [], payload.get("approvedSites") or [])
+    _report_handlers(urls, mapping, approved)
+    # Sign-in cookies for approved sites are kept too (pages behind the user's own login).
+    fields_cookie = _filter_cookies(fields_cookie, mapping, urls + [f"https://{host}/" for host, _ in approved])
     simpcity = mapping.get("simpcity.cr")
     if simpcity is None and any("simpcity" in url for url in urls):
         emit({"type": "log", "level": "error", "message": "The SimpCity crawler is not registered."})

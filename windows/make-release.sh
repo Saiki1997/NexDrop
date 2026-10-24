@@ -30,7 +30,10 @@ cp -r "$ROOT/electron/renderer" "$A/renderer"
 rm -f "$S/UI-COMPARISON.md"
 
 # Python side and engine
-cp "$ROOT"/desktop/*.py "$ROOT/desktop/auth-catalog.json" "$S/desktop/"
+cp "$ROOT"/desktop/*.py "$ROOT"/desktop/*.json "$S/desktop/"
+mkdir -p "$S/docs"
+rm -rf "$S/docs/site-assessments"
+cp -r "$ROOT/docs/site-assessments" "$S/docs/site-assessments"
 cp "$ROOT/engine/bridge.py" "$ROOT/engine/user-config.yaml" "$S/engine/"
 rm -rf "$S/engine/vendor"
 cp -r "$ROOT/engine/vendor" "$S/engine/vendor"

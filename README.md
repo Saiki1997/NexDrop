@@ -20,6 +20,7 @@ To update an existing NEXDROP folder, close NEXDROP and extract the new zip over
 - Temporary server errors are retried automatically. Files already saved are skipped.
 - Filter by file type or minimum image size, and optionally sort into Images, Videos, Audio and Other folders.
 - **Telegram**: public channels and posts download without an account. Sign in with your Telegram account (your own API ID from my.telegram.org) for large files, documents and private channels or groups you've joined.
+- **Add your own sites** in Settings > Sites: test a page, confirm you're authorized, then download with the generic media handler. How sites are handled, and which are not supported and why, is in `docs/sites.md`.
 - Sign in with API tokens, a MEGA account, a Telegram account or per-site cookie files. Secrets are encrypted with Windows credential protection.
 - Every run writes a readable log to `engine\appdata\logs\runs`.
 

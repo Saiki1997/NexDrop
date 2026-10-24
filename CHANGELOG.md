@@ -8,6 +8,13 @@
 - **Whole private channels and groups**: paste `t.me/c/<id>` (a message link without the last number), or just the chat ID as Telegram shows it, for example `-1001988700745`. `t.me/...` links without `https://` are accepted too.
 - A `t.me` channel link found inside a forum post is not followed: pulling a whole channel from a promo link would be a surprise. Paste the channel link to get it.
 
+## New: your own sites, with a site policy
+- **Settings > Sites** has a site list. Add a site, press **Test page** to see what NEXDROP would download from one of its pages (nothing is downloaded), then confirm you're authorized and **Turn on downloads**. New sites start as **Review required**; links to them are refused until you confirm.
+- Your sites use the engine's generic handlers. The new **Media pages** handler reads JSON-LD, `<video>`/`<audio>`, Open Graph, links to media files and gallery images, downloads HLS, follows next-page links and, with an item selector, opens item pages from listing pages. It stays on the same site. KVS, Chevereto, WordPress, Discourse and single-video pages use the engine's existing handlers. Cookie files for your sites are used for pages behind your own login.
+- NEXDROP's own assessments are in `desktop/site-policy.json`, each with a state, the reason, the date and what would trigger a reassessment (details in `docs/site-assessments/`). monotirou.com was assessed as **unsupported**; the assessment explains why and what would change it.
+- Activity shows which handler takes each pasted link. Refused links, and links to unsupported or unconfirmed sites found on pages (including embedded media files), are skipped without a request and recorded in `engine\appdata\logs\blocked.jsonl`.
+- DASH streams and DRM/Media Source players are reported instead of failing silently.
+
 ## Fixed
 - Files whose links carry a one-time token (Telegram and many CDNs) could appear twice in the list: once numbered and Waiting, once downloading without its number. NEXDROP now strips tokens and signatures from links before showing or recording them, so each file is one row, and tokens no longer end up in logs or history.
 - The total downloaded size stopped counting during the automatic retry pass, because each engine pass counts from zero.

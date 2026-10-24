@@ -23,6 +23,11 @@ contextBridge.exposeInMainWorld("api", {
   authTest: (id) => ipcRenderer.invoke("auth-test", id),
   authChrome: (body) => ipcRenderer.invoke("auth-chrome", body),
   telegramLogin: (body) => ipcRenderer.invoke("telegram-login", body),
+  sitesList: () => ipcRenderer.invoke("sites-list"),
+  sitesTest: (body) => ipcRenderer.invoke("sites-test", body),
+  sitesSave: (body) => ipcRenderer.invoke("sites-save", body),
+  sitesAuthorize: (body) => ipcRenderer.invoke("sites-authorize", body),
+  sitesRemove: (host) => ipcRenderer.invoke("sites-remove", host),
   onPipelineEvent: (callback) => {
     const listener = (_event, data) => callback(data);
     ipcRenderer.on("pipeline-event", listener);

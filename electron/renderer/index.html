@@ -287,7 +287,31 @@
       </section>
 
       <section class="pane" data-pane="sources" hidden>
-        <p class="pane-intro">NEXDROP uses the bundled Cyberdrop-DL 10.10.0 engine with local patches. Links that no site handler accepts are logged here so you can see what is missing.</p>
+        <p class="pane-intro">Over 390 sites work out of the box. To add another, test one of its pages first, then turn on downloads once you've confirmed you're allowed to save that content. Nothing downloads from a site while it's in review.</p>
+        <div class="field">
+          <span class="field-label">Page on the site</span>
+          <div class="field-row">
+            <input type="text" id="site-url" placeholder="https://example.com/video/123" spellcheck="false">
+            <select class="select" id="site-kind" aria-label="How to read the site"></select>
+          </div>
+          <details class="site-advanced">
+            <summary>Listing pages and next page (optional)</summary>
+            <div class="field-grid">
+              <label class="field"><span class="field-label">Item links</span><input type="text" id="site-items" placeholder="a.video-link" spellcheck="false"></label>
+              <label class="field"><span class="field-label">Next page</span><input type="text" id="site-next" placeholder='a[rel="next"]' spellcheck="false"></label>
+            </div>
+            <small class="field-help">CSS selectors. Item links are opened from listing pages; the next page is followed from the page you paste. Both stay on the same site.</small>
+          </details>
+          <div class="field-row actions">
+            <button class="btn btn-quiet" id="btn-site-test" type="button">Test page</button>
+            <button class="btn btn-quiet" id="btn-site-add" type="button">Add site</button>
+          </div>
+        </div>
+        <p class="status-line" id="site-status" role="status"></p>
+        <ul class="site-list" id="site-list"></ul>
+
+        <div class="divider"></div>
+        <p class="field-help">Links that no site handler accepts are logged here so you can see what is missing.</p>
         <p class="status-line" id="source-status">Not checked yet.</p>
         <div class="field-row actions">
           <button class="btn btn-quiet" id="btn-source-check" type="button">Check sites</button>

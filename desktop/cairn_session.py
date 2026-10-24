@@ -42,6 +42,7 @@ if os.path.normcase(_DESKTOP_DIR) not in {os.path.normcase(os.path.abspath(e)) f
 from auth_cookies import convert_any  # noqa: E402
 from job_store import JobStore  # noqa: E402
 from scrape_status import classify_scrape_message  # noqa: E402
+import site_policy  # noqa: E402
 import telegram_account  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1025,7 +1026,14 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         raw_urls = raw_urls[:MAX_URLS]
     urls: list[str] = []
     rejected: list[str] = []
+    blocked_links: list[str] = []
     for url in raw_urls:
+        reason = site_policy.blocked_reason(url)
+        if reason:
+            blocked_links.append(url)
+            site_policy.audit(url, reason, "pasted")
+            log("error", f"Not downloaded: {url}. {reason}")
+            continue
         try:
             urls.append(public_url(url))
         except ValueError as error:
@@ -1042,7 +1050,8 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
     emit({"type": "run", "root": str(folder), "urls": urls,
           "log": str(RUN_LOG_PATH or ""), "engineLog": str(ENGINE_LOG_PATH or "")})
     if not urls:
-        emit({"type": "error", "message": "No public http(s) URLs to download."})
+        emit({"type": "error", "message": "Every link was refused by NEXDROP's site policy." if blocked_links and not rejected
+              else "No public http(s) URLs to download."})
         return _finish(urls, folder, [], rejected, [], started, stopped=False)
 
     start_page = _int(config.get("startPage"), 1, 1, 100_000)
@@ -1120,6 +1129,8 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         "orderMode": order_mode,
         "sequencePrefix": NUMBERED,
         "orderManifest": str(MANIFEST),
+        "blockedHosts": site_policy.blocked_hosts(),
+        "approvedSites": site_policy.approved_sites(),
         "auth": config.get("auth") if isinstance(config.get("auth"), dict) else {},
         "engineLog": str(ENGINE_LOG_PATH or ""),
     }
@@ -1148,6 +1159,7 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
     forum_note = ""
     downloading = False
     hints = Hints(order_mode, flare_ready=bool(flare_url))
+    blocked_found: list[str] = []
 
     def engine_pass(pass_payload: dict) -> int:
         """Run the engine once and fold its events into this run's state."""
@@ -1250,6 +1262,15 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
                 elif url:
                     note_source(url, "No site handler claimed this URL", "missing_handler")
                     scrape_notes.append("No handler accepted this page, so it was not downloaded.")
+            elif kind == "blocked":
+                url = str(event.get("url") or "")
+                reason = site_policy.blocked_reason(url) or "blocked by NEXDROP's site policy"
+                if url and url not in blocked_found:
+                    blocked_found.append(url)
+                    site_policy.audit(url, reason, "found on a page")
+                    FILES.update(url, state="skipped", reason=f"blocked: {reason}", speed=0)
+            elif kind == "handler":
+                log("info", f"{event.get('url')} → {event.get('handler')}")
             elif kind == "last_post":
                 emit({"type": "last_post", "url": str(event.get("url") or "")})
             elif kind == "forum_result":
@@ -1347,6 +1368,9 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
 
     for text in hints.summary():
         log("warning", text)
+    if blocked_found:
+        log("warning", f"{len(blocked_found)} link(s) found on these pages point to blocked sites and were skipped. "
+                       "They are listed in engine\\appdata\\logs\\blocked.jsonl.")
     with FILES.lock:
         needs_account = sum(1 for row in FILES.rows.values() if "sign in to Telegram" in (row.get("reason") or ""))
     if needs_account:

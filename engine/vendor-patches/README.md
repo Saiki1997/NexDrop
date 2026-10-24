@@ -7,6 +7,9 @@ The build script copies them over the vendor tree. Each change is marked `NEXDRO
   an import, so `new_task_group()` raised `NameError: name 'aio' is not defined` for Turbo, GoonBox
   albums, Kemono, Kick, SpankBang, Pornpics, Koofr and the forum crawler, and debug crawlers could
   not register.
+- `cyberdrop_dl/crawlers/_generic_media.py` (new file): generic media pages for the sites the
+  user adds in Settings > Sites. It isn't registered for any domain by itself: the bridge builds
+  one subclass per supported site, the same way the engine builds its config-driven generic crawlers.
 - `cyberdrop_dl/crawlers/telegram.py` (new file): public Telegram channels and posts through
   t.me's web preview. Files the preview leaves out are logged as `Telegram needs sign-in`, which
   the bridge turns into Skipped rows. History is kept per message link, because Telegram's CDN

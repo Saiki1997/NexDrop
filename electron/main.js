@@ -658,6 +658,132 @@ ipcMain.handle("recent-runs", (_event, limit) => {
     .slice(0, Math.max(1, Math.min(100, Number(limit) || 20)));
 });
 
+// ─── site policy (Settings > Sites) ─────────────────────────────────────────
+// desktop/site-policy.json: NEXDROP's documented assessments (read-only here).
+// engine/appdata/approved-sites.json: the user's sites. A new site is "review";
+// it becomes "supported" only after a page test found media and the user
+// confirmed they're authorized. A built-in "unsupported" assessment can't be overridden.
+
+const APPROVED_SITES = path.join(APPDATA, "approved-sites.json");
+const SITE_POLICY = path.join(ROOT, "desktop", "site-policy.json");
+const lastSiteTest = new Map(); // host -> ISO time of the last page test that found media
+
+function readSitePolicy() {
+  const data = parseJson(fs.existsSync(SITE_POLICY) ? fs.readFileSync(SITE_POLICY, "utf8") : "{}", {}) || {};
+  return { sites: Array.isArray(data.sites) ? data.sites : [], kinds: data.kinds || {}, states: data.states || {} };
+}
+
+function readUserSites() {
+  const data = parseJson(fs.existsSync(APPROVED_SITES) ? fs.readFileSync(APPROVED_SITES, "utf8") : "[]", []);
+  return Array.isArray(data) ? data.filter((item) => item && typeof item === "object") : [];
+}
+
+function writeUserSites(list) {
+  fs.mkdirSync(APPDATA, { recursive: true });
+  const temp = `${APPROVED_SITES}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify(list, null, 2));
+  fs.renameSync(temp, APPROVED_SITES);
+}
+
+function siteHost(raw) {
+  try {
+    const url = new URL(String(raw || "").trim());
+    if (!/^https?:$/.test(url.protocol) || !url.hostname.includes(".")) return null;
+    return { host: url.hostname.toLowerCase().replace(/^www\./, ""), root: `${url.protocol}//${url.host}` };
+  } catch {
+    return null;
+  }
+}
+
+function builtinFor(host) {
+  return readSitePolicy().sites
+    .filter((entry) => entry.host && (host === entry.host || host.endsWith(`.${entry.host}`)))
+    .sort((a, b) => b.host.length - a.host.length)[0] || null;
+}
+
+function siteList() {
+  const policy = readSitePolicy();
+  const builtin = policy.sites.map((entry) => ({ ...entry, source: "nexdrop" }));
+  const user = readUserSites().map((entry) => {
+    const host = siteHost(entry.url)?.host || "";
+    const over = builtinFor(host);
+    const state = over?.state === "unsupported" ? "unsupported" : entry.authorizedAt ? "supported" : "review";
+    return { ...entry, host, state, source: "user", reason: over?.state === "unsupported" ? over.reason : "" };
+  });
+  return { kinds: policy.kinds, states: policy.states, builtin, user };
+}
+
+ipcMain.handle("sites-list", () => siteList());
+
+ipcMain.handle("sites-test", async (_event, body) => {
+  const target = siteHost(body?.url);
+  if (!target) return { ok: false, message: "Type the full address of one page on the site, starting with https://." };
+  const args = [path.join(ROOT, "desktop", "site_check.py"), String(body.url).trim()];
+  if (body?.items) args.push("--items", String(body.items));
+  if (body?.next) args.push("--next", String(body.next));
+  const result = await runPython(args, { timeout: 60000 });
+  const parsed = parseJson((result.stdout || "").trim().split("\n").pop() || "", null);
+  if (!parsed) return { ok: false, message: "The page test could not run. See the log." };
+  if (parsed.ok) {
+    lastSiteTest.set(target.host, new Date().toISOString());
+    const list = readUserSites();
+    const entry = list.find((item) => siteHost(item.url)?.host === target.host);
+    if (entry) {
+      entry.testedAt = lastSiteTest.get(target.host);
+      writeUserSites(list);
+    }
+  }
+  return parsed;
+});
+
+ipcMain.handle("sites-save", (_event, body) => {
+  const target = siteHost(body?.url);
+  if (!target) return { ok: false, error: "Type the site's address, starting with https://." };
+  const over = builtinFor(target.host);
+  if (over?.state === "unsupported") {
+    return { ok: false, error: `${target.host} was assessed as unsupported (${over.assessed}). ${over.reason} Reassessment: ${over.reassess_when}` };
+  }
+  const kinds = readSitePolicy().kinds;
+  const kind = String(body?.kind || "media");
+  if (!kinds[kind]) return { ok: false, error: "Choose how NEXDROP should read this site." };
+  const list = readUserSites();
+  let entry = list.find((item) => siteHost(item.url)?.host === target.host);
+  if (!entry) {
+    entry = { url: target.root, addedAt: new Date().toISOString() };
+    list.push(entry);
+  }
+  if (entry.kind && entry.kind !== kind) delete entry.authorizedAt; // a different reader needs a new test and confirmation
+  entry.kind = kind;
+  entry.items = String(body?.items || "").slice(0, 300);
+  entry.next = String(body?.next || "").slice(0, 300);
+  if (lastSiteTest.has(target.host)) entry.testedAt = lastSiteTest.get(target.host);
+  writeUserSites(list);
+  return { ok: true, sites: siteList() };
+});
+
+ipcMain.handle("sites-authorize", (_event, body) => {
+  const host = String(body?.host || "");
+  const list = readUserSites();
+  const entry = list.find((item) => siteHost(item.url)?.host === host);
+  if (!entry) return { ok: false, error: "That site isn't in the list." };
+  if (body?.enable) {
+    if (builtinFor(host)?.state === "unsupported") return { ok: false, error: "This site was assessed as unsupported." };
+    if (!entry.testedAt) return { ok: false, error: "Test a page first, so you know NEXDROP finds the media you expect." };
+    if (body?.confirmed !== true) return { ok: false, error: "Confirm that you own this content or are authorized to download it." };
+    entry.authorizedAt = new Date().toISOString();
+  } else {
+    delete entry.authorizedAt;
+  }
+  writeUserSites(list);
+  return { ok: true, sites: siteList() };
+});
+
+ipcMain.handle("sites-remove", (_event, rawHost) => {
+  const host = String(rawHost || "");
+  writeUserSites(readUserSites().filter((item) => siteHost(item.url)?.host !== host));
+  return { ok: true, sites: siteList() };
+});
+
 ipcMain.handle("source-maintenance", async (_event, action) => {
   const flags = { check: "--check", backlog: "--backlog", clear: "--clear" };
   const flag = flags[String(action)] || "--status";

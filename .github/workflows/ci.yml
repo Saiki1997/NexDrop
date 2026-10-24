@@ -35,7 +35,9 @@ jobs:
       - name: Python tests
         env:
           CDL_APPDATA_FOLDER: ${{ runner.temp }}/cdl
-        run: python tests/test_desktop.py
+        run: |
+          python tests/test_desktop.py
+          python tests/test_sites.py
 
       - uses: actions/setup-node@v4
         with:

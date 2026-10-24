@@ -1,0 +1,27 @@
+{
+  "comment": "NEXDROP's site assessments. Each entry has a state, the reason, the date it was assessed and what would change it. Sites not listed here keep the engine's normal behaviour. Users add their own sites in Settings > Sites (engine/appdata/approved-sites.json); those start as review and only become supported after the user tests a page and confirms they are authorized. Built-in entries change only through a reassessment recorded in docs/site-assessments/.",
+  "states": {
+    "supported": "Downloads enabled.",
+    "review": "Pages can be test-crawled (nothing is downloaded); downloading stays off until the listed requirements are met.",
+    "unsupported": "Does not meet NEXDROP's legal, safety or technical requirements; links are refused and links found on other pages are skipped."
+  },
+  "sites": [
+    {
+      "host": "monotirou.com",
+      "state": "unsupported",
+      "assessed": "2026-10-24",
+      "reason": "Anonymous uploads with no uploader identity, age or consent verification, and listings that point to minors and to recordings shared without consent. NEXDROP can't tell lawful items on this site from the rest, so it doesn't download from it.",
+      "reassess_when": "The site verifies uploaders' identity and the age and consent of everyone shown (records like 18 U.S.C. 2257), runs a working takedown process, and its listings no longer point to minors or non-consensual material. See docs/site-assessments/monotirou.com.md.",
+      "doc": "docs/site-assessments/monotirou.com.md"
+    }
+  ],
+  "kinds": {
+    "media": "Media pages (video, audio, images, galleries; follows next-page links)",
+    "video": "Single video pages (one <video> player per page)",
+    "kvs": "KVS video sites",
+    "chevereto": "Chevereto image hosts",
+    "wordpress_html": "WordPress sites (posts and pages)",
+    "wordpress_media": "WordPress media library",
+    "discourse": "Discourse forums"
+  }
+}
