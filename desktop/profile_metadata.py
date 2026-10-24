@@ -7,8 +7,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from html.parser import HTMLParser
-from urllib.parse import urljoin, urlsplit, urlunsplit
-import json
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 import re
 
 
@@ -103,6 +102,41 @@ def parse_listing(html: str, page_url: str, *, item_path_pattern: str) -> dict:
     results = [entry.to_dict() for entry in parser.items
                if pattern.fullmatch(urlsplit(entry.url).path)]
     return {"page": page_url, "items": results, "next_page": parser.next_page}
+
+
+def classify_monotirou_url(url: str) -> dict[str, str]:
+    """Classify a Monotirou page without fetching HTML or media.
+
+    Canonical URLs use HTTPS and the bare host, omit fragments and incidental
+    rank/surface context, and preserve other query parameters (e.g. pagination).
+    Unsupported hosts, paths, credentials, and non-default ports raise ValueError.
+    """
+    parsed = urlsplit(url)
+    if (parsed.scheme not in ("http", "https") or
+            parsed.hostname not in ("monotirou.com", "www.monotirou.com")):
+        raise ValueError("Unrecognized Monotirou host")
+    if (parsed.username is not None or parsed.password is not None or
+            parsed.port not in (None, 80 if parsed.scheme == "http" else 443)):
+        raise ValueError("Unexpected credentials or port")
+
+    path = parsed.path or "/"
+    info = {"host": parsed.hostname}
+    if path == "/":
+        info["type"] = "home"
+    else:
+        match = re.fullmatch(r"/(users|video)/([A-Za-z0-9_-]{1,80})/?", path)
+        if not match:
+            raise ValueError("Expected home, /users/{username}, or /video/{id}")
+        section, identifier = match.groups()
+        info["type"] = "profile" if section == "users" else "video"
+        info["username" if section == "users" else "video_id"] = identifier
+        path = f"/{section}/{identifier}"
+
+    query = urlencode([(key, value) for key, value in
+                       parse_qsl(parsed.query, keep_blank_values=True)
+                       if key not in ("rank", "surface")])
+    info["canonical"] = urlunsplit(("https", "monotirou.com", path, query, ""))
+    return info
 
 
 def profile_url_parts(url: str, *, domain: str) -> dict[str, str]:
