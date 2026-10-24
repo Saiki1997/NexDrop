@@ -1,5 +1,5 @@
 {
-  "comment": "NEXDROP's site assessments. Each entry has a state, the reason, the date it was assessed and what would change it. Sites not listed here keep the engine's normal behaviour. Users add their own sites in Settings > Sites (engine/appdata/approved-sites.json); those start as review and only become supported after the user tests a page and confirms they are authorized. Built-in entries change only through a reassessment recorded in docs/site-assessments/.",
+  "comment": "NEXDROP's site assessments: state, reason and date. Sites not listed keep the engine's normal behaviour. Users add their own sites in Settings > Sites (engine/appdata/approved-sites.json); those start as review and become supported only after the user tests a page and confirms they are authorized. Entries with \"listed\": false are enforced but not shown in Settings > Sites.",
   "states": {
     "supported": "Downloads enabled.",
     "review": "Pages can be test-crawled (nothing is downloaded); downloading stays off until the listed requirements are met.",
@@ -9,10 +9,9 @@
     {
       "host": "monotirou.com",
       "state": "unsupported",
-      "assessed": "2026-10-24 (reassessed 2026-10-24)",
-      "reason": "Anonymous uploads with no uploader identity, age or consent verification, and listings that point to minors and to recordings shared without consent. Its terms forbid such material and it lists reporting emails, but rules that rely on self-declaration don't verify anyone, so NEXDROP can't tell lawful items from the rest.",
-      "reassess_when": "The site verifies uploaders' identity and the age and consent of everyone shown (records like 18 U.S.C. 2257), names its operator and publishes response times for takedowns, and its listings no longer point to minors or non-consensual material. See docs/site-assessments/monotirou.com.md.",
-      "doc": "docs/site-assessments/monotirou.com.md"
+      "assessed": "2026-10-24",
+      "listed": false,
+      "reason": "Uploads aren't checked for age or consent, so NEXDROP doesn't download from this site."
     }
   ],
   "kinds": {

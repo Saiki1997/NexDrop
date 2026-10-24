@@ -703,7 +703,7 @@ function builtinFor(host) {
 
 function siteList() {
   const policy = readSitePolicy();
-  const builtin = policy.sites.map((entry) => ({ ...entry, source: "nexdrop" }));
+  const builtin = policy.sites.filter((entry) => entry.listed !== false).map((entry) => ({ ...entry, source: "nexdrop" }));
   const user = readUserSites().map((entry) => {
     const host = siteHost(entry.url)?.host || "";
     const over = builtinFor(host);
@@ -741,7 +741,7 @@ ipcMain.handle("sites-save", (_event, body) => {
   if (!target) return { ok: false, error: "Type the site's address, starting with https://." };
   const over = builtinFor(target.host);
   if (over?.state === "unsupported") {
-    return { ok: false, error: `${target.host} was assessed as unsupported (${over.assessed}). ${over.reason} Reassessment: ${over.reassess_when}` };
+    return { ok: false, error: `${target.host} is not supported. ${over.reason}` };
   }
   const kinds = readSitePolicy().kinds;
   const kind = String(body?.kind || "media");

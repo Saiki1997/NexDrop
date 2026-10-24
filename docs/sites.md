@@ -5,7 +5,7 @@
 1. **Site policy** (`desktop/site-policy.json`, plus your sites in Settings > Sites):
    - **Supported**: downloads.
    - **Review required**: one of your sites that hasn't been confirmed yet. **Test page** reads one page and reports what it would download, without downloading anything. Pasted links are refused, and links to the site found on other pages are skipped.
-   - **Unsupported**: NEXDROP assessed the site and it doesn't meet the legal, safety or technical requirements. The reason, the date and what would trigger a reassessment are in the policy file and in `docs/site-assessments/`.
+   - **Unsupported**: NEXDROP assessed the site and it doesn't meet the legal, safety or technical requirements. The reason and the date are in the policy file.
 
    Sites in neither list keep the engine's normal behaviour. Every refused or skipped link is written to `engine\appdata\logs\blocked.jsonl`.
 2. **Built-in handlers**: the bundled Cyberdrop-DL engine has about 400, for example Erome (`/a/<album>`, `/<profile>`, `/search?q=`), Bunkr, GoFile, Pixeldrain, MEGA, SimpCity and other XenForo forums, TikTok and Telegram (`t.me/<channel>`, `t.me/<channel>/<post>`; `t.me/c/<id>` with the Telegram sign-in). Settings > Sites > Check sites lists them all.
@@ -24,7 +24,7 @@ Everything above goes through the same pipeline: numbered in page order, many fi
 ## What NEXDROP doesn't do
 
 - Get around sign-ins, paywalls, CAPTCHAs (beyond the FlareSolverr bot check the engine already uses), DRM or Media Source (`blob:`) players. DASH (`.mpd`) isn't downloaded. These are reported in Activity.
-- Screen individual files by title or keywords. Titles are not a reliable signal, and NEXDROP can't see what a video shows. Content safety is decided per site, from what the site verifies about uploaders, age and consent (see `docs/site-assessments/`).
+- Screen individual files by title or keywords. Titles are not a reliable signal, and NEXDROP can't see what a video shows. Content safety is decided per site, from what the site verifies about uploaders, age and consent .
 
 ## Adding a site
 

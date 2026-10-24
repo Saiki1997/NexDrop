@@ -2,8 +2,7 @@
 
 Two sources, merged:
 - desktop/site-policy.json: NEXDROP's own assessments. Each entry records the
-  state, the reason, the date and what would trigger a reassessment. Changed
-  only by a new assessment (docs/site-assessments/).
+  state, the reason and the date.
 - engine/appdata/approved-sites.json: sites the user added in Settings > Sites.
   A new site is "review": its pages can be test-crawled (desktop/site_check.py)
   but nothing downloads. It becomes "supported" only when the user confirms they

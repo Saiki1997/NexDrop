@@ -24,6 +24,11 @@ sys.path.insert(0, str(ROOT / "engine" / "vendor"))
 
 import site_policy  # noqa: E402
 
+# Tests use their own unsupported entry instead of the shipped list.
+site_policy._POLICY = {**site_policy._POLICY, "sites": [
+    {"host": "unsupported.example", "state": "unsupported", "assessed": "test", "reason": "Test entry."},
+]}
+
 JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 2000 + b"\xff\xd9"
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 1500
 MP4 = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom" + b"\x00" * 6000
@@ -117,14 +122,13 @@ class Policy(unittest.TestCase):
         path.write_text(json.dumps(entries), encoding="utf-8")
         return path
 
-    def test_documented_assessment_for_monotirou(self):
-        entry = site_policy.assessment("https://www.monotirou.com/video/k5hmA95b")
+    def test_unsupported_entry_and_subdomains(self):
+        entry = site_policy.assessment("https://www.unsupported.example/video/k5hmA95b")
         self.assertEqual(entry["state"], "unsupported")
-        for key in ("reason", "assessed", "reassess_when", "doc"):
+        for key in ("reason", "assessed"):
             self.assertTrue(entry.get(key), key)
-        self.assertTrue((ROOT / entry["doc"]).is_file())
-        self.assertTrue(site_policy.blocked_reason("https://cdn.monotirou.com/a.mp4").startswith("Unsupported"))
-        self.assertEqual(site_policy.blocked_reason("https://notmonotirou.com/"), "")
+        self.assertTrue(site_policy.blocked_reason("https://cdn.unsupported.example/a.mp4").startswith("Unsupported"))
+        self.assertEqual(site_policy.blocked_reason("https://not-unsupported.example/"), "")
 
     def test_unlisted_sites_keep_normal_behaviour(self):
         self.assertIsNone(site_policy.assessment("https://www.erome.com/a/abc"))
@@ -145,9 +149,9 @@ class Policy(unittest.TestCase):
 
     def test_user_entry_cannot_override_an_unsupported_assessment(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = self._user(tmp, [{"url": "https://monotirou.com/", "kind": "media", "authorizedAt": "x"},
+            path = self._user(tmp, [{"url": "https://unsupported.example/", "kind": "media", "authorizedAt": "x"},
                                     {"url": "https://odd.example/", "kind": "torrent", "authorizedAt": "x"}])
-            self.assertEqual(site_policy.assessment("https://monotirou.com/", path)["source"], "nexdrop")
+            self.assertEqual(site_policy.assessment("https://unsupported.example/", path)["source"], "nexdrop")
             self.assertEqual(site_policy.approved_sites(path), [])
 
     def test_audit_log(self):
@@ -155,11 +159,11 @@ class Policy(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             site_policy.AUDIT_FILE = Path(tmp) / "logs" / "blocked.jsonl"
             try:
-                site_policy.audit("https://monotirou.com/x", "reason", "pasted")
+                site_policy.audit("https://unsupported.example/x", "reason", "pasted")
                 line = json.loads(site_policy.AUDIT_FILE.read_text(encoding="utf-8").splitlines()[0])
             finally:
                 site_policy.AUDIT_FILE = original
-        self.assertEqual((line["url"], line["source"]), ("https://monotirou.com/x", "pasted"))
+        self.assertEqual((line["url"], line["source"]), ("https://unsupported.example/x", "pasted"))
 
 
 class PageTest(unittest.TestCase):
@@ -193,7 +197,7 @@ class PageTest(unittest.TestCase):
         private = site_check.check(f"{self.site.base}/private.html")
         self.assertFalse(private["ok"])
         self.assertIn("403", private["message"])
-        self.assertIn("unsupported", site_check.check("https://monotirou.com/")["state"])
+        self.assertIn("unsupported", site_check.check("https://unsupported.example/")["state"])
 
 
 class Extraction(unittest.TestCase):
@@ -212,7 +216,7 @@ class Extraction(unittest.TestCase):
     def test_gallery_links_and_lazy_images_not_thumbnails_or_logos(self):
         media, _ = self._media("gallery1.html")
         urls = [m.url for m in media]
-        self.assertEqual(urls[:3], ["http://site.test/media/a1.jpg", "http://site.test/media/a2.jpg", "https://monotirou.com/media/z.jpg"])
+        self.assertEqual(urls[:3], ["http://site.test/media/a1.jpg", "http://site.test/media/a2.jpg", "https://unsupported.example/media/z.jpg"])
         self.assertIn("http://site.test/media/a3.png", urls)
         self.assertFalse([u for u in urls if "thumb" in u or "logo" in u or "placeholder" in u])
 
@@ -260,7 +264,7 @@ class EngineRun(unittest.TestCase):
         self.assertTrue(all(name[:3].isdigit() for name in files), files)  # source-order numbering
 
     def test_blocked_host_is_never_requested(self):
-        self.assertIn("https://monotirou.com/media/z.jpg", [e["url"] for e in self._of(self.first, "blocked")])
+        self.assertIn("https://unsupported.example/media/z.jpg", [e["url"] for e in self._of(self.first, "blocked")])
 
     def test_handler_is_reported(self):
         handlers = {e["url"]: e["handler"] for e in self._of(self.first, "handler")}
@@ -325,7 +329,7 @@ class SessionRun(unittest.TestCase):
 
     def test_review_and_unsupported_links_are_refused_and_audited(self):
         self._approve(False)
-        self.session.run({"urls": [f"{self.site.base}/video.html", "https://monotirou.com/video/x"], "downloadsDir": str(self.tmp / "out")})
+        self.session.run({"urls": [f"{self.site.base}/video.html", "https://unsupported.example/video/x"], "downloadsDir": str(self.tmp / "out")})
         finished = [e for e in self.events if e.get("type") == "finished"][0]
         self.assertEqual(finished["saved"], 0)
         logs = " ".join(e.get("message", "") for e in self.events if e.get("type") == "log")
@@ -345,7 +349,7 @@ class SessionRun(unittest.TestCase):
             for row in event.get("items", []) if event.get("type") == "files" else []:
                 rows[row["url"]] = row
         skipped = [r for r in rows.values() if r["state"] == "skipped"]
-        self.assertTrue(any("monotirou.com" in r["url"] and r["reason"].startswith("blocked") for r in skipped), skipped)
+        self.assertTrue(any("unsupported.example" in r["url"] and r["reason"].startswith("blocked") for r in skipped), skipped)
 
 
 if __name__ == "__main__":
