@@ -441,6 +441,8 @@ class TelegramAccount(unittest.TestCase):
         import telegram_account as tg
 
         self.assertEqual(tg.parse_link("https://t.me/c/1234/56").kind, "private_post")
+        whole = tg.parse_link("https://t.me/c/1988700745")
+        self.assertEqual((whole.kind, whole.channel_id), ("private_channel", 1988700745))
         self.assertEqual(tg.parse_link("https://t.me/c/1234/9/56").message_id, 56)
         self.assertEqual(tg.parse_link("https://t.me/+AbC_1").invite, "AbC_1")
         self.assertEqual(tg.parse_link("https://t.me/joinchat/xyz").kind, "invite")
@@ -475,6 +477,27 @@ class TelegramAccount(unittest.TestCase):
         self.assertEqual(events["failed"][0][0], "https://t.me/chan/5")
         self.assertNotIn(4, calls["downloads"])  # stickers are not files
         self.assertEqual(rows["https://t.me/chan/6"]["state"], "done")
+
+    def test_whole_private_chat(self):
+        import types
+
+        import telegram_account as tg
+
+        messages = [self._message(i, ".jpg", 20, photo=True) for i in (3, 1, 2)]
+        client, _ = self._client(messages)
+        private = types.SimpleNamespace(id=1988700745, username=None, title="Sharing is Caring")
+
+        async def get_entity(peer):
+            return private
+
+        client.get_entity = get_entity
+        hooks, rows, events = self._hooks()
+        with tempfile.TemporaryDirectory() as tmp:
+            tg.TelegramDownloads({"session": "", "apiId": 1, "apiHash": "x"}, Path(tmp), hooks,
+                                 client_factory=lambda account: client).run(["https://t.me/c/1988700745"])
+            self.assertTrue((Path(tmp) / "Sharing is Caring (Telegram)" / "c1988700745_1.jpg").is_file())
+        self.assertEqual(sorted(url for url, _ in events["saved"]),
+                         [f"https://t.me/c/1988700745/{i}" for i in (1, 2, 3)])
 
     def test_album_post_and_single(self):
         import telegram_account as tg

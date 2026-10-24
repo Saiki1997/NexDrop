@@ -5,6 +5,7 @@
 - **Sign in with your Telegram account for everything else** (Settings > Sign-ins > Telegram): files over the public preview's size limit, documents (zip, pdf, apk, ...), channels and groups you've joined, private links (`t.me/c/<id>/<post>`) and invite links of chats you're in. Enter your own API ID and API hash from my.telegram.org, your phone number, then the code Telegram sends you (and your two-step verification password if you use one). The session is encrypted with Windows like the other sign-ins and never shown; Check confirms which account is signed in. NEXDROP only reads and downloads: it never posts, joins or leaves anything.
 - Without the sign-in, files the public preview leaves out show as Skipped with "sign in to Telegram", and the end of the run says how many there were.
 - Telegram downloads use the same file list, progress bars, numbering, history, file-type filters, type folders and Pause as everything else. Up to 4 files download at once per account; cryptg (bundled) does Telegram's encryption in C for speed.
+- **Whole private channels and groups**: paste `t.me/c/<id>` (a message link without the last number), or just the chat ID as Telegram shows it, for example `-1001988700745`. `t.me/...` links without `https://` are accepted too.
 - A `t.me` channel link found inside a forum post is not followed: pulling a whole channel from a promo link would be a surprise. Paste the channel link to get it.
 
 ## Fixed
