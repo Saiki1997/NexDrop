@@ -309,7 +309,7 @@ def _default_session_name() -> str:
     import os
     import socket
 
-    return f"cyberdrop-dl @{socket.gethostname()} (PID{os.getpid()})"
+    return f"NexDrop @{socket.gethostname()} (PID{os.getpid()})"
 
 
 def _cmd_from_http_method(method: HttpMethod) -> RequestCommand:
@@ -352,7 +352,7 @@ def _parse_cookies(cookies: Iterable[Mapping[str, Any]]) -> SimpleCookie:
 async def verify_solution(cdl_user_agent: str, solution: Solution) -> None:
     mismatch_ua_msg = (
         "Config user_agent and Flaresolverr user_agent do not match:"
-        f"\n  Cyberdrop-DL: '{cdl_user_agent}'"
+        f"\n  NexDrop: '{cdl_user_agent}'"
         f"\n  Flaresolverr: '{solution.user_agent}'"
     )
 

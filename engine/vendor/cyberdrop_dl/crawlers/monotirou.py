@@ -1,3 +1,4 @@
+# NEXDROP patch: new crawler for Monotirou profiles and videos (see engine/vendor-patches/README.md).
 from __future__ import annotations
 
 import json

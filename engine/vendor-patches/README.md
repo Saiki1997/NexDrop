@@ -11,6 +11,9 @@ The build script copies them over the vendor tree. Each change is marked `NEXDRO
   t.me's web preview. Files the preview leaves out are logged as `Telegram needs sign-in`, which
   the bridge turns into Skipped rows. History is kept per message link, because Telegram's CDN
   links change on every visit. A channel link found on another page is not followed.
+- `cyberdrop_dl/crawlers/monotirou.py` (new file): Monotirou profile and video links. Downloads use
+  the media URL from the video API, and profiles page with the API's timestamp-and-ID cursor;
+  a repeated page stops with an error instead of looping.
 - `cyberdrop_dl/crawlers/tiktok.py`: a post without a music track no longer fails the whole
   profile with `ValueError('Empty URL')`.
 

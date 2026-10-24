@@ -1028,7 +1028,7 @@
           "default": null
         },
         "output_folder": {
-          "default": "downloads/cyberdrop-dl sorted",
+          "default": "downloads/NexDrop sorted",
           "format": "path",
           "title": "Output Folder",
           "type": "string"
@@ -1411,7 +1411,7 @@
       "type": "boolean"
     },
     "download_folder": {
-      "default": "downloads/cyberdrop-dl",
+      "default": "downloads/NexDrop",
       "format": "path",
       "title": "Download Folder",
       "type": "string"
@@ -1519,6 +1519,6 @@
       "type": "boolean"
     }
   },
-  "title": "cyberdrop-dl config",
+  "title": "NexDrop config",
   "type": "object"
 }

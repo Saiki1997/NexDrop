@@ -31,7 +31,7 @@ async def _notify(url: str, body: str, *, attach_logs: bool) -> None:
     form = aiohttp.FormData()
     if attach_logs:
         await _attach_logs(form, size_limit=MAX_ATTACHMENT_SIZE - len(body.encode()))
-    form.add_field("username", "cyberdrop-dl")
+    form.add_field("username", "NexDrop")
     form.add_field("content", body)
     await _send_notification(url, form)
 

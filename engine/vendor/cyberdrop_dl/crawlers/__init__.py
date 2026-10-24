@@ -78,7 +78,7 @@ class Registry:
         module = importlib.import_module(__package__)
         errors = tuple(cls._import_from(module))
         if errors:
-            error = RuntimeError("cyberdrop-dl installation is corrupted")
+            error = RuntimeError("NexDrop engine installation is corrupted")
             error.add_note("A complete uninstall and reinstall should fix crawler import errors")
             raise BaseExceptionGroup("", (*errors, error))
 

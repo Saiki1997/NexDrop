@@ -252,7 +252,7 @@ class AbstractResponse(ABC, Generic[_ResponseT]):
 
         body: str = me.pop("content")
         resp_info = json.dumps(me, indent=2, ensure_ascii=False)
-        return f"<!-- cyberdrop-dl request response \n{resp_info}\n-->\n{body}"
+        return f"<!-- NexDrop request response \n{resp_info}\n-->\n{body}"
 
     def __check_content_type(self, content_type: str, *additional_content_types: str, expecting: str) -> None:
         if not any(type_ in self.content_type for type_ in (content_type, *additional_content_types)):

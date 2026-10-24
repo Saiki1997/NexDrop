@@ -20,15 +20,16 @@ from cyberdrop_dl.constants import DEFAULT_PARAMETER
 from cyberdrop_dl.progress import hyperlink
 
 app = App(
-    name="cyberdrop-dl",
+    name="NexDrop",
     version=__version__,
     default_parameter=DEFAULT_PARAMETER,
-    help_prologue=f"cyberdrop-dl [blue]v{__version__}[/blue]\nBulk [cyan]asynchronous[/cyan] downloader for multiple file hosts",
+    help_prologue=f"NexDrop [blue]v{__version__}[/blue]\nBulk [cyan]asynchronous[/cyan] downloader for multiple file hosts",
     help_format="rich",
     help_epilogue="\n".join(
         (
-            f"Github:      {hyperlink('https://github.com/Cyberdrop-DL/cyberdrop-dl').markup}",
-            f"Wiki (docs): {hyperlink('https://script-ware.gitbook.io/cyberdrop-dl').markup}",
+            f"Github:      {hyperlink('https://github.com/Saiki1997/NexDrop').markup}",
+            f"Wiki (docs): {hyperlink('https://github.com/Saiki1997/NexDrop#readme').markup}",
+            f"Engine:      Cyberdrop-DL {hyperlink('https://github.com/Cyberdrop-DL/cyberdrop-dl').markup} (GPL-3.0)",
         )
     ),
     result_action="return_value",
@@ -51,7 +52,7 @@ def main_menu(
     ] = Path("URLs.txt"),  # pyright: ignore[reportCallInDefaultInitializer]
     cli_args: CLIarguments | None = None,
 ) -> None:
-    "Run [cyan]'cyberdrop-dl'[/cyan] without arguments to start the interactive TUI"
+    "Run [cyan]'NexDrop'[/cyan] without arguments to start the interactive TUI"
     input_file = input_file.resolve().absolute()
     with prepare_manager(cli_args, cli_overrides=None)() as manager:
         from cyberdrop_dl import program_ui

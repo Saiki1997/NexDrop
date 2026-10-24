@@ -72,7 +72,7 @@ class SchemaTable(Table, name="schema_version"):
             self.up_to_date = True
 
         if error:
-            error.add_note("Run 'cyberdrop-dl database transfer' to upgrade the database to a new version")
+            error.add_note("Use the NexDrop engine database transfer command to upgrade the database to a new version")
             raise error
 
     async def update(self, version: Version = CURRENT_VERSION) -> None:

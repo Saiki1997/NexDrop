@@ -87,7 +87,7 @@ crawlers:
 deep_scrape: false
 delete_empty_folders: true
 delete_partial_files: false
-download_folder: downloads/cyberdrop-dl
+download_folder: downloads/NexDrop
 downloads:
   attempts: 2
   back_pressure: true
@@ -206,7 +206,7 @@ sort:
     non_media: "{sort_dir}/{base_dir}/Other/{filename}{ext}"
     video: "{sort_dir}/{base_dir}/Videos/{filename}{ext}"
   input_folder: null
-  output_folder: downloads/cyberdrop-dl sorted
+  output_folder: downloads/NexDrop sorted
 subfolders:
   create: true
   include:

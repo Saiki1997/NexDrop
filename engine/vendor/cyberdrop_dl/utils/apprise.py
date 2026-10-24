@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 class _AppriseMessage:
     tag: str
     body: str = "Finished downloading. Enjoy :)"
-    title: str = "Cyberdrop-DL"
+    title: str = "NexDrop"
     body_format: str = "text"
     attachment: str | None = None
 

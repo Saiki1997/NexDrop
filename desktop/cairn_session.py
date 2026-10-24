@@ -1264,7 +1264,7 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
                 if text:
                     log(level, text)
             elif kind == "ready":
-                log("info", f"Engine cyberdrop-dl {event.get('version', '')} ready.")
+                log("info", f"NexDrop engine {event.get('version', '')} ready.")
             elif kind == "log":
                 level = str(event.get("level") or "info")
                 log("warning" if level == "warn" else level, str(event.get("message") or ""))

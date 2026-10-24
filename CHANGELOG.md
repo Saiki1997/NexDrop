@@ -1,3 +1,13 @@
+# NEXDROP 2.3.2
+
+## Changed
+- User-visible engine messages, the engine's default folder names and its command-line help say NexDrop instead of cyberdrop-dl. The command-line help still names Cyberdrop-DL as the engine, and the GPL-3.0 notice is unchanged.
+
+## Project
+- The README now covers every feature, credits Cyberdrop-DL and the other projects NEXDROP uses, and shows screenshots.
+- `docs/SUPPORTED-SITES.md` lists all 226 sites the engine supports, with their domains and link types, generated from the engine itself.
+- The Monotirou crawler is now recorded in `engine/vendor-patches` with the other engine changes.
+
 # NEXDROP 2.3.1
 
 ## Fixed

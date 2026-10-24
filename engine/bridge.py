@@ -794,7 +794,7 @@ def _run() -> int:
     if simpcity is None and any("simpcity" in url for url in urls):
         emit({"type": "log", "level": "error", "message": "The SimpCity crawler is not registered."})
     flare_url = str(payload.get("flareSolverUrl") or "").strip()
-    emit({"type": "ready", "engine": "cyberdrop-dl", "version": __version__, "profile": profile, "simpcity": simpcity is not None, "flaresolverr": bool(flare_url)})
+    emit({"type": "ready", "engine": "NexDrop", "version": __version__, "profile": profile, "simpcity": simpcity is not None, "flaresolverr": bool(flare_url)})
     fields = {
         "download_folder": destination,
         "ui": UIOptions(mode=UIMode.DISABLED, show_stats=False),

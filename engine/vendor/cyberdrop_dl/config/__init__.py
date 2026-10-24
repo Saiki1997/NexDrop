@@ -51,7 +51,7 @@ _ADDITIVE_ARGS: tuple[tuple[str, ...], ...] | None = None
 
 
 @Parameter(name="*")
-class Config(ConfigModel, title="cyberdrop-dl config"):
+class Config(ConfigModel, title="NexDrop config"):
     __final__: Literal[True] = True
 
     auth: Authentication = Field(default_factory=Authentication)
@@ -68,7 +68,7 @@ class Config(ConfigModel, title="cyberdrop-dl config"):
     delete_partial_files: bool = False
     "Delete partial files after a run"
 
-    download_folder: Annotated[Path, Parameter(alias=("--output", "-o", "-d"))] = Path("downloads/cyberdrop-dl")
+    download_folder: Annotated[Path, Parameter(alias=("--output", "-o", "-d"))] = Path("downloads/NexDrop")
     "Base output path for all downloads"
 
     downloads: Downloads = Field(default_factory=Downloads)

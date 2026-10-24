@@ -244,7 +244,7 @@ class Sort(ConfigGroup, name=None):
     input_folder: FalsyAsNone[Path] = None
     "Base folder to scan for files. Default to the same value as `--download-folder`"
 
-    output_folder: Path = Path("downloads/cyberdrop-dl sorted")
+    output_folder: Path = Path("downloads/NexDrop sorted")
     "Output path to place sorted files in"
 
     formats: SortFormats = Field(default_factory=SortFormats)

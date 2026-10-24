@@ -33,7 +33,7 @@ def as_rich_table() -> Table:
     from rich.text import Text
 
     table = Table(
-        title=Text("cyberdrop-dl supported sites", style="green"),
+        title=Text("NexDrop supported sites", style="green"),
         show_lines=True,
         highlight=True,
     )

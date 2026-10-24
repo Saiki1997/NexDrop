@@ -64,7 +64,7 @@ def cache_context(cache_file: Path, cache: dict[str, Any]) -> Generator[None]:
             cache.update(_load_cache(content))
         except (json.JSONDecodeError, TypeError) as e:
             error = RuntimeError(f"Unable to read cache file at '{cache_file}'")
-            error.add_note("Cache is corrupted. Run `cyberdrop-dl cache clear` to delete the file")
+            error.add_note("Cache is corrupted. Clear the NexDrop engine cache to delete the file")
             raise error from e
     try:
         yield

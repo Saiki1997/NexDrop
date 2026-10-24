@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from cyberdrop_dl.manager import Manager
 
 _INPUT_FILE: ContextVar[Path] = ContextVar("_INPUT_FILE")
-_CHANGELOG_URL = "https://raw.githubusercontent.com/Cyberdrop-DL/cyberdrop-dl/refs/heads/main/CHANGELOG.md"
+_CHANGELOG_URL = "https://raw.githubusercontent.com/Saiki1997/NexDrop/refs/heads/main/CHANGELOG.md"
 _changelog_content: str = ""
 
 
@@ -117,7 +117,7 @@ def _edit_config(manager: Manager) -> None:
     except ValueError as e:
         console.error(str(e))
     else:
-        console.warning("You must restart cyberdrop-dl for config changes to take effect")
+        console.warning("You must restart NexDrop for config changes to take effect")
 
     enter_to_continue()
 
@@ -159,7 +159,7 @@ def _view_changelog() -> None:
 
 def _app_header(manager: Manager) -> None:
     console.clear()
-    console.info(f"[bold]cyberdrop-dl ([blue]v{__version__!s}[/blue])[/bold]")
+    console.info(f"[bold]NexDrop ([blue]v{__version__!s}[/blue])[/bold]")
     console.rule()
     paths = {
         "Config file": manager.config.source,

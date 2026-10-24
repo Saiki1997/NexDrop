@@ -115,7 +115,7 @@ class Manager:
         return self._completed_downloads
 
     def log_config_settings(self) -> None:
-        logger.info(f"Running cyberdrop-dl v{__version__}")
+        logger.info(f"Running NexDrop v{__version__}")
         _log_enviroment()
         logger.debug({"CLI options": self.cli_args.__json__()})
         _log_config(self.config)

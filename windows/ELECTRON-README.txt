@@ -13,7 +13,7 @@ Layout
   desktop\auth_cookies.py     per-site cookie files (Netscape or JSON)
   desktop\job_store.py        local job history (jobs.sqlite)
   desktop\source_registry.py  unsupported-link log and site check
-  engine\bridge.py            patched Cyberdrop-DL 10.10.0 adapter
+  engine\bridge.py            NexDrop download engine adapter
   engine\vendor               patched engine source (do not replace)
   engine\thirdparty           Telethon, for the Telegram sign-in
   engine\appdata              settings, history, logs, Electron profile
@@ -77,7 +77,7 @@ Sign-ins and cookies
 
 Data
   Settings, history, job database and logs stay in engine\appdata next to
-  NexDrop.exe. They are not written to %APPDATA%\cyberdrop-dl.
+  NexDrop.exe. They stay inside this portable app folder.
   engine\appdata\logs\gui.log    window log (kept under 5 MB, one backup)
   engine\appdata\runs.json       links you ran, shown as Recent links
   engine\appdata\jobs.sqlite     per-file job history

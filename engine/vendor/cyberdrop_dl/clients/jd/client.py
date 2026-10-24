@@ -148,7 +148,7 @@ class JDownloader:
             AddLinksQuery(
                 autostart=self.config.autostart,
                 links=str(url),
-                packageName=title or "Cyberdrop-DL",
+                packageName=title or "NexDrop",
                 destinationFolder=str(download_folder),
                 overwritePackagizerRules=True,
             )

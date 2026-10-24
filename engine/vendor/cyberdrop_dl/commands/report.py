@@ -33,7 +33,7 @@ def generate_report() -> str:
                 "",
                 ["Program", "Version", "Location"],
                 [
-                    ("cyberdrop-dl", __version__, str(entrypoint)),
+                    ("NexDrop", __version__, str(entrypoint)),
                     ("ffmpeg", str(ffmpeg.version()), str(ffmpeg.which_ffmpeg())),
                     ("ffprobe", str(ffmpeg.ffprobe_version()), str(ffmpeg.which_ffprobe())),
                 ],
