@@ -53,6 +53,15 @@ Prompted by the site's article "How adult platforms handle trust and safety". Th
 
 **The article itself** discusses "adult platforms" in general and offers consulting. It makes no commitments about how monotirou.com itself operates, so it isn't evidence of the site's practice.
 
+**Five more articles were read** (all dated 2026-05-02, no author):
+- "How to moderate user uploads on an adult platform"
+- "Adult content moderation workflow explained"
+- "Why compliance is a product feature on adult platforms"
+- "Building for creators in the adult industry"
+- "Why adult platforms need creator verification"
+
+Like the first, each discusses "platforms" in general. None says monotirou.com verifies uploaders, checks the age or consent of the people shown, keeps records, or reviews uploads before publishing. The only first-person lines offer consulting ("We can help design or audit it", "email us").
+
 **Result: still unsupported.**
 - *Rules and reporting.* The terms forbid the right things, and there are reporting addresses. That partly meets requirement 2 below.
 - *Verification.* Rules that rely on uploaders' self-declaration don't verify anyone. Requirement 1 (verified age and consent of the people shown) isn't met.
