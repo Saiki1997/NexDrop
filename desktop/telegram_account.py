@@ -63,7 +63,7 @@ def is_telegram(url: str) -> bool:
 
 @dataclass
 class Link:
-    kind: str  # channel, post, private_post, invite
+    kind: str  # channel, post, private_channel, private_post, invite
     peer: str = ""  # username
     channel_id: int = 0  # t.me/c/<id>
     message_id: int = 0
@@ -90,6 +90,9 @@ def parse_link(url: str) -> Link | None:
         return Link("invite", invite=first[1:], url=url)
     if first == "joinchat" and len(path) > 1:
         return Link("invite", invite=path[1], url=url)
+    if first == "c" and len(path) == 2 and path[1].isdigit():
+        # t.me/c/<channel>: the whole private channel or group
+        return Link("private_channel", channel_id=int(path[1]), url=url)
     if first == "c" and len(path) >= 3 and path[1].isdigit() and path[-1].isdigit():
         # t.me/c/<channel>/<post> or t.me/c/<channel>/<topic>/<post>
         return Link("private_post", channel_id=int(path[1]), message_id=int(path[-1]), single=single, url=url)
@@ -230,7 +233,7 @@ class TelegramDownloads:
             if isinstance(result, types.ChatInviteAlready) or isinstance(result, types.ChatInvitePeek):
                 return chat
             raise PermissionError("This account has not joined that chat. Join it in Telegram first, then paste the link again.")
-        if link.kind == "private_post":
+        if link.kind in {"private_post", "private_channel"}:
             try:
                 return await client.get_entity(types.PeerChannel(link.channel_id))
             except (ValueError, TypeError):

@@ -32,3 +32,9 @@ test("finishText covers every ending", () => {
   assert.strictEqual(fmt.finishText({ emptyReason: "The thread is missing or private." }).message, "The thread is missing or private.");
   assert.match(fmt.finishText({ stopped: true, saved: 4 }).message, /^Stopped/);
 });
+
+test("Telegram links without https and chat IDs are accepted", () => {
+  const { urls, ignored } = fmt.parseLinks("t.me/somechannel\n-1001988700745\nhttps://t.me/c/1988700745/12\n-12345");
+  assert.deepEqual(urls, ["https://t.me/somechannel", "https://t.me/c/1988700745", "https://t.me/c/1988700745/12"]);
+  assert.deepEqual(ignored, ["-12345"]);
+});

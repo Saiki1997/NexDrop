@@ -60,8 +60,12 @@
     for (const raw of String(text || "").split(/[\r\n]+/)) {
       if (raw.trim().startsWith("#")) continue; // comment line in an imported .txt
       for (const token of raw.trim().split(/\s+/)) {
-        const line = token.trim().replace(/^[<("']+|[>)"',;]+$/g, "");
+        let line = token.trim().replace(/^[<("']+|[>)"',;]+$/g, "");
         if (!line || line.startsWith("#")) continue;
+        // Telegram: "t.me/..." without https://, and a chat ID such as -1001988700745
+        if (/^(?:t\.me|telegram\.me|telegram\.dog)\//i.test(line)) line = `https://${line}`;
+        const chatId = /^-100(\d{5,})$/.exec(line);
+        if (chatId) line = `https://t.me/c/${chatId[1]}`;
         if (/^magnet:/i.test(line) || /^https?:\/\/\S+\.torrent(?:$|\?)/i.test(line)) {
           unsupported.push(line);
         } else if (/^https?:\/\/[^\s/]+\.[^\s]+/i.test(line)) {

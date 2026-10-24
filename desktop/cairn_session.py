@@ -940,19 +940,25 @@ def retry_pass(failed: list[str], referers: dict[str, str], payload: dict, engin
     log("ok" if recovered else "warning", f"Retry saved {recovered} of {len(retry_files)} file(s).")
 
 
+_ENGINE_DB = None  # read-only connection, opened once per run (a big chat checks every message)
+
+
 def engine_has_telegram(link: str) -> bool:
     """True when the engine's public t.me crawler already saved this message."""
-    db = APPDATA / "cyberdrop.db"
-    if not db.is_file():
-        return False
+    global _ENGINE_DB
     try:
-        import sqlite3
+        if _ENGINE_DB is None:
+            db = APPDATA / "cyberdrop.db"
+            if not db.is_file():
+                return False
+            import sqlite3
 
-        with sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True, timeout=5) as conn:
-            row = conn.execute(
-                "SELECT 1 FROM media WHERE domain = 'telegram' AND completed = 1 AND (referer = ? OR referer LIKE ?) LIMIT 1",
-                (link, link + "#%"),
-            ).fetchone()
+            _ENGINE_DB = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True, timeout=5, check_same_thread=False)
+        row = _ENGINE_DB.execute(
+            # link, or link#1, link#2 ...: a range keeps it on the referer index ('$' follows '#')
+            "SELECT 1 FROM media WHERE domain = 'telegram' AND completed = 1 AND referer >= ? AND referer < ? LIMIT 1",
+            (link, link + "$"),
+        ).fetchone()
         return row is not None
     except Exception:  # noqa: BLE001 - history is a convenience
         return False
