@@ -6,37 +6,42 @@ NEXDROP is a standalone Windows x64 download manager. It integrates the patched 
 
 ## Download
 
-Visit the [GitHub Releases](https://github.com/Saiki1997/NexDrop/releases) page and download `NexDrop-windows-x64.zip`, or all of the `NexDrop-windows-x64-part*.zip` files together with `RESTORE.txt`.
+Download `NexDrop-windows-x64.zip` from the latest [release](https://github.com/Saiki1997/NexDrop/releases) and check it against the SHA-256 checksum published with it. Extract the whole folder and run `NexDrop.exe`.
 
-## Installation
+To update an existing NEXDROP folder, close NEXDROP and extract the new zip over it. Settings, sign-ins, history and downloads in `engine\appdata` and `downloads` are kept.
 
-1. Download the release archive.
-2. Verify the file against the published SHA-256 checksum.
-3. Extract it. If you downloaded split parts, extract every part into the same folder, following `RESTORE.txt`.
-4. Run `NexDrop.exe`.
+## What it does
 
-## Startup
+- Paste thread, album, profile or file links and press **Start**. Files from SimpCity and the other forums and file hosts the bundled engine supports are saved in page order (`001_`, `002_`…), many at a time.
+- Every file has its own progress bar with size, percentage and speed in MB/s.
+- **Queue** more links while a run is going. **Pause** keeps a run; **Resume** continues it, even after closing NEXDROP.
+- **Watch** forum threads: NEXDROP rechecks them every few hours while it is open and downloads only new posts.
+- Bot-check pages (DDoS-Guard, Cloudflare) are solved by the bundled FlareSolverr, which starts in the background.
+- Temporary server errors are retried automatically. Files already saved are skipped.
+- Filter by file type or minimum image size, and optionally sort into Images, Videos, Audio and Other folders.
+- Sign in with API tokens, a MEGA account or per-site cookie files. Secrets are encrypted with Windows credential protection.
+- Every run writes a readable log to `engine\appdata\logs\runs`.
 
-`NexDrop.exe` opens NEXDROP's own desktop window. It does not open Chrome, Edge, or another external browser. The window uses the WebView2 runtime bundled in `runtime\webview2`. Closing the window stops the local runtime.
+## How it is built
 
-## Architecture
+`NexDrop.exe` is Electron 42. It opens the window from `resources\app` and starts the bundled Python (`runtime\python`) to run `desktop\cairn_session.py`, which drives the patched Cyberdrop-DL 10.10.0 engine through `engine\bridge.py`. ffmpeg (`runtime\ffmpeg`) handles HLS video and FlareSolverr (`runtime\flaresolverr`) handles bot checks. Settings, history and logs stay in `engine\appdata`; files are saved to `downloads\nexdrop` unless you choose another folder.
 
-The executable starts the bundled Python runtime on `app\host.py`. That host listens only on `127.0.0.1` and serves the interface from local files in `app\ui`. Downloads go through `engine\bridge.py` and the patched Cyberdrop-DL 10.10.0 tree in `engine\vendor`. Settings and engine history stay in `engine\appdata`. Saved files stay in `downloads\nexdrop`.
-
-Internet access is required for the downloads you start and for the sites those downloads depend on. The application does not use a hosted website, a remote API, a cloud database, or a browser login.
+NEXDROP has no hosted website, remote API or cloud database. It only connects to the sites you download from.
 
 ## System requirements
 
 - 64-bit Windows 10 or Windows 11
-- No separate Python installation is required by the portable package
+- Nothing else to install: Python, ffmpeg and FlareSolverr are bundled
 
 ## Troubleshooting
 
-Keep `NexDrop.exe` beside `app`, `engine`, and `runtime`. A short folder path avoids the Windows 260-character path limit. If Windows SmartScreen or antivirus quarantines the unsigned executable or a runtime file, restore it and run again. Startup errors name the missing piece: the Python runtime, `app\host.py`, or `runtime\webview2`.
+- Keep `NexDrop.exe` beside `resources`, `desktop`, `engine` and `runtime`. A short folder path avoids the Windows 260-character limit.
+- `NexDrop.exe` is not code-signed. If SmartScreen warns, choose **More info**, then **Run anyway**. If antivirus quarantines a runtime file, restore it.
+- For a failed run, press **Open log** in the Activity panel. The run log and the engine's detailed log are in `engine\appdata\logs\runs`; FlareSolverr's output is in `engine\appdata\logs\flaresolverr.log`.
 
-## Verification status
+## Testing status
 
-Preview testing has previously confirmed a real download and history-based duplicate skipping. The packaged Windows executable has not yet been tested on Windows; successful operation is not guaranteed until that testing is completed.
+The Python and Node tests run on Windows (GitHub Actions) on every push. Downloads, pause and resume, the queue, automatic retry and filters were tested end to end in the Electron window on Linux, and real SimpCity runs of over 4,000 files were made on Windows with 2.1.x.
 
 ## Source code
 
@@ -69,7 +74,7 @@ portable folder. It expects the embeddable Python, ffmpeg and FlareSolverr in
 
 ## Licensing
 
-See the included GPL-3.0 and third-party license notices for licensing terms and source-code information. `NexDrop-source.zip` is the corresponding source archive.
+NEXDROP includes Cyberdrop-DL (GPL-3.0-only); its patched source is in `engine/vendor`, and this repository is licensed under GPL-3.0 (`LICENSE`). The interface started from Cairn (MIT, `electron/LICENSE-CAIRN.txt`). The Archivo and Manrope fonts are under the SIL Open Font License (`electron/renderer/fonts`). Each release also has `NexDrop-source.zip`, the source it was built from.
 
 ## Issues
 
