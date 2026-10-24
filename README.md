@@ -72,6 +72,13 @@ node --test tests/format.test.js
 portable folder. It expects the embeddable Python, ffmpeg and FlareSolverr in
 `release/NexDrop/runtime/` (they are too large for this repository; take them from a release zip).
 
+### Publishing a release
+
+1. Set the new version in `electron/package.json` and add `docs/release-notes/<version>.md`.
+2. On GitHub, open **Actions > Release > Run workflow**.
+
+The workflow takes Electron, Python, ffmpeg and FlareSolverr from an earlier release zip (`v2.0.0` by default), adds this repository's files with `windows/make-release.sh`, and publishes `NexDrop-windows-x64.zip`, `NexDrop-source.zip` and `SHA256SUMS.txt` as release `v<version>`.
+
 ## Licensing
 
 NEXDROP includes Cyberdrop-DL (GPL-3.0-only); its patched source is in `engine/vendor`, and this repository is licensed under GPL-3.0 (`LICENSE`). The interface started from Cairn (MIT, `electron/LICENSE-CAIRN.txt`). The Archivo and Manrope fonts are under the SIL Open Font License (`electron/renderer/fonts`). Each release also has `NexDrop-source.zip`, the source it was built from.
