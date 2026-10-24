@@ -36,12 +36,13 @@ Some items on the site may well be lawful. But nothing on it tells lawful items 
 
 ## Reassessment 1 (2026-10-24)
 
-Prompted by the site's article "How adult platforms handle trust and safety". These pages were read: the article, `/terms`, `/complaints`, `/content-removal`, `/dmca` and `/contact`.
+Prompted by the site's article "How adult platforms handle trust and safety". These pages were read: the article, `/terms`, `/privacy`, `/complaints`, `/content-removal`, `/dmca` and `/contact`. `/settings` couldn't be read: the site's robots.txt disallows it, and it's an account page anyway.
 
 **What the site does publish (verified on its pages):**
 - **Terms of service.** Users must be 18 or the age of majority. Uploads must not be "illegal, non-consensual, copyrighted, underage, private, or exploitative". The site "may remove content, restrict accounts, preserve evidence, or report suspected illegal material".
 - **Complaints.** A support email, plus a separate email for urgent abuse and illegal-content reports. Reports should include the content URL, the reason and supporting details.
 - **Content removal.** An email route for suspected underage content, non-consensual content, private information, impersonation, illegal material and copyright.
+- **Privacy policy.** Accounts sign in with Google; the site processes the Google identifier, email, "verified" status, name and picture, plus "content you upload" and "reports you submit". A Google sign-in confirms an email address. It doesn't verify a person's identity or age.
 - **DMCA.** A list of what a notice must contain and a "Legal" email. Repeat infringers "may be restricted or removed".
 
 **What it doesn't publish:**
