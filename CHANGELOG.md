@@ -1,3 +1,11 @@
+# NEXDROP 2.3.1
+
+## Fixed
+- Monotirou profile and individual video links now route correctly.
+- Downloads use the media URL returned by the video API instead of guessing a CDN filename from a numeric ID.
+- Profile pagination uses the API's timestamp-and-ID cursor. Repeated pages stop with a clear error instead of looping.
+- Missing or malformed API metadata is reported as a scrape error.
+
 # NEXDROP 2.3.0
 
 ## New: Telegram
