@@ -121,6 +121,8 @@ class ProgressHook:
     done: Callable[[], None]
 
     _done: bool = dataclasses.field(init=False, default=False)
+    # NEXDROP patch: optional hook for bytes a resumed download already has on disk.
+    resume: Callable[[int], None] | None = dataclasses.field(default=None, kw_only=True)
 
     def __enter__(self) -> Self:
         if self._done:

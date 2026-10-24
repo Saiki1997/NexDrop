@@ -244,6 +244,17 @@ class _ProgressTracker:
             self.dirty.clear()
         emit({"type": "progress", "files": batch, "bytes": self.total_bytes})
 
+    def resume(self, key: int, amount: int) -> None:
+        """Bytes a resumed file already had on disk: progress only, not run bytes or speed."""
+        with self.lock:
+            row = self.files.get(key)
+            if row is None:
+                return
+            row["read"] += amount
+            row["last_read"] += amount
+            row["resumed"] = row.get("resumed", 0) + amount
+            self.dirty.add(key)
+
     def end(self, key: int) -> None:
         with self.lock:
             row = self.files.pop(key, None)
@@ -260,7 +271,7 @@ class _ProgressTracker:
             row["speed"] = instant if row["speed"] == 0 else row["speed"] * 0.5 + instant * 0.5
             row["last_t"], row["last_read"] = now, row["read"]
         elif row["speed"] == 0:
-            row["speed"] = row["read"] / max(now - row["t0"], 1e-3)
+            row["speed"] = (row["read"] - row.get("resumed", 0)) / max(now - row["t0"], 1e-3)
         return {"url": row["url"], "read": row["read"], "total": row["total"], "speed": int(row["speed"])}
 
 
@@ -562,8 +573,13 @@ def _install_progress() -> None:
             TRACKER.end(key)
             done()
 
+        def wrapped_resume(amount: int) -> None:
+            advance(amount)
+            TRACKER.resume(key, amount)
+
         hook.advance = wrapped_advance
         hook.done = wrapped_done
+        hook.resume = wrapped_resume
         return hook
 
     DownloadsPanel.download_file = download_file

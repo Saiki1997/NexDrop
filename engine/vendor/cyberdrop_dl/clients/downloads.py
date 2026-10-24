@@ -128,7 +128,8 @@ class DownloadClient:
 
         hook = self._make_hook(media_item)
         if resume_point:
-            hook.advance(resume_point)
+            # NEXDROP patch: bytes already on disk move the bar but are not new downloaded bytes.
+            (hook.resume or hook.advance)(resume_point)
 
         with hook:
             await self._append_content(media_item, hook, resp)

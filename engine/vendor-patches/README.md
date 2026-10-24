@@ -23,6 +23,10 @@ The build script copies them over the vendor tree. Each change is marked `NEXDRO
 - `cyberdrop_dl/crawlers/tiktok.py`: a post without a music track no longer fails the whole
   profile with `ValueError('Empty URL')`.
 
+- `cyberdrop_dl/progress/__init__.py` and `cyberdrop_dl/clients/downloads.py`: `ProgressHook` has an optional
+  `resume` callback. A resumed download reports the bytes already on disk through it, so the bridge moves
+  the file's bar without counting those bytes as newly downloaded or in the speed.
+
 Engine behaviour changed at run time from `engine/bridge.py` instead (no file changes):
 16 MB database reserve instead of 250 MB, FlareSolverr retry for downloads that hit a bot-check
 page, live per-file speed.

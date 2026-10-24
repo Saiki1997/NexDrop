@@ -9,6 +9,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import unittest.mock
 import urllib.request
 from pathlib import Path
 
@@ -380,6 +381,30 @@ class RunLogSecrets(unittest.TestCase):
         self.assertNotIn("hash-secret", text)
         self.assertNotIn("session-secret", text)
         self.assertIn("site sign-ins: telegram", text)
+
+
+class ResumedDownloadBytes(unittest.TestCase):
+    def test_bytes_already_on_disk_are_progress_not_new_bytes(self):
+        sys.path.insert(0, str(ROOT / "engine"))
+        import importlib
+
+        bridge = importlib.import_module("bridge")
+        events = []
+        old_emit = bridge.emit
+        bridge.emit = events.append
+        clock = iter([100.0, 101.0, 101.0])
+        try:
+            with unittest.mock.patch.object(bridge.time, "monotonic", lambda: next(clock)):
+                tracker = bridge._ProgressTracker()
+                tracker.start(1, "https://cdn.example.test/v.mp4", "v.mp4", "example", 200)
+                tracker.resume(1, 150)
+                tracker.advance(1, 10)
+        finally:
+            bridge.emit = old_emit
+        progress = [e for e in events if e["type"] == "progress"][-1]
+        self.assertEqual(progress["bytes"], 10)
+        self.assertEqual(progress["files"][0]["read"], 160)
+        self.assertEqual(progress["files"][0]["speed"], 10)  # 10 new bytes in 1 s
 
 
 class TelegramAccount(unittest.TestCase):

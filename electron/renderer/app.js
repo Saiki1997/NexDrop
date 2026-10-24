@@ -21,6 +21,9 @@
     startedAt: 0,
     root: "",
     phase: "",
+    jobId: "",         // job the rows belong to, so Resume can continue them
+    doneBefore: new Set(), // urls saved before a pause
+    bytesBefore: 0,    // bytes saved before a pause
     rows: new Map(),   // url -> row model
     order: [],         // row models in display order
     needsSort: false,
@@ -209,9 +212,20 @@
     activeJob = job;
     api.saveGuiSetting({ active_run: { ...job, savedAt: new Date().toISOString() } });
     hideResume();
-    resetRun();
+    // Resume continues the paused list instead of starting a fresh one.
+    const continuing = Boolean(job.resumed) && run.jobId === job.id && run.order.length > 0;
+    resetRun(continuing);
+    run.jobId = job.id;
+    run.doneBefore = new Set(job.resumed ? job.doneUrls || [] : []);
+    run.bytesBefore = job.resumed ? Number(job.bytesSoFar) || run.bytes : 0;
+    run.bytes = run.bytesBefore;
     setRunning(true);
-    log("phase", job.watchId ? `Checking watched thread: ${job.label}` : job.resumed ? `Resuming: ${job.label}` : `Starting: ${job.label}`);
+    if (job.resumed) {
+      log("phase", `Resuming: ${job.label}`);
+      log("info", "Files saved before the pause are skipped and half-finished files continue where they stopped. The links are read again from the start to find the rest.");
+    } else {
+      log("phase", job.watchId ? `Checking watched thread: ${job.label}` : `Starting: ${job.label}`);
+    }
     api.startPipeline({
       urls: job.urls,
       unsupported: job.unsupported || [],
@@ -251,6 +265,7 @@
       const done = run.order.filter((r) => r.state === "done" || r.state === "skipped").map((r) => r.url);
       const paused = { ...job, doneUrls: [...new Set([...(job.doneUrls || []), ...done])] };
       paused.savedSoFar = paused.doneUrls.length;
+      paused.bytesSoFar = run.bytes;
       api.saveGuiSetting({ active_run: paused });
       showResume(paused);
       return;
@@ -545,21 +560,30 @@
     }
   }
 
-  function resetRun() {
+  // keep: a resumed run keeps the paused rows and log; unfinished rows go back to Waiting.
+  function resetRun(keep = false) {
+    run.speed = 0;
+    run.failedUrls = [];
+    run.phase = "";
+    $("#phases").className = "phases";
+    setPhase("");
+    if (keep) {
+      for (const row of run.order) {
+        if (row.state !== "done" && row.state !== "skipped") Object.assign(row, { state: "queued", speed: 0, reason: "" });
+      }
+      view.dirty = true;
+      scheduleRender();
+      return;
+    }
     run.rows.clear();
     run.order = [];
     run.arrival = 0;
     run.bytes = 0;
-    run.speed = 0;
-    run.failedUrls = [];
-    run.phase = "";
     view.hosts.clear();
     view.filter = "all";
     view.host = "";
     $$("#file-tabs button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.filter === "all")));
     $("#host-filter").innerHTML = '<option value="">All sites</option>';
-    $("#phases").className = "phases";
-    setPhase("");
     $("#log").textContent = "";
     logEntries.length = 0;
     $("#list").scrollTop = 0;
@@ -633,10 +657,12 @@
         run.needsSort = true;
       }
       if (item.sequence && item.sequence !== row.sequence) run.needsSort = true;
-      Object.assign(row, item);
+      // A file saved before the pause stays "Saved" when the resumed run skips it.
+      const savedBefore = item.state === "skipped" && (row.state === "done" || run.doneBefore.has(item.url));
+      Object.assign(row, item, savedBefore ? { state: "done", reason: "" } : {});
       if (!view.hosts.has(row.host)) addHost(row.host);
     }
-    run.bytes = event.bytes || run.bytes;
+    if (event.bytes) run.bytes = run.bytesBefore + event.bytes;
     run.speed = event.speed || 0;
     view.dirty = true;
     scheduleRender();
@@ -644,7 +670,7 @@
 
   function finish(event) {
     run.failedUrls = event.failedUrls || [];
-    run.bytes = event.bytes || run.bytes;
+    if (event.bytes) run.bytes = run.bytesBefore + event.bytes;
     run.speed = 0;
     run.root = event.root || run.root;
     const result = fmt.finishText(event);
