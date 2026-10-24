@@ -34,6 +34,8 @@ cp "$ROOT"/desktop/*.py "$ROOT/desktop/auth-catalog.json" "$S/desktop/"
 cp "$ROOT/engine/bridge.py" "$ROOT/engine/user-config.yaml" "$S/engine/"
 rm -rf "$S/engine/vendor"
 cp -r "$ROOT/engine/vendor" "$S/engine/vendor"
+# Telegram sign-in and account downloads (Telethon, pinned)
+sh "$ROOT/windows/telegram-libs.sh" "$S/engine/thirdparty"
 
 # Docs and licences
 cp "$ROOT/windows/ELECTRON-README.txt" "$S/README.txt"

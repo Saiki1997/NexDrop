@@ -54,6 +54,9 @@ for path in patches.rglob("*.py"):
     shutil.copy2(path, dest)
 PY
 
+# Telegram sign-in and account downloads (Telethon, pinned)
+sh "$ROOT/windows/telegram-libs.sh" "$STAGE/engine/thirdparty"
+
 if [ -d "$ROOT/release/NexDrop/runtime/python" ]; then
   mkdir -p "$STAGE/runtime"
   cp -a "$ROOT/release/NexDrop/runtime/python" "$STAGE/runtime/python"

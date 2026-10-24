@@ -19,14 +19,15 @@ To update an existing NEXDROP folder, close NEXDROP and extract the new zip over
 - Bot-check pages (DDoS-Guard, Cloudflare) are solved by the bundled FlareSolverr, which starts in the background.
 - Temporary server errors are retried automatically. Files already saved are skipped.
 - Filter by file type or minimum image size, and optionally sort into Images, Videos, Audio and Other folders.
-- Sign in with API tokens, a MEGA account or per-site cookie files. Secrets are encrypted with Windows credential protection.
+- **Telegram**: public channels and posts download without an account. Sign in with your Telegram account (your own API ID from my.telegram.org) for large files, documents and private channels or groups you've joined.
+- Sign in with API tokens, a MEGA account, a Telegram account or per-site cookie files. Secrets are encrypted with Windows credential protection.
 - Every run writes a readable log to `engine\appdata\logs\runs`.
 
 ## How it is built
 
 `NexDrop.exe` is Electron 42. It opens the window from `resources\app` and starts the bundled Python (`runtime\python`) to run `desktop\cairn_session.py`, which drives the patched Cyberdrop-DL 10.10.0 engine through `engine\bridge.py`. ffmpeg (`runtime\ffmpeg`) handles HLS video and FlareSolverr (`runtime\flaresolverr`) handles bot checks. Settings, history and logs stay in `engine\appdata`; files are saved to `downloads\nexdrop` unless you choose another folder.
 
-NEXDROP has no hosted website, remote API or cloud database. It only connects to the sites you download from.
+NEXDROP has no hosted website, remote API or cloud database. It only connects to the sites you download from. Telegram account downloads use Telethon (MIT), shipped in `engine\thirdparty`.
 
 ## System requirements
 
@@ -53,7 +54,7 @@ This repository holds the full source of the Windows build:
 | `desktop/` | Python that runs one download session, sign-in cookies, job history, the site registry |
 | `engine/bridge.py` | Adapter between NEXDROP and the bundled engine |
 | `engine/vendor/` | Patched Cyberdrop-DL 10.10.0 (GPL-3.0), with the fixes from `engine/vendor-patches/` applied |
-| `windows/` | `build-electron-portable.sh` and the pinned Python requirements |
+| `windows/` | `build-electron-portable.sh`, `make-release.sh`, `telegram-libs.sh` (pinned Telethon for `engine\thirdparty`) and the pinned Python requirements |
 | `tests/` | Python and Node tests, run on Windows by GitHub Actions on every push |
 
 What changed in each version is in `CHANGELOG.md`.

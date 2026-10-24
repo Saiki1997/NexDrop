@@ -527,3 +527,18 @@ svg { stroke: currentColor; stroke-width: 1.6; fill: none; stroke-linecap: round
 /* a dropdown beside a text box keeps its natural width */
 .field-row .select { width: auto; flex: none; }
 .field-row input[type="text"] { min-width: 0; }
+
+/* Telegram sign-in */
+.tg-signin { display: flex; flex-direction: column; gap: 14px; padding: 14px; border: 1px solid var(--shale); border-radius: var(--r-control); background: var(--basalt); }
+.tg-signin[hidden] { display: none; }
+.tg-signin .field-help a { color: var(--copper-hi); text-decoration: underline; text-underline-offset: 2px; }
+.tg-signin .field input[type="tel"] {
+  height: 36px; padding: 0 10px; width: 100%;
+  background-color: var(--slate); border: 1px solid var(--shale); border-radius: var(--r-control);
+}
+.tg-signin .field input { background-color: var(--slate); }
+.tg-signin .field input[aria-invalid="true"] { border-color: var(--rust, #c0563f); }
+.tg-pair { align-items: flex-start; }
+.tg-pair .field { flex: 1; min-width: 0; }
+.tg-pair .field:first-child { flex: 0 0 38%; }
+.tg-pair .field input { flex: none; }

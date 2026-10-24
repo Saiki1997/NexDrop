@@ -1,45 +1,83 @@
 [
   {
+    "id": "telegram",
+    "name": "Telegram",
+    "methods": [
+      "none",
+      "telegram"
+    ],
+    "hosts": [
+      "t.me",
+      "telegram.me"
+    ],
+    "note": "Public channels download without an account. Sign in to also get files over the public preview's size limit, documents, and channels or groups you've joined (t.me/c/... links). Uses your own API ID from my.telegram.org. NEXDROP only reads and downloads; it never posts or joins anything."
+  },
+  {
     "id": "gofile",
     "name": "GoFile",
-    "methods": ["none", "api_key"],
+    "methods": [
+      "none",
+      "api_key"
+    ],
     "note": "Optional. With no key, the handler creates a temporary account."
   },
   {
     "id": "pixeldrain",
     "name": "Pixeldrain",
-    "methods": ["none", "api_key"],
+    "methods": [
+      "none",
+      "api_key"
+    ],
     "note": "Optional API key. Public files still download without one."
   },
   {
     "id": "nova",
     "name": "Nova",
-    "methods": ["none", "api_key"],
+    "methods": [
+      "none",
+      "api_key"
+    ],
     "note": "Optional API key used by the Nova handler."
   },
   {
     "id": "real_debrid",
     "name": "Real-Debrid",
-    "methods": ["none", "api_key"],
+    "methods": [
+      "none",
+      "api_key"
+    ],
     "note": "Needed only for Real-Debrid. Create the token at real-debrid.com/apitoken."
   },
   {
     "id": "mega_nz",
     "name": "MEGA",
-    "methods": ["none", "password"],
+    "methods": [
+      "none",
+      "password"
+    ],
     "note": "Public links need no account. Email and password are the handler's account fields."
   },
   {
     "id": "simpcity",
     "name": "SimpCity",
-    "methods": ["none", "cookies", "chrome"],
-    "hosts": ["simpcity.cr", "simpcity.su"],
+    "methods": [
+      "none",
+      "cookies",
+      "chrome"
+    ],
+    "hosts": [
+      "simpcity.cr",
+      "simpcity.su"
+    ],
     "note": "Public threads need no login. A cookie file is only for posts that ask you to be logged in. This does not bypass the site's access rules."
   },
   {
     "id": "site_cookies",
     "name": "One other site",
-    "methods": ["cookies", "chrome"],
+    "methods": [
+      "cookies",
+      "chrome"
+    ],
     "note": "Keeps only the cookies whose domain matches the host you type."
   }
 ]

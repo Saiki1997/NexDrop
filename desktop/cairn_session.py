@@ -42,6 +42,7 @@ if os.path.normcase(_DESKTOP_DIR) not in {os.path.normcase(os.path.abspath(e)) f
 from auth_cookies import convert_any  # noqa: E402
 from job_store import JobStore  # noqa: E402
 from scrape_status import classify_scrape_message  # noqa: E402
+import telegram_account  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 ENGINE = ROOT / "engine"
@@ -939,6 +940,71 @@ def retry_pass(failed: list[str], referers: dict[str, str], payload: dict, engin
     log("ok" if recovered else "warning", f"Retry saved {recovered} of {len(retry_files)} file(s).")
 
 
+def engine_has_telegram(link: str) -> bool:
+    """True when the engine's public t.me crawler already saved this message."""
+    db = APPDATA / "cyberdrop.db"
+    if not db.is_file():
+        return False
+    try:
+        import sqlite3
+
+        with sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True, timeout=5) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM media WHERE domain = 'telegram' AND completed = 1 AND (referer = ? OR referer LIKE ?) LIMIT 1",
+                (link, link + "#%"),
+            ).fetchone()
+        return row is not None
+    except Exception:  # noqa: BLE001 - history is a convenience
+        return False
+
+
+class _TelegramHooks:
+    """Connects the Telegram account downloader to this run's file list and history."""
+
+    def __init__(self, *, redownload: bool, skip_urls: set[str], saved: list, failed: list, skipped: list) -> None:
+        self.stop = STOP
+        self._history = set() if redownload else load_history()
+        self._redownload = redownload
+        self._skip_urls = skip_urls
+        self._saved, self._failed, self._skipped = saved, failed, skipped
+
+    def update(self, url: str, **fields) -> None:
+        FILES.update(url, **fields)
+
+    def add_bytes(self, amount: int) -> None:
+        FILES.add_bytes(amount)
+
+    def number(self, url: str, name: str) -> tuple[int, str]:
+        return _numbered_filename(url, name)
+
+    def skip(self, url: str) -> str:
+        if url in self._skip_urls:
+            return "already downloaded"
+        if self._redownload:
+            return ""
+        if url in self._history or engine_has_telegram(url):
+            return "already downloaded"
+        return ""
+
+    def skipped(self, url: str, reason: str) -> None:
+        if FILES.state(url) == "done":
+            return
+        FILES.update(url, state="skipped", reason=reason, speed=0)
+        if reason.startswith("already"):
+            self._skipped.append(url)
+
+    def saved(self, url: str, _path) -> None:
+        self._saved.append(url)
+
+    def failed(self, url: str, reason: str) -> None:
+        if url not in self._failed:
+            self._failed.append(url)
+        FILES.update(url, state="failed", reason=reason[:200], speed=0)
+
+    def log(self, level: str, text: str) -> None:
+        log(level, text)
+
+
 def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
     started = time.monotonic()
     seen: set[str] = set()
@@ -1081,6 +1147,7 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         """Run the engine once and fold its events into this run's state."""
         global PROC
         nonlocal forum_note, downloading
+        bytes_base = FILES.bytes  # each engine process counts from zero
         proc = subprocess.Popen(
             [PYTHON, "-u", str(BRIDGE)],
             stdin=subprocess.PIPE,
@@ -1140,7 +1207,7 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
                     if url:
                         FILES.update(url, read=row.get("read") or 0, total=row.get("total"), speed=row.get("speed") or 0)
                 if isinstance(event.get("bytes"), int):
-                    FILES.set_bytes(event["bytes"])
+                    FILES.set_bytes(bytes_base + event["bytes"])
             elif kind == "saved":
                 url = str(event.get("url") or "")
                 if url:
@@ -1207,10 +1274,37 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         PROC = None
         return code
 
-    emit({"type": "phase", "stage": "crawl", "message": "Crawling"})
-    code = engine_pass(payload)
-    if code not in (0, None) and not STOP.is_set() and not saved_urls and not skipped_urls:
-        emit({"type": "error", "message": f"The engine exited with code {code}. See engine\\appdata\\logs for details."})
+    # Telegram links go through the signed-in account when there is one; the engine's
+    # public t.me crawler handles them otherwise.
+    account = config.get("telegram") if isinstance(config.get("telegram"), dict) else None
+    tg_urls = [u for u in urls if telegram_account.is_telegram(u)] if account else []
+    if tg_urls and not telegram_account.available():
+        log("warning", "The Telegram library is missing from this NEXDROP folder, so Telegram links use the public preview instead of your account.")
+        tg_urls = []
+    tg_failed: list[str] = []
+    if tg_urls:
+        emit({"type": "phase", "stage": "download", "message": "Downloading from Telegram"})
+        downloading = True
+        log("info", f"Telegram: {len(tg_urls)} link(s) through your signed-in account.")
+        hooks = _TelegramHooks(redownload=redownload, skip_urls=set(payload["skipUrls"]),
+                               saved=saved_urls, failed=tg_failed, skipped=skipped_urls)
+        try:
+            telegram_account.TelegramDownloads(
+                account, folder, hooks, parallel=payload["perHost"], type_folders=payload["typeFolders"],
+                file_types=payload["fileTypes"], min_image_kb=payload["minImageKB"],
+            ).run(tg_urls)
+        except Exception as error:  # noqa: BLE001 - never lose the other links
+            log("error", f"Telegram: {telegram_account.explain(error)}")
+            for url in tg_urls:
+                if FILES.state(url) is None:
+                    hooks.failed(url, telegram_account.explain(error))
+    engine_urls = [u for u in urls if u not in tg_urls]
+    payload["urls"] = engine_urls
+    if engine_urls and not STOP.is_set():
+        emit({"type": "phase", "stage": "crawl", "message": "Crawling"})
+        code = engine_pass(payload)
+        if code not in (0, None) and not STOP.is_set() and not saved_urls and not skipped_urls:
+            emit({"type": "error", "message": f"The engine exited with code {code}. See engine\\appdata\\logs for details."})
 
     def fetch(url: str) -> None:
         if STOP.is_set():
@@ -1241,11 +1335,17 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
 
     if config.get("autoRetry", True) and not STOP.is_set():
         retry_pass(failed, referers, payload, engine_pass, fetch, set(unsupported))
+    failed.extend(tg_failed)  # the Telegram downloader already retried its own files
     failed[:] = [url for url in dict.fromkeys(failed) if FILES.state(url) != "done"]
     hints.forget_saved(lambda url: FILES.state(url) == "done")
 
     for text in hints.summary():
         log("warning", text)
+    with FILES.lock:
+        needs_account = sum(1 for row in FILES.rows.values() if "sign in to Telegram" in (row.get("reason") or ""))
+    if needs_account:
+        log("warning", f"{needs_account} Telegram file(s) are not in the public preview (too large, or documents). "
+                       "Sign in to Telegram in Settings > Sign-ins and run the link again to get them.")
     empty_reason = ""
     notes = list(dict.fromkeys(scrape_notes))
     if not saved_urls:

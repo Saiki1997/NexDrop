@@ -1140,7 +1140,7 @@
   });
 
   // ─── sign-ins ─────────────────────────────────────────────────────────────
-  const METHOD_LABEL = { none: "No sign-in", api_key: "API token", password: "Email and password", cookies: "Cookie file", chrome: "Import from Chrome" };
+  const METHOD_LABEL = { none: "No sign-in", api_key: "API token", password: "Email and password", cookies: "Cookie file", chrome: "Import from Chrome", telegram: "Telegram account" };
   let accounts = [];
 
   function currentAccount() {
@@ -1183,8 +1183,11 @@
       select.appendChild(option);
     }
     if (account.configured && account.methods.includes(account.method)) select.value = account.method;
+    else if (account.id === "telegram") select.value = "telegram";
     $("#account-note").textContent = account.note || "";
-    const state = account.configured ? `Signed in with ${METHOD_LABEL[account.method] || account.method}.` : "Not signed in.";
+    const state = account.configured
+      ? (account.label ? `Signed in as ${account.label}.` : `Signed in with ${METHOD_LABEL[account.method] || account.method}.`)
+      : "Not signed in.";
     setStatus("#account-status", account.lastError ? `${state} ${account.lastError}` : state, account.lastError ? "bad" : null);
     showMethodFields();
   }
@@ -1197,13 +1200,94 @@
       el.hidden = key === "cookies-host" ? !(method === "cookies" && account && !account.hosts?.length) : key !== method;
     });
     $("#btn-account-cookie").hidden = method !== "cookies";
-    $("#btn-account-save").hidden = method === "cookies" || method === "chrome" || (method === "none" && !account?.configured);
+    $("#btn-account-save").hidden = method === "cookies" || method === "chrome" || method === "telegram" || (method === "none" && !account?.configured);
+    if (method !== "telegram") telegramReset(false);
     $("#btn-account-save").textContent = method === "none" ? "Save" : "Save sign-in";
     $("#btn-account-test").hidden = !account?.configured;
     $("#btn-account-remove").hidden = !account?.configured;
     if (method === "chrome") {
       setStatus("#account-status", "Chrome keeps cookies encrypted with Windows, so NEXDROP can't read them. Export a cookies.txt for this site from your browser and choose Cookie file instead.", null);
     }
+  }
+
+  // Telegram: Send code → code → (two-step password) → done. The session never reaches this window.
+  let telegramStep = "start";
+
+  function telegramReset(cancelHelper) {
+    if (cancelHelper && telegramStep !== "start") api.telegramLogin({ action: "cancel" }).catch(() => {});
+    telegramStep = "start";
+    $("#tg-code-field").hidden = true;
+    $("#tg-password-field").hidden = true;
+    $("#tg-code").value = "";
+    $("#tg-password").value = "";
+    $("#btn-tg-send").hidden = false;
+    $("#btn-tg-send").textContent = "Send code";
+    $("#btn-tg-next").hidden = true;
+    $("#btn-tg-cancel").hidden = true;
+    for (const id of ["#tg-api-id", "#tg-api-hash", "#tg-phone"]) $(id).disabled = false;
+    $$(".tg-signin input").forEach((el) => el.removeAttribute("aria-invalid"));
+  }
+
+  function telegramShow(reply) {
+    $$(".tg-signin input").forEach((el) => el.removeAttribute("aria-invalid"));
+    if (reply.step === "code" || reply.step === "password") {
+      telegramStep = reply.step;
+      for (const id of ["#tg-api-id", "#tg-api-hash", "#tg-phone"]) $(id).disabled = true;
+      $("#tg-code-field").hidden = false;
+      $("#tg-password-field").hidden = reply.step !== "password";
+      $("#tg-code").disabled = reply.step === "password";
+      $("#btn-tg-send").textContent = "Send a new code";
+      $("#btn-tg-next").hidden = false;
+      $("#btn-tg-cancel").hidden = false;
+      (reply.step === "password" ? $("#tg-password") : $("#tg-code")).focus();
+      setStatus("#account-status", reply.message, null);
+      return;
+    }
+    if (reply.step === "done") {
+      telegramReset(false);
+      $("#tg-api-hash").value = "";
+      $("#tg-phone").value = "";
+      setStatus("#account-status", reply.message, "ok");
+      loadAccounts();
+      return;
+    }
+    if (reply.field === "api") telegramReset(false);
+    const field = { api: ["#tg-api-id", "#tg-api-hash"], phone: ["#tg-phone"], code: ["#tg-code"], password: ["#tg-password"] }[reply.field] || [];
+    field.forEach((id) => $(id).setAttribute("aria-invalid", "true"));
+    setStatus("#account-status", reply.message || "Telegram sign-in failed.", "bad");
+  }
+
+  async function telegramAsk(body, busyText) {
+    const buttons = ["#btn-tg-send", "#btn-tg-next"].map((id) => $(id));
+    buttons.forEach((b) => { b.disabled = true; });
+    setStatus("#account-status", busyText, null);
+    try {
+      telegramShow(await api.telegramLogin(body));
+    } catch (error) {
+      telegramShow({ step: "error", message: String(error?.message || error) });
+    } finally {
+      buttons.forEach((b) => { b.disabled = false; });
+    }
+  }
+
+  $("#btn-tg-send").addEventListener("click", () => {
+    $("#tg-code").disabled = false;
+    telegramAsk({ action: "send_code", apiId: $("#tg-api-id").value, apiHash: $("#tg-api-hash").value, phone: $("#tg-phone").value },
+      "Asking Telegram for a login code…");
+  });
+  $("#btn-tg-next").addEventListener("click", () => {
+    if (telegramStep === "password") telegramAsk({ action: "password", password: $("#tg-password").value }, "Checking the password…");
+    else telegramAsk({ action: "code", code: $("#tg-code").value }, "Signing in…");
+    $("#tg-password").value = "";
+  });
+  $("#btn-tg-cancel").addEventListener("click", () => {
+    telegramReset(true);
+    setStatus("#account-status", "Sign-in cancelled.", null);
+  });
+  for (const id of ["#tg-code", "#tg-password"]) {
+    $(id).addEventListener("keydown", (event) => {
+      if (event.key === "Enter") $("#btn-tg-next").click();
+    });
   }
 
   $("#account-site").addEventListener("change", fillMethods);

@@ -257,5 +257,307 @@ class FileTableStates(unittest.TestCase):
         self.assertEqual(table.counts["failed"], 1)
 
 
+class OneTimeTokens(unittest.TestCase):
+    def test_file_events_drop_tokens_so_rows_match_numbering(self):
+        sys.path.insert(0, str(ROOT / "engine"))
+        import importlib
+        import io
+
+        bridge = importlib.import_module("bridge")
+        from cyberdrop_dl.source_order import public_url
+
+        url = "https://cdn4.telesco.pe/file/abc.mp4?token=SECRET&w=1"
+        self.assertEqual(bridge.shown_url(url), public_url(url))
+        out = io.StringIO()
+        original = sys.stdout
+        sys.stdout = out
+        try:
+            bridge.emit({"type": "progress", "files": [{"url": url, "read": 1}]})
+            bridge.emit({"type": "skipped", "url": "https://t.me/a/5#2", "reason": "x"})
+        finally:
+            sys.stdout = original
+        self.assertNotIn("SECRET", out.getvalue())
+        self.assertIn("https://t.me/a/5#2", out.getvalue())
+
+
+class TelegramPublic(unittest.TestCase):
+    """The t.me/s crawler, fed a saved page instead of the network."""
+
+    def _crawler(self, pages, done=()):
+        from bs4 import BeautifulSoup
+        from cyberdrop_dl.crawlers.telegram import TelegramCrawler
+
+        crawler = object.__new__(TelegramCrawler)
+        calls = {"files": [], "pages": [], "warnings": []}
+
+        async def web_pager(url, selector):
+            calls["pages"].append(str(url))
+            for html in pages:
+                soup = BeautifulSoup(html, "html.parser")
+                yield soup
+
+        async def request_soup(url):
+            calls["pages"].append(str(url))
+            return BeautifulSoup(pages[0], "html.parser")
+
+        async def handle_file(url, item, name, ext, **kw):
+            calls["files"].append((str(url), name, str(kw["referer"]), str(item.url)))
+
+        async def complete(referer):
+            return str(referer) in done
+
+        crawler.web_pager = web_pager
+        crawler.request_soup = request_soup
+        crawler.handle_file = handle_file
+        crawler.check_complete_from_referer = complete
+        crawler.create_title = lambda title, album_id=None: f"{title} ({album_id})"
+        return crawler, calls
+
+    def _item(self, url):
+        from cyberdrop_dl.url_objects import AbsoluteHttpURL, ScrapeItem
+
+        return ScrapeItem(url=AbsoluteHttpURL(url))
+
+    def test_channel_files_in_post_order_with_sign_in_hints(self):
+        import asyncio
+        import logging
+
+        html = (ROOT / "tests" / "fixtures" / "telegram_channel.html").read_text(encoding="utf-8")
+        crawler, calls = self._crawler([html])
+        item = self._item("https://t.me/testchan")
+        with self.assertLogs("cyberdrop_dl", level=logging.WARNING) as logs:
+            asyncio.run(type(crawler).channel.__wrapped__(crawler, item, "testchan"))
+        names = [name for _, name, _, _ in calls["files"]]
+        self.assertEqual(names, ["testchan_10.jpg", "testchan_11.mp4", "testchan_14_1.jpg", "testchan_14_2.ogg", "testchan_14_3.mp4"])
+        self.assertEqual(calls["files"][1][2], "https://t.me/testchan/11")
+        self.assertEqual(item.folders, ["Test Channel (testchan)"])
+        needs = [line for line in logs.output if "Telegram needs sign-in" in line]
+        self.assertEqual(len(needs), 2)
+        self.assertIn("pack.zip", " ".join(needs))
+
+    def test_history_and_single_file(self):
+        import asyncio
+
+        html = (ROOT / "tests" / "fixtures" / "telegram_channel.html").read_text(encoding="utf-8")
+        crawler, calls = self._crawler([html], done={"https://t.me/testchan/10"})
+        asyncio.run(type(crawler).channel.__wrapped__(crawler, self._item("https://t.me/s/testchan"), "testchan"))
+        self.assertNotIn("testchan_10.jpg", [name for _, name, _, _ in calls["files"]])
+
+        crawler, calls = self._crawler([html])
+        asyncio.run(type(crawler).post.__wrapped__(crawler, self._item("https://t.me/testchan/11?single"), "testchan", 11))
+        self.assertEqual([name for _, name, _, _ in calls["files"]], ["testchan_11.mp4"])
+        self.assertIn("embed=1", calls["pages"][0])
+
+    def test_links_and_host_matching(self):
+        from cyberdrop_dl.crawlers.telegram import TelegramCrawler, classify
+        from cyberdrop_dl.url_objects import AbsoluteHttpURL
+
+        cases = {
+            "https://t.me/durov": "channel", "https://t.me/s/durov": "channel", "https://t.me/durov/42": "post",
+            "https://t.me/c/1234/5": "private", "https://t.me/+AbCd": "private", "https://t.me/joinchat/x": "private",
+            "https://t.me/share/url?url=x": "other", "https://t.me/addstickers/x": "other",
+        }
+        for url, kind in cases.items():
+            self.assertEqual(classify(AbsoluteHttpURL(url))[0], kind, url)
+        self.assertTrue(TelegramCrawler.check_host_match("telegram.me"))
+        self.assertFalse(TelegramCrawler.check_host_match("art.media.com"))
+
+
+class TelegramAccount(unittest.TestCase):
+    """Account downloads with a stand-in for Telethon's client."""
+
+    @staticmethod
+    def _message(mid, ext, size, *, grouped=None, photo=False, video=False, name=None, sticker=False):
+        import types
+
+        return types.SimpleNamespace(
+            id=mid, grouped_id=grouped, photo=object() if photo else None,
+            document=None if photo else object(), video=object() if video else None, voice=None, video_note=None,
+            gif=None, sticker=object() if sticker else None, web_preview=None,
+            file=types.SimpleNamespace(ext=ext, size=size, name=name),
+        )
+
+    def _client(self, messages, fail_ids=()):
+        import types
+
+        chat = types.SimpleNamespace(id=777, username="chan", title="My Channel")
+        calls = {"downloads": []}
+
+        class Client:
+            async def connect(self):
+                pass
+
+            async def disconnect(self):
+                pass
+
+            async def is_user_authorized(self):
+                return True
+
+            async def get_entity(self, peer):
+                return chat
+
+            async def get_messages(self, entity, ids):
+                by_id = {m.id: m for m in messages}
+                if isinstance(ids, list):
+                    return [by_id.get(i) for i in ids]
+                return by_id.get(ids)
+
+            async def iter_messages(self, entity, reverse=False):
+                for m in sorted(messages, key=lambda m: m.id, reverse=not reverse):
+                    yield m
+
+            async def download_media(self, message, file, progress_callback=None):
+                calls["downloads"].append(message.id)
+                if message.id in fail_ids:
+                    raise ValueError("boom")
+                data = b"x" * message.file.size
+                with open(file, "wb") as handle:
+                    handle.write(data)
+                if progress_callback:
+                    progress_callback(len(data), len(data))
+                return file
+
+        return Client(), calls
+
+    def _hooks(self, history=()):
+        import types
+
+        rows, events = {}, {"saved": [], "failed": [], "skipped": [], "log": []}
+
+        def update(url, **fields):
+            rows.setdefault(url, {}).update(fields)
+
+        return types.SimpleNamespace(
+            stop=threading.Event(), update=update, add_bytes=lambda n: None,
+            number=lambda url, name: (0, name),
+            skip=lambda url: "already downloaded" if url in history else "",
+            saved=lambda url, path: events["saved"].append((url, path.name)),
+            failed=lambda url, reason: events["failed"].append((url, reason)),
+            skipped=lambda url, reason: events["skipped"].append((url, reason)),
+            log=lambda level, text: events["log"].append(text),
+        ), rows, events
+
+    def test_links(self):
+        import telegram_account as tg
+
+        self.assertEqual(tg.parse_link("https://t.me/c/1234/56").kind, "private_post")
+        self.assertEqual(tg.parse_link("https://t.me/c/1234/9/56").message_id, 56)
+        self.assertEqual(tg.parse_link("https://t.me/+AbC_1").invite, "AbC_1")
+        self.assertEqual(tg.parse_link("https://t.me/joinchat/xyz").kind, "invite")
+        self.assertEqual(tg.parse_link("https://t.me/s/chan").kind, "channel")
+        self.assertTrue(tg.parse_link("https://t.me/chan/5?single").single)
+        self.assertIsNone(tg.parse_link("https://t.me/share/url?x=1"))
+        self.assertIsNone(tg.parse_link("https://example.com/chan/5"))
+        self.assertTrue(tg.is_telegram("https://telegram.me/x"))
+
+    def test_channel_oldest_first_with_filters_history_and_failures(self):
+        import telegram_account as tg
+
+        messages = [
+            self._message(1, ".jpg", 50, photo=True),
+            self._message(2, ".mp4", 400, video=True),
+            self._message(3, ".zip", 900, name="pack.zip"),
+            self._message(4, ".webp", 10, sticker=True),
+            self._message(5, ".mp4", 300, video=True),
+            self._message(6, ".jpg", 5000, photo=True),
+        ]
+        client, calls = self._client(messages, fail_ids={5})
+        hooks, rows, events = self._hooks(history={"https://t.me/chan/2"})
+        with tempfile.TemporaryDirectory() as tmp:
+            tg.TelegramDownloads({"session": "", "apiId": 1, "apiHash": "x"}, Path(tmp), hooks, parallel=2,
+                                 min_image_kb=1, client_factory=lambda account: client).run(["https://t.me/chan"])
+            saved = sorted(name for _, name in events["saved"])
+            self.assertEqual(saved, ["chan_3_pack.zip", "chan_6.jpg"])
+            self.assertTrue((Path(tmp) / "My Channel (Telegram)" / "chan_6.jpg").is_file())
+            self.assertFalse(list(Path(tmp).rglob("*.part")))
+        self.assertIn(("https://t.me/chan/1", "smaller than the minimum size"), events["skipped"])
+        self.assertIn(("https://t.me/chan/2", "already downloaded"), events["skipped"])
+        self.assertEqual(events["failed"][0][0], "https://t.me/chan/5")
+        self.assertNotIn(4, calls["downloads"])  # stickers are not files
+        self.assertEqual(rows["https://t.me/chan/6"]["state"], "done")
+
+    def test_album_post_and_single(self):
+        import telegram_account as tg
+
+        messages = [self._message(i, ".jpg", 20, grouped=99 if i in (10, 11, 12) else None, photo=True) for i in range(8, 15)]
+        for url, expected in (("https://t.me/chan/11", ["chan_10.jpg", "chan_11.jpg", "chan_12.jpg"]),
+                              ("https://t.me/chan/11?single", ["chan_11.jpg"])):
+            client, _ = self._client(messages)
+            hooks, _, events = self._hooks()
+            with tempfile.TemporaryDirectory() as tmp:
+                tg.TelegramDownloads({"session": "", "apiId": 1, "apiHash": "x"}, Path(tmp), hooks,
+                                     client_factory=lambda account: client).run([url])
+            self.assertEqual(sorted(name for _, name in events["saved"]), expected, url)
+
+    def test_stop_leaves_no_partial_files(self):
+        import telegram_account as tg
+
+        client, _ = self._client([self._message(1, ".mp4", 100, video=True)])
+        hooks, rows, events = self._hooks()
+        hooks.stop.set()
+        with tempfile.TemporaryDirectory() as tmp:
+            tg.TelegramDownloads({"session": "", "apiId": 1, "apiHash": "x"}, Path(tmp), hooks,
+                                 client_factory=lambda account: client).run(["https://t.me/chan/1"])
+            self.assertFalse([p for p in Path(tmp).rglob("*") if p.is_file()])
+        self.assertFalse(events["saved"])
+
+    def test_login_steps(self):
+        import asyncio
+
+        import telegram_account as tg
+        import telethon
+        from telethon import errors
+
+        sent = []
+
+        class FakeClient:
+            def __init__(self, session, api_id, api_hash, **kw):
+                self.session = type("S", (), {"save": lambda self: "SESSION-STRING"})()
+
+            async def connect(self):
+                pass
+
+            async def disconnect(self):
+                pass
+
+            async def send_code_request(self, phone):
+                sent.append(phone)
+                return type("Sent", (), {"type": type("SentCodeTypeApp", (), {})()})()
+
+            async def sign_in(self, phone=None, code=None, password=None):
+                if code == "11111":
+                    raise errors.PhoneCodeInvalidError(request=None)
+                if code:
+                    raise errors.SessionPasswordNeededError(request=None)
+                if password != "pw":
+                    raise errors.PasswordHashInvalidError(request=None)
+
+            async def get_me(self):
+                return type("Me", (), {"first_name": "Saiful", "last_name": None, "username": "saiful"})()
+
+        lines = iter([
+            json.dumps({"cmd": "send_code", "apiId": "12", "apiHash": "0" * 31, "phone": "+60 12"}),
+            json.dumps({"cmd": "send_code", "apiId": "12", "apiHash": "a" * 32, "phone": "+60 12-345 6789"}),
+            json.dumps({"cmd": "code", "code": "1 1 1 1 1"}),
+            json.dumps({"cmd": "code", "code": "22222"}),
+            json.dumps({"cmd": "password", "password": "nope"}),
+            json.dumps({"cmd": "password", "password": "pw"}),
+            "",
+        ])
+        out = []
+        original_client, original_out = telethon.TelegramClient, tg._out
+        telethon.TelegramClient = FakeClient
+        tg._out = out.append
+        try:
+            asyncio.run(tg.login_loop(lambda: next(lines)))
+        finally:
+            telethon.TelegramClient, tg._out = original_client, original_out
+        steps = [(o["step"], o.get("field", "")) for o in out]
+        self.assertEqual(steps, [("error", "api"), ("code", ""), ("error", "code"), ("password", ""), ("error", "password"), ("done", "")])
+        self.assertEqual(sent, ["+60123456789"])
+        self.assertEqual(out[-1]["session"], "SESSION-STRING")
+        self.assertEqual(out[-1]["username"], "saiful")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

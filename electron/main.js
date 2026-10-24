@@ -492,6 +492,12 @@ function startSession(config) {
   } catch {
     /* a missing vault must not block a download that needs no account */
   }
+  try {
+    const telegram = accountVault().telegramAuth();
+    if (telegram) outgoing.telegram = telegram;
+  } catch {
+    /* without it, Telegram links use the public preview */
+  }
   if (fs.existsSync(ACCOUNT_COOKIES)) outgoing.cookieFolder = ACCOUNT_COOKIES;
   // stdin stays open so "stop" can be sent later.
   child.stdin.on("error", () => {});
@@ -687,6 +693,7 @@ ipcMain.handle("auth-save", async (_event, body) => {
     const id = String(body?.id || "");
     if (!ACCOUNT_IDS.has(id)) return { ok: false, error: "That website has no account settings in this build." };
     const method = String(body?.method || "none");
+    if (method === "telegram") return { ok: false, error: "Use Send code to sign in to Telegram." };
     const store = accountVault();
     const entry = store.list().find((item) => item.id === id);
     if (method === "cookies") {
@@ -744,6 +751,15 @@ ipcMain.handle("auth-test", async (_event, rawId) => {
     store.mark(id, new Date().toISOString(), parsed.state === "present" ? "" : parsed.message);
     return { ok: true, ...parsed };
   }
+  if (id === "telegram" && secret.session) {
+    const result = await runPython([path.join(ROOT, "desktop", "telegram_account.py"), "--check"], {
+      input: `${JSON.stringify({ apiId: secret.apiId, apiHash: secret.apiHash, session: secret.session })}\n`,
+      timeout: 45000,
+    });
+    const parsed = parseJson((result.stdout || "").trim().split("\n").pop() || "", null) || { state: "error", message: "Could not check the Telegram sign-in." };
+    store.mark(id, new Date().toISOString(), parsed.state === "valid" ? "" : parsed.message);
+    return { ok: true, state: parsed.state, message: parsed.message };
+  }
   if (id === "real_debrid" && secret.apiKey) {
     const outcome = await new Promise((resolve) => {
       const request = https.get(
@@ -766,6 +782,118 @@ ipcMain.handle("auth-test", async (_event, rawId) => {
     return { ok: true, ...outcome };
   }
   return { ok: true, state: "unchecked", message: "Saved. This site has no separate connection test, so the next download will use it." };
+});
+
+// ─── Telegram sign-in ───────────────────────────────────────────────────────
+// A small Python helper holds the half-finished sign-in (Telegram ties the code
+// to that connection). The finished session goes straight into the encrypted
+// vault; the window only ever sees the account's display name.
+
+const telegramLogin = { child: null, pending: null, buffer: "", apiId: "", apiHash: "", timer: null };
+
+function stopTelegramLogin() {
+  const child = telegramLogin.child;
+  telegramLogin.child = null;
+  clearTimeout(telegramLogin.timer);
+  if (telegramLogin.pending) {
+    telegramLogin.pending({ step: "error", field: "", message: "The sign-in was closed. Start again with Send code." });
+    telegramLogin.pending = null;
+  }
+  if (child && child.exitCode === null) {
+    try {
+      child.stdin.end(`${JSON.stringify({ cmd: "cancel" })}\n`);
+    } catch {
+      /* already closed */
+    }
+    setTimeout(() => {
+      if (child.exitCode === null) killTree(child.pid, true);
+    }, 3000);
+  }
+}
+
+function telegramHelper() {
+  if (telegramLogin.child && telegramLogin.child.exitCode === null) return telegramLogin.child;
+  const child = spawn(PYTHON, ["-u", path.join(ROOT, "desktop", "telegram_account.py"), "--login"], {
+    cwd: ROOT,
+    windowsHide: true,
+    env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUNBUFFERED: "1" },
+  });
+  telegramLogin.child = child;
+  telegramLogin.buffer = "";
+  const decoder = new StringDecoder("utf8");
+  child.stdout.on("data", (chunk) => {
+    telegramLogin.buffer += decoder.write(chunk);
+    let index;
+    while ((index = telegramLogin.buffer.indexOf("\n")) >= 0) {
+      const line = telegramLogin.buffer.slice(0, index).trim();
+      telegramLogin.buffer = telegramLogin.buffer.slice(index + 1);
+      const reply = parseJson(line, null);
+      if (reply && telegramLogin.pending) {
+        const resolve = telegramLogin.pending;
+        telegramLogin.pending = null;
+        clearTimeout(telegramLogin.timer);
+        resolve(reply);
+      }
+    }
+  });
+  child.stderr.on("data", (chunk) => logFile.write(`[telegram] ${String(chunk).slice(0, 1000)}`));
+  child.on("error", () => {});
+  child.on("close", () => {
+    if (telegramLogin.child === child) telegramLogin.child = null;
+    if (telegramLogin.pending) {
+      telegramLogin.pending({ step: "error", field: "", message: "The Telegram helper stopped. Start again with Send code." });
+      telegramLogin.pending = null;
+    }
+  });
+  return child;
+}
+
+function askTelegram(command) {
+  return new Promise((resolve) => {
+    const child = telegramHelper();
+    telegramLogin.pending = resolve;
+    clearTimeout(telegramLogin.timer);
+    telegramLogin.timer = setTimeout(() => {
+      if (telegramLogin.pending === resolve) {
+        telegramLogin.pending = null;
+        resolve({ step: "error", field: "", message: "Telegram did not answer in time. Check the connection and try again." });
+      }
+    }, 90000);
+    child.stdin.write(`${JSON.stringify(command)}\n`);
+  });
+}
+
+ipcMain.handle("telegram-login", async (_event, body) => {
+  const action = String(body?.action || "");
+  if (action === "cancel") {
+    stopTelegramLogin();
+    return { step: "cancelled" };
+  }
+  let reply;
+  if (action === "send_code") {
+    stopTelegramLogin();
+    telegramLogin.apiId = String(body?.apiId || "").trim();
+    telegramLogin.apiHash = String(body?.apiHash || "").trim().toLowerCase();
+    reply = await askTelegram({ cmd: "send_code", apiId: telegramLogin.apiId, apiHash: telegramLogin.apiHash, phone: String(body?.phone || "") });
+  } else if (action === "code" || action === "password") {
+    if (!telegramLogin.child) return { step: "error", field: "", message: "Start with Send code." };
+    reply = await askTelegram(action === "code" ? { cmd: "code", code: String(body?.code || "") } : { cmd: "password", password: String(body?.password || "") });
+  } else {
+    return { step: "error", field: "", message: "Unknown step." };
+  }
+  if (reply.step !== "done") {
+    if (reply.step === "error" && reply.field === "api") stopTelegramLogin();
+    return { step: reply.step, field: reply.field || "", message: reply.message || "" };
+  }
+  const label = `${reply.name || "Telegram account"}${reply.username ? ` (@${reply.username})` : ""}`;
+  try {
+    accountVault().save("telegram", "telegram", { session: reply.session, apiId: telegramLogin.apiId, apiHash: telegramLogin.apiHash, label });
+  } catch (error) {
+    stopTelegramLogin();
+    return { step: "error", field: "", message: error.message };
+  }
+  stopTelegramLogin();
+  return { step: "done", message: `Signed in to Telegram as ${label}. Telegram links now use this account.` };
 });
 
 ipcMain.handle("auth-chrome", (_event, body) => {
@@ -823,6 +951,7 @@ if (!app.requestSingleInstanceLock()) {
 app.on("before-quit", () => {
   killSession(true);
   stopFlare();
+  stopTelegramLogin();
   logFile.close();
 });
 app.on("window-all-closed", () => app.quit());

@@ -1,3 +1,16 @@
+# NEXDROP 2.3.0
+
+## New: Telegram
+- **Public channels and posts, no account needed.** Paste `t.me/<channel>`, `t.me/s/<channel>` or `t.me/<channel>/<post>` (telegram.me and telegram.dog work too). NEXDROP reads Telegram's public web preview and saves photos, videos, round videos and voice notes, oldest post first, numbered in channel order, into `<Channel name> (Telegram)`. A post link saves the whole album; add `?single` for just that file. Files already saved are skipped on the next run, even though Telegram's file links change on every visit.
+- **Sign in with your Telegram account for everything else** (Settings > Sign-ins > Telegram): files over the public preview's size limit, documents (zip, pdf, apk, ...), channels and groups you've joined, private links (`t.me/c/<id>/<post>`) and invite links of chats you're in. Enter your own API ID and API hash from my.telegram.org, your phone number, then the code Telegram sends you (and your two-step verification password if you use one). The session is encrypted with Windows like the other sign-ins and never shown; Check confirms which account is signed in. NEXDROP only reads and downloads: it never posts, joins or leaves anything.
+- Without the sign-in, files the public preview leaves out show as Skipped with "sign in to Telegram", and the end of the run says how many there were.
+- Telegram downloads use the same file list, progress bars, numbering, history, file-type filters, type folders and Pause as everything else. Up to 4 files download at once per account; cryptg (bundled) does Telegram's encryption in C for speed.
+- A `t.me` channel link found inside a forum post is not followed: pulling a whole channel from a promo link would be a surprise. Paste the channel link to get it.
+
+## Fixed
+- Files whose links carry a one-time token (Telegram and many CDNs) could appear twice in the list: once numbered and Waiting, once downloading without its number. NEXDROP now strips tokens and signatures from links before showing or recording them, so each file is one row, and tokens no longer end up in logs or history.
+- The total downloaded size stopped counting during the automatic retry pass, because each engine pass counts from zero.
+
 # NEXDROP 2.2.0
 
 ## New

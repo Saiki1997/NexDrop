@@ -1,4 +1,4 @@
-NEXDROP 2.1
+NEXDROP 2.3
 One interface. Multiple sources. Real-time control.
 
 This folder is the portable Windows x64 build. NexDrop.exe is the Electron
@@ -15,6 +15,7 @@ Layout
   desktop\source_registry.py  unsupported-link log and site check
   engine\bridge.py            patched Cyberdrop-DL 10.10.0 adapter
   engine\vendor               patched engine source (do not replace)
+  engine\thirdparty           Telethon, for the Telegram sign-in
   engine\appdata              settings, history, logs, Electron profile
   runtime\python              embeddable CPython for Windows
   runtime\ffmpeg              ffmpeg and ffprobe, used for HLS video
@@ -52,9 +53,17 @@ Settings (the sliders button, or Ctrl+,)
               nested thread depth
   Speed       downloads at once (1-8), per site (1-4), attempts, speed cap,
               timeouts
-  Sign-ins    API tokens (GoFile, Pixeldrain, Nova, Real-Debrid), MEGA
-              email and password, SimpCity or one other site by cookie file,
-              plus cookie files used for every site
+  Sign-ins    Telegram account, API tokens (GoFile, Pixeldrain, Nova,
+              Real-Debrid), MEGA email and password, SimpCity or one other
+              site by cookie file, plus cookie files used for every site
+
+Telegram
+  Public channels need no account: paste t.me/<channel> or a post link.
+  For large files, documents and chats you've joined (t.me/c/... links),
+  open Settings > Sign-ins > Telegram. Create an app once at
+  my.telegram.org/apps, enter its API ID and API hash and your phone number,
+  press Send code, then type the code Telegram sends you. NEXDROP only reads
+  and downloads; it never posts or joins anything.
   Sites       site handler check and the unsupported-link report
 
 Sign-ins and cookies

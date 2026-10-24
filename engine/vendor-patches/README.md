@@ -7,6 +7,10 @@ The build script copies them over the vendor tree. Each change is marked `NEXDRO
   an import, so `new_task_group()` raised `NameError: name 'aio' is not defined` for Turbo, GoonBox
   albums, Kemono, Kick, SpankBang, Pornpics, Koofr and the forum crawler, and debug crawlers could
   not register.
+- `cyberdrop_dl/crawlers/telegram.py` (new file): public Telegram channels and posts through
+  t.me's web preview. Files the preview leaves out are logged as `Telegram needs sign-in`, which
+  the bridge turns into Skipped rows. History is kept per message link, because Telegram's CDN
+  links change on every visit. A channel link found on another page is not followed.
 - `cyberdrop_dl/crawlers/tiktok.py`: a post without a music track no longer fails the whole
   profile with `ValueError('Empty URL')`.
 

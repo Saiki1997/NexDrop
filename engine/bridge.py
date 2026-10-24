@@ -40,7 +40,41 @@ _URL_RE = re.compile(r"https?://[^\s)\"'<>]+")
 _FAIL_RE = re.compile(r"^(?P<prefix>.*?)\bFailed: (?P<url>https?://\S+) \((?P<reason>.*?)\)(?: -> Referer: (?P<referer>\S+))?\s*$")
 
 
+_FILE_EVENTS = frozenset({"file_start", "file_end", "saved", "failed", "skipped", "retry"})
+_SENSITIVE = ("password", "token", "auth", "cookie", "session", "sig", "key", "secret")
+
+
+def shown_url(url: str, *, keep_fragment: bool = False) -> str:
+    """The link as the window and history see it: without tokens or signatures.
+
+    Same rule as the engine's source-order list, so a file's numbering, progress
+    and result land on one row even when its link carries a one-time token
+    (Telegram, many CDNs)."""
+    from urllib.parse import parse_qsl, urlsplit, urlunsplit
+
+    try:
+        parts = urlsplit(str(url))
+    except ValueError:
+        return str(url)
+    if not parts.query:
+        query = ""
+    else:
+        query = "&".join(f"{name}={value}" for name, value in parse_qsl(parts.query, keep_blank_values=True)
+                         if not any(token in name.lower() for token in _SENSITIVE))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment if keep_fragment else ""))
+
+
 def emit(payload: dict) -> None:
+    kind = payload.get("type")
+    if kind in _FILE_EVENTS and payload.get("url") and str(payload["url"]).startswith("http"):
+        # A skipped album item is reported by its message link plus #1, #2 ...
+        payload = {**payload, "url": shown_url(payload["url"], keep_fragment=kind == "skipped")}
+    elif kind == "progress" and payload.get("files"):
+        payload = {**payload, "files": [{**row, "url": shown_url(row["url"])} if str(row.get("url") or "").startswith("http") else row
+                                        for row in payload["files"]]}
+    elif kind == "done" and payload.get("saved"):
+        payload = {**payload, "saved": [{**row, "url": shown_url(row["url"])} if str(row.get("url") or "").startswith("http") else row
+                                        for row in payload["saved"]]}
     line = json.dumps(payload, default=str, ensure_ascii=False) + "\n"
     with _out_lock:
         sys.stdout.write(line)
@@ -97,6 +131,16 @@ class _LogBridge(logging.Handler):
             parts = raw.split("\t")
             if len(parts) >= 3 and parts[1].isdigit():
                 emit({"type": "order", "sequence": int(parts[1]), "url": parts[2], "name": parts[3] if len(parts) > 3 else ""})
+            return
+        if raw.startswith("Telegram needs sign-in\t"):
+            parts = raw.split("\t")
+            if len(parts) >= 3:
+                emit({"type": "skipped", "url": parts[1], "reason": f"{parts[2]}: sign in to Telegram in Settings > Sign-ins"})
+            return
+        if raw.startswith("Telegram result\t"):
+            parts = raw.split("\t")
+            if len(parts) >= 3:
+                emit({"type": "log", "level": "info", "message": f"Scanned t.me/{parts[1]}: {parts[2]}"})
             return
         if raw.startswith("Forum result\t"):
             emit({"type": "forum_result", "message": raw.replace("\t", " ")})
@@ -454,7 +498,7 @@ def _install_resume_skip(urls: list) -> None:
     original = Downloader._check_skip_by_config
 
     async def check(self, media_item):
-        if str(media_item.url) in skip:
+        if str(media_item.url) in skip or shown_url(str(media_item.url)) in skip:
             raise SavedBeforePause(media_item)
         return await original(self, media_item)
 
