@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       base_tag:
-        description: "Release whose NexDrop-windows-x64.zip supplies Electron, Python, ffmpeg and FlareSolverr"
-        default: "v2.0.0"
-        required: true
+        description: "Leave empty. Only to pick which EARLIER release supplies Electron, Python, ffmpeg and FlareSolverr (not the version being built)"
+        default: ""
+        required: false
       draft:
         description: "Create the release as a draft (publish it yourself afterwards)"
         type: boolean
@@ -37,7 +37,21 @@ jobs:
           fi
 
       - name: Download the base runtime
-        run: gh release download "${{ inputs.base_tag }}" --pattern NexDrop-windows-x64.zip --dir base
+        env:
+          BASE_TAG: ${{ inputs.base_tag }}
+          NEW_TAG: v${{ steps.version.outputs.version }}
+        run: |
+          # The base is an earlier published release; the version being built does not exist yet.
+          if [ -n "$BASE_TAG" ] && [ "$BASE_TAG" != "$NEW_TAG" ] && gh release view "$BASE_TAG" >/dev/null 2>&1; then
+            base="$BASE_TAG"
+          else
+            [ -n "$BASE_TAG" ] && echo "::warning::Release $BASE_TAG can't be the base (it is the version being built, or it does not exist). Using the newest earlier release instead."
+            base=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=50" --jq \
+              "[.[] | select(.draft | not) | select(.tag_name != \"$NEW_TAG\") | select(any(.assets[]; .name == \"NexDrop-windows-x64.zip\"))][0].tag_name")
+          fi
+          [ -n "$base" ] && [ "$base" != "null" ] || { echo "::error::No earlier release has NexDrop-windows-x64.zip to build from."; exit 1; }
+          echo "Base runtime from $base"
+          gh release download "$base" --pattern NexDrop-windows-x64.zip --dir base
 
       - name: Build the portable zip
         run: sh windows/make-release.sh base/NexDrop-windows-x64.zip dist
