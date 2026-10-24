@@ -9,9 +9,9 @@
     {
       "host": "monotirou.com",
       "state": "unsupported",
-      "assessed": "2026-10-24",
-      "reason": "Anonymous uploads with no uploader identity, age or consent verification, and listings that point to minors and to recordings shared without consent. NEXDROP can't tell lawful items on this site from the rest, so it doesn't download from it.",
-      "reassess_when": "The site verifies uploaders' identity and the age and consent of everyone shown (records like 18 U.S.C. 2257), runs a working takedown process, and its listings no longer point to minors or non-consensual material. See docs/site-assessments/monotirou.com.md.",
+      "assessed": "2026-10-24 (reassessed 2026-10-24)",
+      "reason": "Anonymous uploads with no uploader identity, age or consent verification, and listings that point to minors and to recordings shared without consent. Its terms forbid such material and it lists reporting emails, but rules that rely on self-declaration don't verify anyone, so NEXDROP can't tell lawful items from the rest.",
+      "reassess_when": "The site verifies uploaders' identity and the age and consent of everyone shown (records like 18 U.S.C. 2257), names its operator and publishes response times for takedowns, and its listings no longer point to minors or non-consensual material. See docs/site-assessments/monotirou.com.md.",
       "doc": "docs/site-assessments/monotirou.com.md"
     }
   ],
