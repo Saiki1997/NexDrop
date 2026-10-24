@@ -41,3 +41,6 @@ wassima==2.1.4
 wcwidth==0.9.2
 xxhash==4.0.1
 yarl==1.25.1
+# Telegram account mode (shipped in engine/thirdparty by windows/telegram-libs.sh)
+telethon==1.45.0
+cryptg==0.6.0

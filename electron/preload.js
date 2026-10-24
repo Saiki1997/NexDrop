@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld("api", {
   authRemove: (id) => ipcRenderer.invoke("auth-remove", id),
   authTest: (id) => ipcRenderer.invoke("auth-test", id),
   authChrome: (body) => ipcRenderer.invoke("auth-chrome", body),
+  telegramLogin: (body) => ipcRenderer.invoke("telegram-login", body),
   onPipelineEvent: (callback) => {
     const listener = (_event, data) => callback(data);
     ipcRenderer.on("pipeline-event", listener);

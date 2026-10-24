@@ -233,6 +233,21 @@
         <label class="field" data-for="api_key"><span class="field-label">API token</span><input type="password" id="account-key" autocomplete="off"></label>
         <label class="field" data-for="password"><span class="field-label">Email</span><input type="text" id="account-email" autocomplete="off"></label>
         <label class="field" data-for="password"><span class="field-label">Password</span><input type="password" id="account-password" autocomplete="off"></label>
+        <div class="tg-signin" data-for="telegram">
+          <p class="field-help">Create an app once at <a href="https://my.telegram.org/apps" target="_blank" rel="noopener">my.telegram.org/apps</a> (sign in there with your phone number, then API development tools) and copy its API ID and API hash. Telegram then sends a login code to your Telegram app.</p>
+          <div class="field-row tg-pair">
+            <label class="field"><span class="field-label">API ID</span><input type="text" id="tg-api-id" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="1234567"></label>
+            <label class="field"><span class="field-label">API hash</span><input type="password" id="tg-api-hash" autocomplete="off" spellcheck="false" placeholder="32 letters and digits"></label>
+          </div>
+          <label class="field"><span class="field-label">Phone number</span><input type="tel" id="tg-phone" autocomplete="off" placeholder="+60 12 345 6789"></label>
+          <label class="field" id="tg-code-field" hidden><span class="field-label">Login code</span><input type="text" id="tg-code" inputmode="numeric" autocomplete="one-time-code" maxlength="12"></label>
+          <label class="field" id="tg-password-field" hidden><span class="field-label">Two-step verification password</span><input type="password" id="tg-password" autocomplete="off"></label>
+          <div class="field-row actions">
+            <button class="btn btn-primary" id="btn-tg-send" type="button">Send code</button>
+            <button class="btn btn-primary" id="btn-tg-next" type="button" hidden>Sign in</button>
+            <button class="btn btn-quiet" id="btn-tg-cancel" type="button" hidden>Cancel</button>
+          </div>
+        </div>
         <label class="field" data-for="cookies-host"><span class="field-label">Site address</span><input type="text" id="account-host" placeholder="example.com"></label>
         <div class="field-row actions">
           <button class="btn btn-primary" id="btn-account-save" type="button">Save sign-in</button>

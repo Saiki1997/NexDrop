@@ -65,6 +65,7 @@ function createVault(file, encrypt, decrypt) {
           method: saved ? saved.method : "none",
           lastCheck: saved ? saved.lastCheck || null : null,
           lastError: saved ? saved.lastError || "" : "",
+          label: saved ? saved.label || "" : "",
         };
       });
     },
@@ -89,6 +90,14 @@ function createVault(file, encrypt, decrypt) {
         if (!cookiePath) throw new Error("Choose a cookie file first.");
         secret.cookieFile = cookiePath;
         secret.host = String(fields.host || "").trim().toLowerCase();
+      } else if (method === "telegram") {
+        const session = String(fields.session || "");
+        const apiId = String(fields.apiId || "").trim();
+        const apiHash = String(fields.apiHash || "").trim();
+        if (!session || !/^\d+$/.test(apiId) || !/^[0-9a-f]{32}$/.test(apiHash)) throw new Error("The Telegram sign-in did not finish. Nothing was saved.");
+        secret.session = session;
+        secret.apiId = apiId;
+        secret.apiHash = apiHash;
       } else if (method === "none") {
         this.remove(id);
         return { configured: false };
@@ -103,8 +112,13 @@ function createVault(file, encrypt, decrypt) {
       if (secret.password && preview.includes(secret.password)) {
         throw new Error("The password would have been stored in the clear. Nothing was kept.");
       }
+      if (secret.session && preview.includes(secret.session)) {
+        throw new Error("The Telegram session would have been stored in the clear. Nothing was kept.");
+      }
       const data = read();
-      data.accounts[id] = { method, secret: blob, lastCheck: null, lastError: "" };
+      // label is only the account's display name (for example "Saiful (@saiful)"), never a secret.
+      const label = method === "telegram" ? String(fields.label || "").slice(0, 80) : "";
+      data.accounts[id] = { method, secret: blob, lastCheck: method === "telegram" ? new Date().toISOString() : null, lastError: "", label };
       write(data);
       return { configured: true, method };
     },
@@ -129,6 +143,13 @@ function createVault(file, encrypt, decrypt) {
       data.accounts[id].lastCheck = lastCheck;
       data.accounts[id].lastError = String(lastError || "").slice(0, 180);
       write(data);
+    },
+
+    /** The Telegram account for the session process, or null. */
+    telegramAuth() {
+      const secret = this.readSecret("telegram");
+      if (!secret || secret.method !== "telegram" || !secret.session) return null;
+      return { apiId: secret.apiId, apiHash: secret.apiHash, session: secret.session };
     },
 
     engineAuth() {

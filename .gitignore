@@ -5,3 +5,4 @@ __pycache__/
 engine/.venv
 runtime/
 logs/
+engine/thirdparty/
