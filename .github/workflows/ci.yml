@@ -37,6 +37,9 @@ jobs:
           CDL_APPDATA_FOLDER: ${{ runner.temp }}/cdl
         run: python -m unittest discover -s tests -p "test_*.py"
 
+      - name: Offline profile metadata and URL classification tests
+        run: python -m unittest discover -s tests -p test_profile_metadata.py -v
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
