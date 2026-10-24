@@ -1,4 +1,4 @@
-# NEXDROP patch: new crawler for Monotirou profiles and videos (see engine/vendor-patches/README.md).
+# NEXDROP patch: new crawler for Monotirou profiles, videos, searches and tags (see engine/vendor-patches/README.md).
 from __future__ import annotations
 
 import json
@@ -17,6 +17,8 @@ class MonotirouCrawler(Crawler):
     SUPPORTED_PATHS: ClassVar[SupportedPaths] = {
         "Video": "/video/<video_id>",
         "Profile": "/users/<username>",
+        "Search": "/?q=<query>",
+        "Tag": "/tags/<tag>",
     }
     PRIMARY_URL: ClassVar[AbsoluteHttpURL] = AbsoluteHttpURL("https://monotirou.com")
     DOMAIN: ClassVar[str] = "monotirou"
@@ -24,6 +26,7 @@ class MonotirouCrawler(Crawler):
 
     API_USER_VIDEOS = "https://api.monotirou.com/api/users/{username}/videos"
     API_VIDEO = "https://api.monotirou.com/api/videos/{public_id}"
+    API_SEARCH = "https://api.monotirou.com/api/videos/search"
 
     async def fetch(self, scrape_item: ScrapeItem) -> None:
         # Absolute URL parts begin with '/', not an empty string.
@@ -35,6 +38,12 @@ class MonotirouCrawler(Crawler):
                 await self.video(scrape_item, video_id)
             case ["users", username]:
                 await self.profile(scrape_item, username)
+            case [] | ["search"] if scrape_item.url.query.get("q", "").strip():
+                query = scrape_item.url.query["q"].strip()
+                await self.search(scrape_item, query, f"{query} [search]")
+            case ["tags", tag]:
+                # The site's tag page lists the search results for the tag name.
+                await self.search(scrape_item, tag, f"{tag} [tag]")
             case _:
                 raise ValueError(f"Unsupported Monotirou path: {scrape_item.url}")
 
@@ -108,3 +117,39 @@ class MonotirouCrawler(Crawler):
             if cursor in seen_cursors:
                 raise ScrapeError(422, message="Monotirou pagination cursor did not advance")
             seen_cursors.add(cursor)
+
+    @error_handling_wrapper
+    async def search(self, scrape_item: ScrapeItem, query: str, title: str) -> None:
+        scrape_item.setup_as_profile(self.create_title(title))
+        # The API returns at most 50 per page; a short page is the last one.
+        limit = 48
+        offset = 0
+        seen_ids: set[str] = set()
+
+        while True:
+            api_url = AbsoluteHttpURL(self.API_SEARCH).with_query({"q": query, "limit": str(limit), "offset": str(offset)})
+            data = await self.request_json(api_url)
+            videos = data.get("data") if isinstance(data, dict) else None
+            if not isinstance(videos, list) or any(not isinstance(item, dict) for item in videos):
+                raise ScrapeError(422, message="Monotirou returned an invalid search listing")
+            if not videos:
+                return
+
+            new_ids = 0
+            for item in videos:
+                public_id = item.get("public_id")
+                if not public_id:
+                    raise ScrapeError(422, message="Monotirou listing is missing a public video ID")
+                public_id = str(public_id)
+                if public_id in seen_ids:
+                    continue
+                seen_ids.add(public_id)
+                new_ids += 1
+                new_item = scrape_item.create_child(self.PRIMARY_URL / "video" / public_id)
+                self.create_task(self.run(new_item))
+
+            if not new_ids:
+                raise ScrapeError(422, message="Monotirou pagination repeated a page; stopped to avoid an endless loop")
+            if len(videos) < limit:
+                return
+            offset += len(videos)

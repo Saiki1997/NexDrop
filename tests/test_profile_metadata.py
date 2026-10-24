@@ -23,6 +23,17 @@ class ProfileMetadataTests(unittest.TestCase):
                 if key:
                     self.assertEqual(info[key], value)
 
+    def test_monotirou_search_and_tag(self):
+        info = classify_monotirou_url("https://monotirou.com/?q=Melayu+Sexy")
+        self.assertEqual((info["type"], info["query"]), ("search", "Melayu Sexy"))
+        self.assertEqual(info["canonical"], "https://monotirou.com/?q=Melayu+Sexy")
+        info = classify_monotirou_url("https://monotirou.com/tags/abang/")
+        self.assertEqual((info["type"], info["tag"]), ("tag", "abang"))
+        self.assertEqual(info["canonical"], "https://monotirou.com/tags/abang")
+        self.assertEqual(classify_monotirou_url("https://monotirou.com/?q=")["type"], "home")
+        with self.assertRaises(ValueError):
+            classify_monotirou_url("https://monotirou.com/tags/")
+
     def test_monotirou_canonicalization(self):
         for path in ("", "/", "/users/nesa1/", "/video/SdEyIPSy/"):
             with self.subTest(path=path):

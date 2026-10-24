@@ -27,6 +27,7 @@ class File:
     date_upload: str
     mime_type: str
     hash_sha256: str
+    availability: str = ""  # NEXDROP patch: "file_rate_limited_captcha_required" etc.
 
 
 @dataclasses.dataclass(slots=True)
@@ -257,6 +258,15 @@ class PixelDrainCrawler(Crawler):
 
     async def _file(self, scrape_item: ScrapeItem, file: File | Node) -> None:
         src = self.api.download(file).with_host(self.origin.host)
+
+        # NEXDROP patch: Pixeldrain locks popular files behind a captcha for free downloads.
+        # Say so up front instead of downloading into a 403 and retrying it.
+        if type(file) is File and file.availability.endswith("captcha_required") and not self.api.logged_in:
+            raise ScrapeError(
+                403,
+                "Pixeldrain wants a captcha for this file. Open the link in a browser to download it, "
+                "or add a Pixeldrain API key from a paid account in Settings > Sign-ins",
+            )
 
         if "text/plain" in file.mime_type:
             scrape_item.setup_as_album(self.create_title(file.name, file.id))

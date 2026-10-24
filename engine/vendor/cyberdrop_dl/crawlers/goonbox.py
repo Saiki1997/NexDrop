@@ -29,7 +29,10 @@ class GoonBoxCrawler(Crawler):
             "/u/<username>/images",
             "/u/<username>?tab=images",
         ),
-        "Direct links": "",
+        "Direct links": (
+            "",
+            "/images/<file>",
+        ),
     }
 
     DOMAIN: ClassVar[str] = "goonbox"
@@ -84,6 +87,11 @@ class GoonBoxCrawler(Crawler):
                     await self.user_images(scrape_item, user)
                 else:
                     await self.user_albums(scrape_item, user)
+            case ["images", *rest] if rest and "." in rest[-1]:
+                # NEXDROP patch: old Chevereto direct links (/images/<file>.jpg) on the main host.
+                # Download them as files, so a dead link shows as a failed file with the server's
+                # answer instead of "no downloader for this kind of link".
+                await self.direct_file(scrape_item)
             case _:
                 raise ValueError
 

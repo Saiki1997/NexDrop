@@ -22,6 +22,7 @@ def crawler(responses):
     c = SimpleNamespace(
         API_USER_VIDEOS=MonotirouCrawler.API_USER_VIDEOS,
         API_VIDEO=MonotirouCrawler.API_VIDEO,
+        API_SEARCH=MonotirouCrawler.API_SEARCH,
         PRIMARY_URL=MonotirouCrawler.PRIMARY_URL,
         request_json=AsyncMock(side_effect=responses),
         create_title=lambda value: value,
@@ -45,14 +46,28 @@ class MonotirouTests(unittest.IsolatedAsyncioTestCase):
                 await MonotirouCrawler.fetch(c, item)
                 getattr(c, method).assert_awaited_once_with(item, identifier)
 
+    async def test_fetch_routes_search_and_tag_urls(self):
+        for url, query, title in [
+            ("https://monotirou.com/?q=Melayu+Sexy", "Melayu Sexy", "Melayu Sexy [search]"),
+            ("https://monotirou.com/search?q=abang", "abang", "abang [search]"),
+            ("https://monotirou.com/tags/abang", "abang", "abang [tag]"),
+            ("https://monotirou.com/tags/abang/", "abang", "abang [tag]"),
+        ]:
+            with self.subTest(url=url):
+                c = SimpleNamespace(search=AsyncMock())
+                item = SimpleNamespace(url=AbsoluteHttpURL(url))
+                await MonotirouCrawler.fetch(c, item)
+                c.search.assert_awaited_once_with(item, query, title)
+
     async def test_fetch_rejects_unsupported_paths(self):
-        for path in ["/", "/users", "/video", "/users/nesa1/extra"]:
-            c = SimpleNamespace(profile=AsyncMock(), video=AsyncMock())
+        for path in ["/", "/?q=", "/users", "/video", "/tags", "/users/nesa1/extra"]:
+            c = SimpleNamespace(profile=AsyncMock(), video=AsyncMock(), search=AsyncMock())
             item = SimpleNamespace(url=AbsoluteHttpURL("https://monotirou.com" + path))
             with self.assertRaises(ValueError):
                 await MonotirouCrawler.fetch(c, item)
             c.profile.assert_not_awaited()
             c.video.assert_not_awaited()
+            c.search.assert_not_awaited()
 
     async def finish(self, tasks):
         for task in tasks:
@@ -92,6 +107,33 @@ class MonotirouTests(unittest.IsolatedAsyncioTestCase):
                     await MonotirouCrawler.profile.__wrapped__(c, Mock(), "test")
             else:
                 await MonotirouCrawler.profile.__wrapped__(c, Mock(), "test")
+            self.assertEqual(tasks, [])
+
+    async def test_search_pages_by_offset_until_a_short_page(self):
+        first = [row(i) for i in range(48)]
+        c, tasks = crawler([{"data": first}, {"data": [row(48), row(49)]}])
+        item = Mock()
+        await MonotirouCrawler.search.__wrapped__(c, item, "Melayu Sexy", "Melayu Sexy [search]")
+        await self.finish(tasks)
+        urls = [call.args[0] for call in c.request_json.call_args_list]
+        self.assertEqual([u.query["offset"] for u in urls], ["0", "48"])
+        self.assertEqual(urls[0].query["q"], "Melayu Sexy")
+        self.assertEqual(str(urls[0].with_query(None)), "https://api.monotirou.com/api/videos/search")
+        self.assertEqual(item.create_child.call_count, 50)
+        item.setup_as_profile.assert_called_once_with("Melayu Sexy [search]")
+
+    async def test_search_repeated_or_invalid_page_stops(self):
+        page = {"data": [row(i) for i in range(48)]}
+        c, tasks = crawler([page, page])
+        item = Mock()
+        with self.assertRaises(ScrapeError):
+            await MonotirouCrawler.search.__wrapped__(c, item, "abang", "abang [tag]")
+        await self.finish(tasks)
+        self.assertEqual(item.create_child.call_count, 48)
+        for response in [{"data": {}}, {"data": [{}]}]:
+            c, tasks = crawler([response])
+            with self.assertRaises(ScrapeError):
+                await MonotirouCrawler.search.__wrapped__(c, Mock(), "abang", "abang [tag]")
             self.assertEqual(tasks, [])
 
     async def test_media_url_comes_from_api(self):

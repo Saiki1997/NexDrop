@@ -11,9 +11,15 @@ The build script copies them over the vendor tree. Each change is marked `NEXDRO
   t.me's web preview. Files the preview leaves out are logged as `Telegram needs sign-in`, which
   the bridge turns into Skipped rows. History is kept per message link, because Telegram's CDN
   links change on every visit. A channel link found on another page is not followed.
-- `cyberdrop_dl/crawlers/monotirou.py` (new file): Monotirou profile and video links. Downloads use
-  the media URL from the video API, and profiles page with the API's timestamp-and-ID cursor;
-  a repeated page stops with an error instead of looping.
+- `cyberdrop_dl/crawlers/monotirou.py` (new file): Monotirou profile, video, search (`/?q=`) and tag
+  (`/tags/<tag>`) links. Downloads use the media URL from the video API. Profiles page with the API's
+  timestamp-and-ID cursor, searches and tags with `/api/videos/search` offsets; a repeated page stops
+  with an error instead of looping.
+- `cyberdrop_dl/crawlers/goonbox.py`: old Chevereto direct links on the main host (`goonbox.cr/images/<file>`)
+  are downloaded as files, so a dead link fails with the server's answer instead of "Unknown URL path".
+- `cyberdrop_dl/crawlers/pixeldrain.py`: a file Pixeldrain locks behind a captcha
+  (`file_rate_limited_captcha_required`) fails up front with a clear reason when no API key is set,
+  instead of downloading into a 403.
 - `cyberdrop_dl/crawlers/tiktok.py`: a post without a music track no longer fails the whole
   profile with `ValueError('Empty URL')`.
 

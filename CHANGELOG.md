@@ -1,5 +1,13 @@
 # NEXDROP 2.3.2
 
+## New
+- Monotirou search and tag links: paste `https://monotirou.com/?q=<words>` or `https://monotirou.com/tags/<tag>` to download every video the search or tag lists.
+
+## Fixed
+- Pixeldrain files that Pixeldrain locks behind a captcha now say so (open the link in a browser, or add a Pixeldrain API key from a paid account) instead of failing with a hotlinking 403.
+- GoonBox links of the form `goonbox.cr/images/<file>` are tried as files. Dead ones now show as failed with the server's answer instead of "No downloader for this kind of link".
+- The run log no longer contains the Telegram API hash and session. It only notes that the Telegram sign-in is in use. Run logs from earlier versions in `engine\appdata\logs\runs` may contain them; delete those if you share logs.
+
 ## Changed
 - User-visible engine messages, the engine's default folder names and its command-line help say NexDrop instead of cyberdrop-dl. The command-line help still names Cyberdrop-DL as the engine, and the GPL-3.0 notice is unchanged.
 

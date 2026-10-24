@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from html.parser import HTMLParser
-from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlsplit, urlunsplit
 import re
 
 
@@ -121,12 +121,20 @@ def classify_monotirou_url(url: str) -> dict[str, str]:
 
     path = parsed.path or "/"
     info = {"host": parsed.hostname}
-    if path == "/":
+    search = dict(parse_qsl(parsed.query)).get("q", "").strip()
+    if path == "/" and search:
+        info["type"] = "search"
+        info["query"] = search
+    elif path == "/":
         info["type"] = "home"
+    elif tag := re.fullmatch(r"/tags/([^/]{1,80})/?", path):
+        info["type"] = "tag"
+        info["tag"] = unquote(tag.group(1))
+        path = f"/tags/{tag.group(1)}"
     else:
         match = re.fullmatch(r"/(users|video)/([A-Za-z0-9_-]{1,80})/?", path)
         if not match:
-            raise ValueError("Expected home, /users/{username}, or /video/{id}")
+            raise ValueError("Expected home, a search, /tags/{tag}, /users/{username}, or /video/{id}")
         section, identifier = match.groups()
         info["type"] = "profile" if section == "users" else "video"
         info["username" if section == "users" else "video_id"] = identifier

@@ -114,7 +114,7 @@ chats and large files. Direct file links (for example `https://host/file.mp4`) a
 | MissAV | [https://missav.ws](https://missav.ws) | `missav.ws`, `njavtv.com` | Genres, Labels, Makers, Search, Tags, Video |
 | Mitaku.net | [https://mitaku.net](https://mitaku.net) | `mitaku.net` | All Posts, Category, Post, Tag |
 | MixDrop | [https://mixdrop.sb](https://mixdrop.sb) | `m1xdrop.*`, `mixdrop.*`, `mxdrop.*` | File |
-| Monotirou | [https://monotirou.com](https://monotirou.com) | `monotirou.*` | Profile, Video |
+| Monotirou | [https://monotirou.com](https://monotirou.com) | `monotirou.*` | Profile, Search, Tag, Video |
 | Monstercat | [https://www.monstercat.com](https://www.monstercat.com) | `monstercat.*` | Release |
 | Multporn.net | [https://multporn.net](https://multporn.net) | `multporn.net` | comic, video |
 | MyDesi | [https://lolpol.com](https://lolpol.com) | `fry99.com`, `lolpol.com`, `mydesi.net` | Search, Videos |

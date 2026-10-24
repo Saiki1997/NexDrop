@@ -363,6 +363,25 @@ class TelegramPublic(unittest.TestCase):
         self.assertFalse(TelegramCrawler.check_host_match("art.media.com"))
 
 
+class RunLogSecrets(unittest.TestCase):
+    def test_telegram_session_is_not_written(self):
+        old = session.APPDATA
+        with tempfile.TemporaryDirectory() as tmp:
+            session.APPDATA = Path(tmp)
+            try:
+                config = {"downloadsDir": tmp, "telegram": {"apiId": "123", "apiHash": "hash-secret",
+                                                            "session": "session-secret"}}
+                session.open_run_log(config, ["https://t.me/example/1"])
+                session.RUN_LOG.close()
+                text = session.RUN_LOG_PATH.read_text(encoding="utf-8")
+            finally:
+                session.RUN_LOG = None
+                session.APPDATA = old
+        self.assertNotIn("hash-secret", text)
+        self.assertNotIn("session-secret", text)
+        self.assertIn("site sign-ins: telegram", text)
+
+
 class TelegramAccount(unittest.TestCase):
     """Account downloads with a stand-in for Telethon's client."""
 

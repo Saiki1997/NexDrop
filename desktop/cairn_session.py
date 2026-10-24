@@ -146,11 +146,13 @@ def open_run_log(config: dict, urls: list[str]) -> None:
     except OSError:
         RUN_LOG = None
         return
-    safe = {k: v for k, v in config.items() if k not in {"auth", "urls", "unsupported", "cookieFiles", "cookies", "cookieFolder"}}
+    secret = {"auth", "telegram", "urls", "unsupported", "cookieFiles", "cookies", "cookieFolder"}
+    safe = {k: v for k, v in config.items() if k not in secret}
     write_run_log(f"NEXDROP run {datetime.now().isoformat(timespec='seconds')}")
     write_run_log(f"Python {sys.version.split()[0]} on {sys.platform}; folder {ROOT}")
     write_run_log(f"Settings: {json.dumps(safe, ensure_ascii=False)}")
-    write_run_log(f"Cookie files: {len(config.get('cookieFiles') or [])}; site sign-ins: {', '.join(sorted((config.get('auth') or {}).keys())) or 'none'}")
+    signins = sorted((config.get("auth") or {}).keys()) + (["telegram"] if config.get("telegram") else [])
+    write_run_log(f"Cookie files: {len(config.get('cookieFiles') or [])}; site sign-ins: {', '.join(signins) or 'none'}")
     write_run_log("Links:")
     for url in urls:
         write_run_log(f"  {url}")
