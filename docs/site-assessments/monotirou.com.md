@@ -25,7 +25,7 @@ Technology is not what decides this site's state.
 
 NEXDROP downloads only from sites where the content can reasonably be expected to be lawful, and where the operator, not NEXDROP, carries the age and consent checks. On this site:
 
-- Uploads are anonymous. Nothing on the site identifies uploaders or verifies the age or consent of the people shown, and it publishes no record-keeping statement. (Its reporting and removal pages are covered under *Reassessment 1*.)
+- Uploads are anonymous. Nothing on the site identifies uploaders or verifies the age or consent of the people shown, and its 2257 notice only asks uploaders to confirm they keep records (see *Reassessment 1*, which also covers the reporting and removal pages).
 - Listings on the home page point to material involving minors and to recordings shared without the consent of the people in them.
 
 Some items on the site may well be lawful. But nothing on it tells lawful items apart from the rest, so no item can be shown to be eligible. Blocking single items doesn't help either: NEXDROP can't see what a video shows. Titles, tags and uploader names are not a reliable signal, and screening by keywords would miss material while giving false confidence. Hash matching against known abuse material (for example PhotoDNA or similar programmes) is only open to vetted organisations, so a desktop downloader can't do it.
@@ -36,17 +36,18 @@ Some items on the site may well be lawful. But nothing on it tells lawful items 
 
 ## Reassessment 1 (2026-10-24)
 
-Prompted by the site's article "How adult platforms handle trust and safety". These pages were read: the article, `/terms`, `/privacy`, `/complaints`, `/content-removal`, `/dmca` and `/contact`. `/settings` couldn't be read: the site's robots.txt disallows it, and it's an account page anyway.
+Prompted by the site's article "How adult platforms handle trust and safety". These pages were read: the article, `/terms`, `/privacy`, `/2257`, `/complaints`, `/content-removal`, `/dmca` and `/contact`. `/settings` couldn't be read: the site's robots.txt disallows it, and it's an account page anyway.
 
 **What the site does publish (verified on its pages):**
 - **Terms of service.** Users must be 18 or the age of majority. Uploads must not be "illegal, non-consensual, copyrighted, underage, private, or exploitative". The site "may remove content, restrict accounts, preserve evidence, or report suspected illegal material".
 - **Complaints.** A support email, plus a separate email for urgent abuse and illegal-content reports. Reports should include the content URL, the reason and supporting details.
 - **Content removal.** An email route for suspected underage content, non-consensual content, private information, impersonation, illegal material and copyright.
+- **2257 notice** (`/2257`, marked noindex). "Uploaders must confirm" that performers are 18 or older and that "they maintain all required age, identity, consent, and rights records". Questions go to a "Legal" email. No custodian of records, no physical address, no operator name, and no description of how the site checks any of this.
 - **Privacy policy.** Accounts sign in with Google; the site processes the Google identifier, email, "verified" status, name and picture, plus "content you upload" and "reports you submit". A Google sign-in confirms an email address. It doesn't verify a person's identity or age.
 - **DMCA.** A list of what a notice must contain and a "Legal" email. Repeat infringers "may be restricted or removed".
 
 **What it doesn't publish:**
-- Any check of uploaders' identity, or of the age or consent of the people shown, and any age or consent records (2257 or similar).
+- Any check by the site of uploaders' identity, or of the age or consent of the people shown. Under its 2257 notice the records, if they exist, stay with anonymous uploaders, and no custodian is named who could produce them.
 - Who runs the site: no legal name, address or jurisdiction.
 - Response times, how reports are reviewed, what happens to reported content, or referral to authorities.
 - A designated DMCA agent or a counter-notice procedure.
@@ -73,7 +74,7 @@ Like the first, each discusses "platforms" in general. None says monotirou.com v
 
 A reassessment is due when all of the following are true, and can be checked on the site:
 
-1. Uploaders are identity-verified, and the site keeps age and consent records for everyone shown (for example under 18 U.S.C. 2257), with a public statement saying so.
+1. Uploaders are identity-verified, and the site keeps age and consent records for everyone shown (for example under 18 U.S.C. 2257), with a named custodian of records and address. *(Not met: the 2257 notice is an uploader self-attestation with no custodian.)*
 2. There is a working report and takedown process for non-consensual and underage material, with a named operator, response times and referral to authorities. *(Partly met: reporting emails exist; the operator, timelines and handling aren't published.)*
 3. Its listings no longer point to minors or to material shared without consent.
 
