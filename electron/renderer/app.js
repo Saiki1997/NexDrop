@@ -62,6 +62,8 @@
     connectionTimeout: { el: "#connect-timeout", type: "int", def: 15, min: 10, max: 30 },
     readTimeout: { el: "#read-timeout", type: "int", def: 60, min: 30, max: 300 },
     proxy: { el: "#proxy", type: "text", def: "", max: 500 },
+    proxyScope: { el: "#proxy-scope", type: "text", def: "all", max: 20 },
+    simpcityGap: { el: "#simpcity-gap", type: "int", def: 2, min: 1, max: 30 },
     scheduleOn: { el: "#schedule-on", type: "check", def: false },
     scheduleFrom: { el: "#schedule-from", type: "time", def: "01:00" },
     scheduleTo: { el: "#schedule-to", type: "time", def: "07:00" },
@@ -289,6 +291,8 @@
       skipUrls: job.doneUrls || [],
       speedLimit: speedMB * 1024 * 1024,
       proxy: prefs.proxy || "",
+      proxyScope: prefs.proxyScope === "simpcity" ? "simpcity" : "all",
+      simpcityGap: prefs.simpcityGap,
       connectionTimeout: prefs.connectionTimeout,
       readTimeout: prefs.readTimeout,
     });

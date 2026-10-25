@@ -1,3 +1,30 @@
+# NEXDROP 2.4.1
+
+Every error in the 2026-10-25 run log was checked. These are fixed or have a workaround now.
+
+## SimpCity: staying under its rate limit
+- **Every SimpCity request waits its turn.** Pages and attachments go out at most 2 at once and 2 seconds apart (Settings → Speed → "Seconds between SimpCity requests", 1 to 30). Thread pages keep their slower pace of one every 20 seconds. Other sites are not slowed down.
+- **"Too many requests" pauses SimpCity instead of hammering it.** On a 429 (or a 503 that says when to come back) NEXDROP pauses all SimpCity requests, for the time SimpCity asks or 30 s, then 60 s, 120 s ..., and tries again. After 5 in a row it stops contacting SimpCity for the rest of the run and says so, so your IP address doesn't get blocked.
+- **The SimpCity session is reused.** SimpCity's cookies (your sign-in and the bot-check clearance) are kept for the next run, so each run doesn't look like a new visitor solving a new bot check. Cookies you export under Settings → Sign-ins always win over the saved ones.
+- **Proxy for SimpCity only.** Settings → Speed → "Use the proxy for" → SimpCity only: SimpCity pages, attachments and its FlareSolverr bot check go through the proxy, and every other site downloads directly at full speed.
+
+## Album folders match the file names
+- With "Name files after the album" on, the album's folder now has the same name as its files: `Peachuu Tae\Peachuu Tae 001.png` instead of `Peachuu Tae 8TwlNRmn (Bunkr)\Peachuu Tae 001.png`. Thread, profile and "Loose Files" folders keep the site name. Turn the setting off to get the old folder names back. "Folder for each post" (dated post folders) works as before.
+
+## Fixed
+- **Old Coomer links.** Links to `c1.coomer.party` ... `c6.coomer.party` (and `coomer.su`, `kemono.party`, `kemono.su`) failed with "getaddrinfo failed", because those server names no longer exist. They now download from `coomer.st` / `kemono.cr`, which serve the same `/data/...` files.
+- **Fileditch.** Fileditch's new download links (`walk10ksteps.xyz/...`) were rejected with "422 Unable to extract a valid download URL". They download now, with the file's real name.
+- **Pornhub profiles on regional sites.** `jp.pornhub.com/model/...` failed with "422 ... h1 tag not found". The profile's folder now falls back to the name in the link and its videos are found.
+- Every engine error report contained `repr-error "'DownloadClient' object has no attribute '_supports_ranges'"`, which hid part of the real error. Fixed.
+- **Passwords.** A password-protected Cyberfile link now says how to add the password: put `?password=THE_PASSWORD` at the end of the link.
+- A file whose server name no longer exists is reported as such at the end of the run ("DNS lookup failed"), instead of as a generic failure.
+
+## Not fixable from NEXDROP
+- Deleted files (404) on GoFile, GoonBox/jpg.church 2022 images and removed Pornhub videos.
+- X searches (`x.com/search?...`), which X only shows to signed-in users.
+- Fantia, Fansly, OnlyFans, link-in-bio pages (mfco.link, mond.how, b23.tv, lu.ma) and Amazon wishlists have no downloader.
+- Bunkr's `cdn.cr` servers sometimes stall a video ("Timeout" or "ClientPayloadError"). Retry unfinished picks those up.
+
 # NEXDROP 2.4.0
 
 ## New

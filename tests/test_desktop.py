@@ -645,5 +645,21 @@ class TelegramAccount(unittest.TestCase):
         self.assertEqual(out[-1]["username"], "saiful")
 
 
+
+class RunLogHints20261025(unittest.TestCase):
+    """Messages from the 2026-10-25 19:15 run."""
+
+    def test_dead_host_and_password_links_get_a_next_step(self):
+        hints = session.Hints("parallel", flare_ready=True)
+        hints.failed("https://c6.coomer.party/data/7a/10/x.jpg",
+                     "ClientConnectorDNSError - Cannot connect to host c6.coomer.party:443 ssl:default [getaddrinfo failed]")
+        level, text = hints.scrape_failed("https://cyberfile.me/b8rp", "Scrape Failed: https://cyberfile.me/b8rp (Password Protected - File/Folder is password protected)")
+        self.assertEqual(level, "warning")
+        self.assertIn("?password=", text)
+        summary = " ".join(hints.summary())
+        self.assertIn("c6.coomer.party failed because that server name no longer exists", summary)
+        self.assertIn("1 link(s) need a password", summary)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

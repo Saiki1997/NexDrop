@@ -16,6 +16,7 @@ from typing_extensions import TypeIs
 from cyberdrop_dl import signature
 from cyberdrop_dl.exceptions import MaxChildrenError
 from cyberdrop_dl.filepath import sanitize_folder
+from cyberdrop_dl.source_order import ALBUM_NAMES, album_name  # NEXDROP patch: album folder names
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Generator, Iterable, Mapping, Sequence
@@ -369,6 +370,10 @@ class ScrapeItem:
         self.album_title = title if item_type == ScrapeItemType.ALBUM else None
         self.album_index = None
         self._album_children = 0
+        if self.album_title and ALBUM_NAMES.get():
+            # NEXDROP patch: "Name files after the album" also names the album's folder, so
+            # "Peachuu Tae/Peachuu Tae 001.png" instead of "Peachuu Tae 123 (Bunkr)/Peachuu Tae 001.png"
+            title = album_name(title) or title
         self.append_folders(title)
 
     def create_new(

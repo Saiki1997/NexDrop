@@ -59,7 +59,7 @@ class DownloadClient:
                 upper_limit,
             )
 
-    __repr__ = simple_repr("config", "_supports_ranges", "speed_limiter", "chunk_size")
+    __repr__ = simple_repr("config", "SUPPORTS_RANGES", "speed_limiter", "chunk_size")  # NEXDROP patch: was "_supports_ranges", which does not exist, so every traceback showed a repr-error
 
     @property
     def http_client(self) -> HTTPClient:

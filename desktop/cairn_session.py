@@ -783,6 +783,8 @@ class Hints:
         self.busy: dict[str, int] = {}
         self.expired: dict[str, int] = {}
         self.nested = 0
+        self.password_links: list[str] = []
+        self.no_such_host: dict[str, int] = {}
         self.bot_blocked: list[str] = []
         self.files_in_thread = 0
 
@@ -801,6 +803,8 @@ class Hints:
             bucket = "expired"
         elif "509" in reason or "Bandwidth Limit" in reason:
             bucket = "quota"
+        elif "ClientConnectorDNSError" in reason or "getaddrinfo failed" in reason or "Name or service not known" in reason:
+            bucket = "no_such_host"
         elif "503" in reason or "502" in reason or "429" in reason:
             bucket = "busy"
         elif "404" in reason or "410" in reason:
@@ -845,6 +849,9 @@ class Hints:
             return "info", f"Skipped linked thread {url}"
         if "Unknown URL path" in message:
             return "info", f"No downloader for this kind of link: {url}"
+        if "Password Protected" in message or "password protected" in message:
+            self.password_links.append(url)
+            return "warning", f"{url} needs a password. Add ?password=THE_PASSWORD to the end of the link and start it again."
         if "DDoS-Guard" in message or "anti-bot" in message or "Turnstile" in message:
             self.bot_blocked.append(host_of(url))
             return "warning", f"Blocked by a bot check: {url}"
@@ -882,6 +889,16 @@ class Hints:
         for host, count in self.gone.items():
             if count >= 3:
                 out.append(f"{count} file(s) on {host} no longer exist (404 Not Found). The host has deleted them, so retrying won't help.")
+        for host, count in self.no_such_host.items():
+            out.append(
+                f"{count} file(s) on {host} failed because that server name no longer exists (DNS lookup failed). "
+                "The site has moved or shut down; the files can only come from a newer link in the thread."
+            )
+        if self.password_links:
+            out.append(
+                f"{len(self.password_links)} link(s) need a password. Add ?password=THE_PASSWORD to the end of each link "
+                "(the password is usually in the post) and start them again."
+            )
         if self.quota:
             out.append(
                 f"{self.quota} MEGA file(s) hit MEGA's free transfer quota (509 Bandwidth Limit Exceeded). "
@@ -1123,11 +1140,14 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
     NUMBERED = True if config.get("sequencePrefix") is None else bool(config.get("sequencePrefix"))
     trim_manifest()
     proxy = proxy_url(config.get("proxy"))
+    proxy_scope = "simpcity" if config.get("proxyScope") == "simpcity" else "all"
     if config.get("proxy") and not proxy:
         log("warning", "The proxy setting is not an http:// or https:// address with a host and port, so no proxy is used.")
+    elif proxy and proxy_scope == "simpcity":
+        log("info", "SimpCity pages and attachments go through the proxy from Settings > Speed. Other sites connect directly.")
     elif proxy:
         log("info", "Downloads go through the proxy from Settings > Speed. Telegram account downloads connect directly.")
-    use_proxy(proxy)
+    use_proxy(proxy if proxy_scope == "all" else "")
     order_mode = config.get("orderMode") if config.get("orderMode") in {"source", "parallel", "fastest"} else "source"
     payload = {
         "urls": urls,
@@ -1145,6 +1165,8 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         "threadDepth": _int(config.get("threadDepth"), 0, 0, 3),
         "speedLimit": _int(config.get("speedLimit"), 0, 0, 10_000 * 1024 * 1024),
         "proxy": proxy,
+        "proxyScope": proxy_scope,
+        "simpcityGap": _int(config.get("simpcityGap"), 2, 1, 30),
         "ignoreHistory": redownload,
         "deepScrape": bool(config.get("deepScrape")),
         "cookieFolder": cookie_folder or "",
