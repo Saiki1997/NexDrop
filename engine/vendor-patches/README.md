@@ -63,3 +63,10 @@ SimpCity requests are paced (2 at once, `simpcityGap` seconds apart), a 429 or a
 retries, and after 5 limits in a row the run stops contacting SimpCity. With `proxyScope: "simpcity"` only SimpCity requests
 (and their FlareSolverr requests) use the proxy. SimpCity cookies are saved to `appdata/cookies/session/simpcity.txt`
 after a run and loaded next run where the user's cookie file doesn't set the same cookie.
+
+2.4.2:
+- `cyberdrop_dl/crawlers/kemono/kemono_coomer.py` (new file): Kemono (`kemono.cr`) and Coomer (`coomer.st`) crawlers on the
+  shared Kemono code. 10.10.0 ships the base class but no crawler for either site, so creator, post, search and favorites
+  links were "Unsupported URL". API requests send `Accept: text/css` (the sites answer 403 otherwise) at 2 a second. The full
+  creator list is not fetched at start (tens of MB on Coomer); names come from each creator's profile. Old hosts
+  (`*.coomer.party`, `coomer.su`, `*.kemono.party`, `kemono.su`) are moved to the main domain.
