@@ -257,7 +257,12 @@ class PornHubProfileCrawler:
             return
 
         soup = await self.crawler.request_soup(self.profile.url)
-        name = css.select_text(soup, Selector.Profile.NAME, decompose="span")
+        try:
+            name = css.select_text(soup, Selector.Profile.NAME, decompose="span")
+        except css.SelectorError:
+            # NEXDROP patch: some regional mirrors (jp.pornhub.com) lay the profile header out differently.
+            # The name in the link is enough for the folder; the video pages are still found.
+            name = self.profile.name
         title = self.crawler.create_title(f"{name} [{self.profile.type.removesuffix('s')}]")
         self.item.setup_as_profile(title)
         self.item.markers.append(self.profile)

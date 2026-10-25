@@ -365,6 +365,236 @@ def _install_download_clearance() -> None:
     dl.DownloadClient._download = download_with_backoff
 
 
+# Hosts that moved. Links in old forum posts still point at the old names, which no longer resolve
+# ("getaddrinfo failed"). The same /data/... path works on the new main domain.
+_MOVED_HOSTS = (
+    (re.compile(r"(?:^|\.)coomer\.(?:party|su)$"), "coomer.st"),
+    (re.compile(r"(?:^|\.)kemono\.(?:party|su)$"), "kemono.cr"),
+)
+_GENTLE_HOSTS = ("simpcity.cr", "simpcity.su")
+
+
+def moved_host(host: str) -> str | None:
+    host = (host or "").lower()
+    for pattern, new in _MOVED_HOSTS:
+        if pattern.search(host):
+            return new
+    return None
+
+
+def is_gentle_host(host: str) -> bool:
+    host = (host or "").lower()
+    return any(host == name or host.endswith("." + name) for name in _GENTLE_HOSTS)
+
+
+def retry_after_seconds(value: str | None, now: float | None = None) -> float | None:
+    """A Retry-After header as seconds: a number, or an HTTP date."""
+    if not value:
+        return None
+    value = value.strip()
+    if value.isdigit():
+        return float(value)
+    from email.utils import parsedate_to_datetime
+
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    return max(0.0, when.timestamp() - (time.time() if now is None else now))
+
+
+class _GentleSite:
+    """Keeps SimpCity traffic under its rate limit so the IP address is not blocked.
+
+    Every request to the site, page or attachment, waits its turn: at most `slots`
+    at once and `gap` seconds between starts. A 429 (or a 503 that says when to
+    come back) pauses the whole site, honouring Retry-After or doubling from 30 s,
+    and the request is tried again. After `give_up` limits in a row the site is
+    left alone for the rest of the run instead of being asked again and again.
+    """
+
+    def __init__(self, name: str, gap: float = 2.0, slots: int = 2, give_up: int = 5) -> None:
+        self.name = name
+        self.gap = gap
+        self.slots = slots
+        self.give_up = give_up
+        self.next_start = 0.0
+        self.cool_until = 0.0
+        self.strikes = 0
+        self.blocked = False
+        self.min_pause = 10.0
+        self.loop = None
+        self.sem = None
+        self.lock = None
+
+    def _bind(self) -> None:
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        if self.loop is not loop:
+            self.loop, self.sem, self.lock = loop, asyncio.Semaphore(self.slots), asyncio.Lock()
+
+    async def turn(self) -> None:
+        import asyncio
+
+        async with self.lock:
+            wait = max(self.next_start, self.cool_until) - time.monotonic()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self.next_start = time.monotonic() + self.gap
+
+    def limited(self, retry_after: float | None) -> float:
+        """Record one rate-limit answer. Returns the pause in seconds."""
+        self.strikes += 1
+        if self.strikes >= self.give_up:
+            self.blocked = True
+        delay = retry_after if retry_after is not None else 30 * 2 ** (self.strikes - 1)
+        delay = min(max(delay, self.min_pause), 900.0)
+        self.cool_until = max(self.cool_until, time.monotonic() + delay)
+        return delay
+
+    def ok(self) -> None:
+        self.strikes = 0
+
+
+GENTLE = _GentleSite("SimpCity")
+
+
+def _is_rate_limit(resp) -> float | None | bool:
+    """False when the answer is not a rate limit, else the Retry-After seconds (or None)."""
+    status = getattr(resp, "status", 0)
+    headers = getattr(resp, "headers", {}) or {}
+    retry = retry_after_seconds(headers.get("Retry-After"))
+    if status == 429 or (status == 503 and retry is not None):
+        return retry
+    return False
+
+
+def _install_http_guard(proxy: str, proxy_scope: str) -> None:
+    """Every engine request passes here: moved hosts, SimpCity pacing, SimpCity-only proxy."""
+    import contextlib
+
+    try:
+        from cyberdrop_dl.clients import flaresolverr
+        from cyberdrop_dl.clients.http import HTTPClient
+        from cyberdrop_dl.exceptions import ScrapeError
+    except Exception:  # noqa: BLE001
+        return
+
+    site_proxy = proxy if proxy and proxy_scope == "simpcity" else ""
+    original_raw = HTTPClient.raw_request
+
+    @contextlib.asynccontextmanager
+    async def gentle(client, url, method, kwargs):
+        if GENTLE.blocked:
+            raise ScrapeError(429, f"{GENTLE.name} kept asking to slow down, so NexDrop stopped contacting it for this run")
+        GENTLE._bind()
+        async with GENTLE.sem:
+            for attempt in range(4):
+                await GENTLE.turn()
+                async with original_raw(client, url, method, **kwargs) as resp:
+                    retry = _is_rate_limit(resp)
+                    if retry is False:
+                        GENTLE.ok()
+                        yield resp
+                        return
+                    delay = GENTLE.limited(retry)
+                    if attempt == 3 or GENTLE.blocked:
+                        if GENTLE.blocked:
+                            emit({"type": "log", "level": "warning", "message": (
+                                f"{GENTLE.name} answered 'too many requests' {GENTLE.strikes} times in a row. NexDrop stops "
+                                f"contacting it for this run so your IP address is not blocked. Try again later, or lower "
+                                f"Settings > Speed > Per site.")})
+                        yield resp
+                        return
+                    emit({"type": "log", "level": "warning", "message": (
+                        f"{GENTLE.name} asked to slow down ({resp.status}). Pausing all {GENTLE.name} requests for "
+                        f"{int(delay)} s, then trying again.")})
+
+    def raw_request(self, url, /, method="GET", **kwargs):
+        new_host = moved_host(getattr(url, "host", "") or "")
+        if new_host:
+            if not _SEEN.get(f"moved:{new_host}"):
+                _SEEN[f"moved:{new_host}"] = True
+                emit({"type": "log", "level": "info", "message": f"Old {url.host.split('.')[-2].title()} links point to a host that no longer exists. Using {new_host} instead."})
+            url = url.with_host(new_host)
+        if not is_gentle_host(getattr(url, "host", "") or ""):
+            return original_raw(self, url, method, **kwargs)
+        if site_proxy:
+            kwargs.setdefault("proxy", site_proxy)
+        return gentle(self, url, method, kwargs)
+
+    HTTPClient.raw_request = raw_request
+
+    if site_proxy:
+        # FlareSolverr must solve SimpCity's bot check from the same address the requests then use.
+        original_build = flaresolverr.Request.build.__func__
+
+        def build(cls, command, url, /, config, *, wait, session):
+            request = original_build(cls, command, url, config, wait=wait, session=session)
+            if is_gentle_host(getattr(url, "host", "") or ""):
+                request.payload.pop("session", None)
+                request.payload["proxy"] = {"url": site_proxy}
+            return request
+
+        flaresolverr.Request.build = classmethod(build)
+
+
+SESSION_COOKIES = PORTABLE / "cookies" / "session" / "simpcity.txt"
+
+
+def save_site_cookies(jar, path: Path = SESSION_COOKIES) -> int:
+    """Keep SimpCity's cookies (sign-in, bot-check clearance) for the next run.
+
+    A new session and a new bot check on every run look like a new visitor each
+    time; reusing them is what a browser does."""
+    now = time.time()
+    expirations = getattr(jar, "_expirations", {}) or {}
+    rows = []
+    for morsel in jar:
+        domain = str(morsel.get("domain") or "")
+        if not is_gentle_host(domain.lstrip(".")) or not morsel.value:
+            continue
+        path_value = str(morsel.get("path") or "/")
+        expires = 0
+        for key, when in expirations.items():
+            if len(key) == 3 and key[0] == domain.lstrip(".") and key[2] == morsel.key:
+                expires = int(when)
+                break
+        if expires and expires <= now:
+            continue
+        secure = "TRUE" if morsel.get("secure") else "FALSE"
+        rows.append("\t".join(("." + domain.lstrip("."), "TRUE", path_value, secure, str(expires), morsel.key, morsel.value)))
+    if not rows:
+        return 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("# Netscape HTTP Cookie File\n" + "\n".join(rows) + "\n", encoding="utf-8")
+    return len(rows)
+
+
+def saved_site_cookie_lines(taken: set[tuple[str, str]], path: Path = SESSION_COOKIES) -> list[str]:
+    """Saved SimpCity cookies that the user's own cookie file does not already set."""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    now = time.time()
+    out = []
+    for line in lines:
+        parts = line.split("\t")
+        if len(parts) < 7 or line.startswith("# "):
+            continue
+        site = parts[0].removeprefix("#HttpOnly_").lstrip(".").lower().removeprefix("www.")
+        if not is_gentle_host(site) or (site, parts[5]) in taken:
+            continue
+        if parts[4].isdigit() and int(parts[4]) and int(parts[4]) <= now:
+            continue
+        out.append(line)
+    return out
+
+
 _SITE_ERROR_TITLES = ("oops! we ran into some problems", "you do not have permission", "the requested", "not found")
 
 
@@ -716,11 +946,12 @@ def _filter_cookies(source: Path | None, mapping: dict, urls: list[str]) -> Path
     A full browser export can hold hundreds of unrelated sites, including banks
     and email. Only the relevant ones are handed to the engine.
     """
-    if source is None:
-        return None
     from urllib.parse import urlparse
 
-    files = [source] if source.is_file() else sorted(source.glob("*.txt"))
+    if source is None:
+        files = []
+    else:
+        files = [source] if source.is_file() else sorted(source.glob("*.txt"))
     keys = [str(key).lower() for key in mapping]
     hosts = {(urlparse(url).hostname or "").lower().removeprefix("www.") for url in urls} - {""}
     target = PORTABLE / "cookies" / "engine"
@@ -728,6 +959,7 @@ def _filter_cookies(source: Path | None, mapping: dict, urls: list[str]) -> Path
     target.mkdir(parents=True, exist_ok=True)
     kept_sites: set[str] = set()
     dropped_sites: set[str] = set()
+    taken: set[tuple[str, str]] = set()
     for index, file in enumerate(files):
         try:
             lines = file.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -744,10 +976,17 @@ def _filter_cookies(source: Path | None, mapping: dict, urls: list[str]) -> Path
             if _cookie_domain_ok(parts[0], keys, hosts):
                 out.append(line)
                 kept_sites.add(site)
+                taken.add((site.removeprefix("www."), parts[5]))
             else:
                 dropped_sites.add(site)
         if len(out) > 1:
             (target / f"{index:02d}.txt").write_text("\n".join(out) + "\n", encoding="utf-8")
+    session = saved_site_cookie_lines(taken)
+    if session:
+        (target / "session.txt").write_text("# Netscape HTTP Cookie File\n" + "\n".join(session) + "\n", encoding="utf-8")
+        emit({"type": "log", "level": "info", "message": "Reusing SimpCity's session from the last run."})
+        if not kept_sites:
+            return target
     if not kept_sites and not dropped_sites:
         return None
     message = f"Using cookies for {len(kept_sites)} supported site(s)"
@@ -870,8 +1109,11 @@ def _run() -> int:
         network["flaresolverr"] = flare_url
         network["flaresolverr_wait"] = 5
     proxy = str(payload.get("proxy") or "").strip()
-    if proxy:
+    proxy_scope = "simpcity" if payload.get("proxyScope") == "simpcity" else "all"
+    if proxy and proxy_scope == "all":
         network["proxy"] = proxy
+    GENTLE.gap = float(_bound_int(payload.get("simpcityGap"), 1, 30, 2))
+    _install_http_guard(proxy, proxy_scope)
     fields["network"] = Network(**network)
     download_fields = {
         "concurrency": downloads,
@@ -908,7 +1150,7 @@ def _run() -> int:
         "type": "log",
         "stage": "system",
         "level": "info",
-        "message": f"Limits: {downloads} downloads, {per_host} per site, {attempts} attempts, order {order_mode}, names {'numbered' if prefix_on else 'original'}{', album name for albums' if album_names_on else ''}, {'a folder for each post' if post_folders_on else 'no post folders'}.",
+        "message": f"Limits: {downloads} downloads, {per_host} per site, {attempts} attempts, order {order_mode}, names {'numbered' if prefix_on else 'original'}{', album name for albums' if album_names_on else ''}, {'a folder for each post' if post_folders_on else 'no post folders'}, SimpCity every {int(GENTLE.gap)} s{' through the proxy' if proxy and proxy_scope == 'simpcity' else ''}.",
     })
     start_page = max(1, int(payload.get("startPage") or 1))
     end_raw = payload.get("endPage")
@@ -947,6 +1189,10 @@ def _run() -> int:
                         mapper.shutdown()
 
             aio.run(go())
+            try:
+                save_site_cookies(manager.http_client.cookies)
+            except Exception as error:  # noqa: BLE001 - never fail a finished run over cookies
+                emit({"type": "log", "level": "info", "message": f"SimpCity's session was not saved for the next run: {str(error)[:120]}"})
             saved = []
             for item in manager.completed_downloads:
                 path = Path(item.path)

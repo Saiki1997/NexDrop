@@ -66,5 +66,26 @@ class TikTokSounds(unittest.TestCase):
             self.assertEqual(str(_global_music_url(AbsoluteHttpURL(url))), url)
 
 
+
+class FileditchSignedLinks(unittest.TestCase):
+    """fileditchfiles.st now answers with walk10ksteps.xyz/<token> links (2026-10-25 run log)."""
+
+    def test_signed_path_link_is_accepted(self):
+        from cyberdrop_dl.crawlers.fileditch import _check_url, _signed_path
+
+        url = AbsoluteHttpURL(
+            "https://walk10ksteps.xyz/MTc5MjkzMjU2NDpQZnBDTnl5YkU0M0JjTFRRQV9JbkxGeExtX0dLMHl2X2hPbU8zcWxKNUJROjEzMzM1"
+            "L2JhbHBoYTkvNmZlZTVmZGZkYTViZmI2YmVjZjcvQkJDJUVGJUJDJTgx")
+        self.assertTrue(_signed_path(url))
+        self.assertIs(_check_url(url), url)
+
+    def test_homepage_and_unsigned_links_are_still_refused(self):
+        from cyberdrop_dl.crawlers.fileditch import _check_url
+
+        for raw in ("https://fileditchfiles.me/s21/FHVZKQyAZlIsrneDAsp.jpeg", "https://walk10ksteps.xyz/aGVsbG8"):
+            with self.assertRaises(ScrapeError):
+                _check_url(AbsoluteHttpURL(raw))
+
+
 if __name__ == "__main__":
     unittest.main()

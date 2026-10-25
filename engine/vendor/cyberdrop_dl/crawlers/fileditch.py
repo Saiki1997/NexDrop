@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import base64  # NEXDROP patch: signed-path download links
+import binascii
+import re
+
 from typing import TYPE_CHECKING, ClassVar, override
 
 from cyberdrop_dl import env
@@ -70,7 +74,9 @@ class FileditchCrawler(Crawler):
         if src.path == _HOMEPAGE_CATCH_ALL:
             raise ScrapeError(422)
 
-        filename, ext = self.get_filename_and_ext(src.name)
+        # NEXDROP patch: a signed-path link (walk10ksteps.xyz/<token>) has no file name of its own
+        name = scrape_item.url.name if _signed_path(src) else src.name
+        filename, ext = self.get_filename_and_ext(name)
         await self.handle_file(src, scrape_item, filename, ext, thumbnail=thumb)
 
     async def request_download(self, url: AbsoluteHttpURL) -> tuple[AbsoluteHttpURL, str | None]:
@@ -120,8 +126,24 @@ def _extr_thumb(soup: bs4.Tag) -> str | None:
         pass
 
 
+def _signed_path(url: AbsoluteHttpURL) -> bool:
+    """NEXDROP patch: Fileditch's newer download links carry the expiry and signature in the path.
+
+    `https://walk10ksteps.xyz/<base64 of "1792932564:<signature>:<id>/balpha9/<file_id>/<name>">`"""
+    if len(url.parts) < 2:
+        return False
+    token = url.parts[1]
+    try:
+        decoded = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4)).decode("utf-8", "replace")
+    except (ValueError, binascii.Error):
+        return False
+    return bool(re.match(r"^\d{9,}:[\w-]{16,}:\d+/", decoded))
+
+
 def _check_url(url: AbsoluteHttpURL) -> AbsoluteHttpURL:
     for params in [("md5", "expires"), ("exp", "sig")]:
         if all(map(url.query.get, params)):
             return url
+    if _signed_path(url):
+        return url
     raise ScrapeError(422, f"Unable to extract a valid download URL. Found: {url}")

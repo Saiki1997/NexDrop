@@ -72,7 +72,30 @@ class AlbumNames(unittest.TestCase):
             [m.filename for m in saved], ["Peachuu Tae 003.png", "Peachuu Tae 001.mp4", "Peachuu Tae 002.png"]
         )
         self.assertEqual(saved[0].original_filename, "IMG_8403.png")
-        self.assertEqual(saved[0].download_folder.name, "Peachuu Tae (Bunkr)")
+        # The album's folder carries the same name as its files.
+        self.assertEqual(saved[0].download_folder.name, "Peachuu Tae")
+
+    def test_album_folder_keeps_site_and_id_when_the_setting_is_off(self):
+        from cyberdrop_dl.crawlers.bunkr import BunkrCrawler
+
+        crawler, _ = _crawler(BunkrCrawler)
+        token = source_order.ALBUM_NAMES.set(False)
+        try:
+            album = self._album(crawler)
+        finally:
+            source_order.ALBUM_NAMES.reset(token)
+        self.assertEqual(album.folders[-1], "Peachuu Tae (Bunkr)")
+
+    def test_profiles_and_threads_keep_the_site_in_their_folder(self):
+        from cyberdrop_dl.crawlers.bunkr import BunkrCrawler
+
+        crawler, _ = _crawler(BunkrCrawler)
+        thread = _item("https://simpcity.cr/threads/yua.51423")
+        thread.setup_as_forum(crawler.create_title("YUA"))
+        self.assertEqual(thread.folders[-1], "YUA (Bunkr)")
+        album = next(thread.create_children([AbsoluteHttpURL("https://bunkr.cr/a/x")]))
+        album.setup_as_album(crawler.create_title("Yua Jul29", "x"), album_id="x")
+        self.assertEqual(album.folders, ["YUA (Bunkr)", "Yua Jul29"])
 
     def test_two_files_from_one_page_and_bad_characters(self):
         from cyberdrop_dl.crawlers.bunkr import BunkrCrawler

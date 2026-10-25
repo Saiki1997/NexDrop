@@ -194,7 +194,7 @@
           </div>
         </div>
         <label class="switch"><input type="checkbox" id="sequence-prefix" checked><span class="switch-text">Number files in page order<small>Adds 001_, 002_ so files sort the way the post shows them.</small></span></label>
-        <label class="switch"><input type="checkbox" id="album-names" checked><span class="switch-text">Name files after the album<small>Files from an album are saved as the album's name and their place in it, like "Peachuu Tae 001.png". Single files keep their own name.</small></span></label>
+        <label class="switch"><input type="checkbox" id="album-names" checked><span class="switch-text">Name files after the album<small>Files from an album are saved as the album's name and their place in it, like "Peachuu Tae 001.png", in a folder with the same name ("Peachuu Tae"). Single files keep their own name.</small></span></label>
         <label class="switch"><input type="checkbox" id="post-folders" checked><span class="switch-text">Folder for each post<small>Puts each X, TikTok, Bluesky, Patreon or Kemono post in its own dated folder, like "2024-12-30 - 1873747839563755753". Off saves them all in the profile's folder.</small></span></label>
         <div class="field">
           <span class="field-label">File types to download</span>
@@ -236,8 +236,12 @@
         <label class="field">
           <span class="field-label">Proxy</span>
           <input type="text" id="proxy" placeholder="http://127.0.0.1:8080" spellcheck="false" autocomplete="off">
-          <small class="field-help">An http:// or https:// proxy for every download. Empty connects directly. Telegram account downloads always connect directly. The engine log records this address, so leave out a password if you share logs.</small>
+          <small class="field-help">An http:// or https:// proxy. Empty connects directly. Telegram account downloads always connect directly. The engine log records this address, so leave out a password if you share logs.</small>
         </label>
+        <div class="field-grid">
+          <label class="field"><span class="field-label">Use the proxy for</span><select id="proxy-scope" class="select"><option value="all">Every site</option><option value="simpcity">SimpCity only</option></select><small class="field-help">SimpCity only keeps your own IP address off SimpCity while other sites download at full speed. FlareSolverr solves SimpCity's bot check through the same proxy.</small></label>
+          <label class="field"><span class="field-label">Seconds between SimpCity requests</span><input type="number" id="simpcity-gap" min="1" max="30" value="2"><small class="field-help">Pages and attachments, at most 2 at once. If SimpCity says "too many requests", NexDrop pauses it (30 s, then 60 s, ...) and stops contacting it for the run after 5 in a row.</small></label>
+        </div>
 
         <div class="divider"></div>
         <label class="switch"><input type="checkbox" id="schedule-on"><span class="switch-text">Only start downloads at certain times<small>Links you start outside these hours wait in the queue, and so do watched-thread checks. Press Start with an empty links box to start the queue now anyway.</small></span></label>

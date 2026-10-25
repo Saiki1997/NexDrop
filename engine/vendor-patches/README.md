@@ -46,3 +46,20 @@ page, live per-file speed.
 
 Also at run time from `engine/bridge.py`: the one-download-per-server lock (Bunkr and similar)
 allows N connections per server (default 3) and falls back to 1 for a server that answers 429/503.
+
+2.4.1:
+- `cyberdrop_dl/url_objects.py`: with `ALBUM_NAMES` on, `setup_as_album` names the album's folder with the album name
+  (`album_name`), the same name its files get, instead of `<title> <id> (<Site>)`. Profiles, threads and posts are unchanged.
+- `cyberdrop_dl/clients/downloads.py`: `DownloadClient.__repr__` named a missing `_supports_ranges` attribute, so every
+  traceback showed a repr-error for the download client. It names `SUPPORTS_RANGES`.
+- `cyberdrop_dl/crawlers/fileditch.py` (new in this folder): signed-path download links (`walk10ksteps.xyz/<base64 of
+  "<expiry>:<signature>:<id>/<path>">`) are accepted, and the file keeps the name from the Fileditch link.
+- `cyberdrop_dl/crawlers/pornhub.py` (new in this folder): a profile page whose header has none of the name selectors
+  (regional mirrors such as jp.pornhub.com) uses the name from the link instead of failing with 422.
+
+Also at run time from `engine/bridge.py` (2.4.1): every request passes `HTTPClient.raw_request` through a guard. Old Coomer
+and Kemono hosts (`*.coomer.party`, `coomer.su`, `*.kemono.party`, `kemono.su`) are sent to `coomer.st` / `kemono.cr`.
+SimpCity requests are paced (2 at once, `simpcityGap` seconds apart), a 429 or a 503 with Retry-After pauses the site and
+retries, and after 5 limits in a row the run stops contacting SimpCity. With `proxyScope: "simpcity"` only SimpCity requests
+(and their FlareSolverr requests) use the proxy. SimpCity cookies are saved to `appdata/cookies/session/simpcity.txt`
+after a run and loaded next run where the user's cookie file doesn't set the same cookie.
