@@ -1131,6 +1131,8 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         "endPage": end_page,
         "orderMode": order_mode,
         "sequencePrefix": NUMBERED,
+        "albumNames": True if config.get("albumNames") is None else bool(config.get("albumNames")),
+        "postFolders": True if config.get("postFolders") is None else bool(config.get("postFolders")),
         "orderManifest": str(MANIFEST),
         "auth": config.get("auth") if isinstance(config.get("auth"), dict) else {},
         "engineLog": str(ENGINE_LOG_PATH or ""),

@@ -1,3 +1,9 @@
+# Unreleased
+
+## New
+- **Name files after the album.** Files from an album (Bunkr, GoFile, Cyberdrop and other album pages) are saved as the album's name and their place on the album page, like `Peachuu Tae 001.png`, instead of `IMG_8916.png`. Single files keep their own name. Settings → "Name files after the album" (on by default).
+- **Folder for each post is optional.** X, TikTok, Bluesky, Patreon, Kemono and similar sites put each post in a dated folder like `2024-12-30 - 1873747839563755753`. Turn off Settings → "Folder for each post" to save a profile's files together in its folder. Gallery sites (GirlsReleased, WordPress posts) keep the set's name as the folder either way.
+
 # NEXDROP 2.3.4
 
 Every failure in the earlier run logs was checked. These are fixed:

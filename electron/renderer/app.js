@@ -41,6 +41,8 @@
   const PREF_FIELDS = {
     orderMode: { get: () => $("#order-seg [aria-checked=true]")?.dataset.order || "parallel", set: (v) => setOrder(v) },
     sequencePrefix: { el: "#sequence-prefix", type: "check", def: true },
+    albumNames: { el: "#album-names", type: "check", def: true },
+    postFolders: { el: "#post-folders", type: "check", def: true },
     deepScrape: { el: "#deep-scrape", type: "check", def: false },
     flareSolver: { el: "#flare", type: "check", def: true },
     threadDepth: { el: "#thread-depth", type: "int", def: 0, min: 0, max: 3 },
@@ -236,6 +238,8 @@
       cookieFiles,
       orderMode: prefs.orderMode,
       sequencePrefix: prefs.sequencePrefix,
+      albumNames: prefs.albumNames,
+      postFolders: prefs.postFolders,
       deepScrape: prefs.deepScrape,
       flareSolver: prefs.flareSolver,
       threadDepth: prefs.threadDepth,

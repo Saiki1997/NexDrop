@@ -61,6 +61,7 @@ class WordPressBaseCrawler(Crawler, is_abc=True):
         "All Posts": "/posts/",
     }
     DEFAULT_POST_TITLE_FORMAT: ClassVar[str] = "{date} - {id} - {title}"
+    POST_TITLE_IS_ALBUM: ClassVar[bool] = True  # NEXDROP patch
     WP_USE_REGEX: ClassVar[bool] = True
     SUPPORTS_THREAD_RECURSION: ClassVar[bool] = False
 

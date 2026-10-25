@@ -899,11 +899,13 @@ def _run() -> int:
         emit({"type": "log", "level": "warning", "message": f"File filters could not be applied: {error}"})
     fields["max_children"] = MaxChildren()
     prefix_on = True if payload.get("sequencePrefix") is None else bool(payload.get("sequencePrefix"))
+    album_names_on = True if payload.get("albumNames") is None else bool(payload.get("albumNames"))
+    post_folders_on = True if payload.get("postFolders") is None else bool(payload.get("postFolders"))
     emit({
         "type": "log",
         "stage": "system",
         "level": "info",
-        "message": f"Limits: {downloads} downloads, {per_host} per site, {attempts} attempts, order {order_mode}, names {'numbered' if prefix_on else 'original'}.",
+        "message": f"Limits: {downloads} downloads, {per_host} per site, {attempts} attempts, order {order_mode}, names {'numbered' if prefix_on else 'original'}{', album name for albums' if album_names_on else ''}, {'a folder for each post' if post_folders_on else 'no post folders'}.",
     })
     start_page = max(1, int(payload.get("startPage") or 1))
     end_raw = payload.get("endPage")
@@ -912,11 +914,13 @@ def _run() -> int:
         emit({"type": "error", "message": "Last page cannot be lower than the start page"})
         return 2
     from cyberdrop_dl.crawlers._forum import FORUM_PAGE_END, FORUM_PAGE_START
-    from cyberdrop_dl.source_order import ORDER_MODE, SEQUENCE_PREFIX, reset as reset_order
+    from cyberdrop_dl.source_order import ALBUM_NAMES, ORDER_MODE, POST_FOLDERS, SEQUENCE_PREFIX, reset as reset_order
 
     reset_order(str(payload.get("orderManifest") or ""))
     order_token = ORDER_MODE.set(order_mode)
     prefix_token = SEQUENCE_PREFIX.set(prefix_on)
+    album_token = ALBUM_NAMES.set(album_names_on)
+    post_token = POST_FOLDERS.set(post_folders_on)
 
     page_start = FORUM_PAGE_START.set(start_page)
     page_end = FORUM_PAGE_END.set(end_page)
@@ -960,6 +964,8 @@ def _run() -> int:
         FORUM_PAGE_END.reset(page_end)
         ORDER_MODE.reset(order_token)
         SEQUENCE_PREFIX.reset(prefix_token)
+        ALBUM_NAMES.reset(album_token)
+        POST_FOLDERS.reset(post_token)
     return 0
 
 

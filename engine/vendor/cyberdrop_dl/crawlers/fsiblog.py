@@ -41,6 +41,7 @@ class FSIBlogCrawler(Crawler):
         "fsiblog5.com",
     )
     DEFAULT_POST_TITLE_FORMAT: ClassVar[str] = "{date:%Y-%m-%d} - {title}"
+    POST_TITLE_IS_ALBUM: ClassVar[bool] = True  # NEXDROP patch
     NEXT_PAGE_SELECTOR: ClassVar[str] = Selector.NEXT_PAGE
 
     async def fetch(self, scrape_item: ScrapeItem) -> None:
