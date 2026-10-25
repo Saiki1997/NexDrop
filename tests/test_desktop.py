@@ -154,6 +154,25 @@ class HintsFromRealLog(unittest.TestCase):
             self.assertIn(expected, summary)
 
 
+class HintsForOldLogFailures(unittest.TestCase):
+    def test_bunkr_storage_link_refused(self):
+        hints = session.Hints("parallel", flare_ready=True)
+        hints.failed("https://pbc.scdn.st/storage/media/65cba869.MP4?n=a.MP4", "403 Forbidden")
+        hints.failed("https://example.org/storage/x.mp4", "403 Forbidden")
+        summary = " ".join(hints.summary())
+        self.assertIn("1 Bunkr storage link(s) on pbc.scdn.st", summary)
+        self.assertIn("bunkr.cr/f/", summary)
+
+    def test_retry_keeps_the_sites_error_page_reason(self):
+        hints = session.Hints("parallel", flare_ready=True)
+        url = "https://simpcity.cr/attachments/x-jpeg.33171"
+        hints.failed(url, "Invalid Content Type - Got a web page instead of the file: 'Oops! We ran into some problems. | SimpCity Forums'")
+        hints.failed(url, "Invalid Content Type - Received 'text/html; charset=utf-8', was expecting binary payload")
+        summary = " ".join(hints.summary())
+        self.assertIn("1 file(s) from simpcity.cr returned the site's own error page", summary)
+        self.assertNotIn("came back as a web page", summary)
+
+
 class CookieFiltering(unittest.TestCase):
     def test_whole_browser_export_is_cut_to_supported_sites(self):
         sys.path.insert(0, str(ROOT / "engine"))

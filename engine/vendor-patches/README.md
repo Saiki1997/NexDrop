@@ -22,6 +22,8 @@ The build script copies them over the vendor tree. Each change is marked `NEXDRO
   instead of downloading into a 403.
 - `cyberdrop_dl/crawlers/tiktok.py`: a post without a music track no longer fails the whole
   profile with `ValueError('Empty URL')`.
+  Post sounds on the US signed host (`sf16-sign.tiktokcdn-us.com`, refused outside the US with 403
+  "ForbiddenByWAF") are fetched from TikTok's global music CDN (`sf16-ies-music.tiktokcdn.com`), same `/obj/` path.
 
 - `cyberdrop_dl/progress/__init__.py` and `cyberdrop_dl/clients/downloads.py`: `ProgressHook` has an optional
   `resume` callback. A resumed download reports the bytes already on disk through it, so the bridge moves

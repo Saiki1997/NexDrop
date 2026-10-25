@@ -765,6 +765,7 @@ class Hints:
         self.gone: dict[str, int] = {}
         self.site_error: dict[str, int] = {}
         self.busy: dict[str, int] = {}
+        self.expired: dict[str, int] = {}
         self.nested = 0
         self.bot_blocked: list[str] = []
         self.files_in_thread = 0
@@ -772,12 +773,16 @@ class Hints:
     def failed(self, url: str, reason: str) -> None:
         """Count one failure per file (a retry that fails again replaces the earlier count)."""
         self._failed_urls = getattr(self, "_failed_urls", {})
-        if url in self._failed_urls:
-            self._uncount(url, self._failed_urls.pop(url))
+        earlier = self._failed_urls.pop(url, None)
+        if earlier:
+            self._uncount(url, earlier)
         if "Oops! We ran into some problems" in reason or "do not have permission" in reason:
             bucket = "site_error"
         elif "Invalid Content Type" in reason or "DDoS-Guard" in reason:
-            bucket = "page_instead_of_file"
+            # The retry's message drops the page title; keep the site's own error page if the first try saw it.
+            bucket = "site_error" if earlier == "site_error" else "page_instead_of_file"
+        elif "403" in reason and "/storage/" in url and host_of(url).endswith("scdn.st"):
+            bucket = "expired"
         elif "509" in reason or "Bandwidth Limit" in reason:
             bucket = "quota"
         elif "503" in reason or "502" in reason or "429" in reason:
@@ -850,6 +855,11 @@ class Hints:
                 f"{count} file(s) from {host} returned the site's own error page (\"Oops! We ran into some problems\"), "
                 "not a bot check. The attachment was removed, or your account can't view it. Open one of the links in your browser "
                 "while signed in to check; if it opens there, export fresh cookies and use Retry unfinished."
+            )
+        for host, count in self.expired.items():
+            out.append(
+                f"{count} Bunkr storage link(s) on {host} were refused (403). These links expire, so a copied storage link "
+                "stops working. Paste the Bunkr page link (bunkr.cr/f/...) instead, or use Retry unfinished on the run that found them."
             )
         for host, count in self.busy.items():
             out.append(f"{count} file(s) on {host} got a temporary server error (busy or overloaded). Use Retry unfinished in a few minutes.")

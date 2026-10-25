@@ -22,6 +22,9 @@ _API_URL = AbsoluteHttpURL("https://www.tikwm.com/api/")
 _API_SUBMIT_TASK_URL = _API_URL / "video/task/submit"
 _API_TASK_RESULT_URL = _API_URL / "video/task/result"
 _API_USER_POST_URL = _API_URL / "user/posts"
+# NEXDROP patch: TikTok's global music CDN. It serves the same /obj/... sound files as the signed
+# US host (sf16-sign.tiktokcdn-us.com), whose firewall refuses many regions with 403 "ForbiddenByWAF".
+_GLOBAL_MUSIC_HOST = "sf16-ies-music.tiktokcdn.com"
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -231,7 +234,7 @@ class TikTokCrawler(Crawler):
             return  # NEXDROP patch: posts without a music track made the whole profile fail ("Empty URL")
         if __import__("os").environ.get("NEXDROP_TIKTOK_AUDIO", "1") != "1":
             return  # NEXDROP patch: the post's background sound is optional (Settings > Downloads)
-        audio_url = self.parse_url(audio.play, trim=False)
+        audio_url = _global_music_url(self.parse_url(audio.play, trim=False))
         filename = self.create_custom_filename(audio.title, ext, file_id=audio.id)
         self.create_eager_task(
             self.handle_file(
@@ -268,3 +271,10 @@ class TikTokCrawler(Crawler):
     def _prepare_media_item(self, media_item: MediaItem) -> None:
         if media_item.ext == ".mp3":
             media_item.download_folder /= "Audios"
+
+
+def _global_music_url(url: AbsoluteHttpURL) -> AbsoluteHttpURL:
+    """Sound files on the region-locked US host are fetched from TikTok's global music CDN."""
+    if url.host and url.host.endswith(".tiktokcdn-us.com") and url.raw_path.startswith("/obj/"):
+        return AbsoluteHttpURL(f"https://{_GLOBAL_MUSIC_HOST}{url.raw_path}")
+    return url

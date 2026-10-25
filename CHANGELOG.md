@@ -1,3 +1,17 @@
+# NEXDROP 2.3.4
+
+Every failure in the earlier run logs was checked. These are fixed:
+
+## Fixed
+- **TikTok sounds.** A post's background sound often failed with 403 Forbidden, because TikTok's US file server refuses many countries. NEXDROP now gets the same sound file from TikTok's worldwide music server.
+- **Bunkr storage links.** A copied Bunkr storage link (`*.scdn.st/storage/...`) stops working once it expires (403). The end of the run now says so and suggests pasting the Bunkr page link (`bunkr.cr/f/...`) or using Retry unfinished.
+- **SimpCity attachments.** When an attachment returns SimpCity's own error page and the automatic retry fails again, the end of the run keeps the accurate explanation (removed, or your account can't view it) instead of switching to "came back as a web page".
+
+## Not fixable from NEXDROP
+- Old GoonBox / jpg.church images from 2022 (`simp1.cuckcapital.cr/images/2022/...`) are gone from every GoonBox server (404).
+- Pixeldrain files locked behind a captcha need a browser or a paid Pixeldrain key. NEXDROP won't get around captchas.
+- SimpCity attachments that SimpCity won't show your account, deleted GoFile, 1fichier and X links, MEGA's free transfer quota, and X searches, which X only shows to signed-in users.
+
 # NEXDROP 2.3.3
 
 ## Fixed

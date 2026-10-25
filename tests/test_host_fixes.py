@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "engine" / "vendor"))
 from cyberdrop_dl.crawlers.goonbox import GoonBoxCrawler
 from cyberdrop_dl.crawlers.pixeldrain import File, PixelDrainCrawler
+from cyberdrop_dl.crawlers.tiktok import _global_music_url
 from cyberdrop_dl.exceptions import ScrapeError
 from cyberdrop_dl.url_objects import AbsoluteHttpURL
 
@@ -51,6 +52,18 @@ class PixeldrainCaptcha(unittest.IsolatedAsyncioTestCase):
             c = self.crawler(logged_in)
             await PixelDrainCrawler._file(c, SimpleNamespace(), pd_file(availability))
             c.check_complete_by_hash.assert_awaited_once()
+
+
+class TikTokSounds(unittest.TestCase):
+    def test_us_signed_sound_uses_the_global_music_cdn(self):
+        signed = AbsoluteHttpURL("https://sf16-sign.tiktokcdn-us.com/obj/musically-maliva-obj/6949008446637345541.mp3"
+                                 "?lk3s=08d74b56&x-expires=1792892758&x-signature=S8RUxPIIo8sZlkx%2B8P6QCEccfvM%3D")
+        self.assertEqual(str(_global_music_url(signed)),
+                         "https://sf16-ies-music.tiktokcdn.com/obj/musically-maliva-obj/6949008446637345541.mp3")
+
+    def test_other_links_are_unchanged(self):
+        for url in ("https://v16m.tiktokcdn.com/abc/video.mp4?x=1", "https://sf16-ies-music.tiktokcdn.com/obj/a.mp3"):
+            self.assertEqual(str(_global_music_url(AbsoluteHttpURL(url))), url)
 
 
 if __name__ == "__main__":
