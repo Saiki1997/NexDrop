@@ -32,6 +32,7 @@ class GirlsReleasedCrawler(Crawler):
     DOMAIN: ClassVar[str] = "girlsreleased"
     FOLDER_DOMAIN: ClassVar[str] = "GirlsReleased"
     DEFAULT_POST_TITLE_FORMAT: ClassVar[str] = "{date:%Y-%m-%d} - {id} - {title}"
+    POST_TITLE_IS_ALBUM: ClassVar[bool] = True  # NEXDROP patch
 
     @property
     def separate_posts(self) -> bool:

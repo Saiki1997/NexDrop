@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Concatenate, Final, Literal, Se
 from aiohttp import hdrs
 
 from cyberdrop_dl import aio, env  # NEXDROP patch: used at runtime by new_task_group() and debug-crawler registration
-from cyberdrop_dl.source_order import numbered_filename, public_url
+from cyberdrop_dl.source_order import ALBUM_NAMES, POST_FOLDERS, album_filename, album_name, numbered_filename, public_url, remember_title
 from cyberdrop_dl.cache import TTLCacheAdapter
 from cyberdrop_dl.clients.downloads import IGNORE_CONTENT_TYPE
 from cyberdrop_dl.clients.http import HTTPClient, HTTPConfig, HTTPContext, HTTPMixin
@@ -24,7 +24,13 @@ from cyberdrop_dl.crawlers import ALLOW_NO_EXT, SKIP_DOWNLOAD, Registry
 from cyberdrop_dl.crawlers._hls import HLSMixin
 from cyberdrop_dl.downloader.http import Downloader
 from cyberdrop_dl.exceptions import MaxChildrenError, NoExtensionError, ScrapeError
-from cyberdrop_dl.filepath import check_dangerous_filename, check_path_traversal, compose_filename, get_filename_and_ext
+from cyberdrop_dl.filepath import (
+    check_dangerous_filename,
+    check_path_traversal,
+    compose_filename,
+    get_filename_and_ext,
+    sanitize_filename,
+)
 from cyberdrop_dl.mediaprops import ISO639Subtitle, Resolution
 from cyberdrop_dl.models.validators import strings
 from cyberdrop_dl.url_objects import AbsoluteHttpURL, MediaItem, MuxVideo, ScrapeItem, is_absolute_http_url
@@ -204,6 +210,8 @@ class Crawler(HTTPMixin, HLSMixin, ABC):
     SUPPORTED_DOMAINS: ClassVar[SupportedDomains] = ()
     SUPPORTED_PATHS: ClassVar[SupportedPaths] = {}
     DEFAULT_POST_TITLE_FORMAT: ClassVar[str] = "{date} - {id} - {title}"
+    # NEXDROP patch: the post title is the gallery's folder, so it stays when dated post folders are off
+    POST_TITLE_IS_ALBUM: ClassVar[bool] = False
     NEXT_PAGE_SELECTOR: ClassVar[str] = ""
 
     FOLDER_DOMAIN: ClassVar[str] = ""
@@ -561,12 +569,27 @@ class Crawler(HTTPMixin, HLSMixin, ABC):
             referer = referer.with_fragment(f"{referer.fragment} - {frag}" if referer.fragment else frag)
 
         chosen = custom_filename or filename
-        number, chosen = numbered_filename(str(url), chosen)
+        download_folder = _prepare_download_path(scrape_item, self.FOLDER_DOMAIN)
+        # NEXDROP patch: "Name files after the album" setting
+        use_album = bool(ALBUM_NAMES.get() and scrape_item.album_title and scrape_item.part_of_album and frag != "thumbnail")
+        if use_album:
+            assert scrape_item.album_title
+            chosen = sanitize_filename(
+                album_filename(
+                    album_name(scrape_item.album_title),
+                    str(download_folder),
+                    str(url),
+                    ext or Path(filename).suffix,
+                    scrape_item.album_index,
+                ),
+                "-",
+            )
+        number, chosen = numbered_filename(str(url), chosen, enabled=False if use_album else None)
         logging.getLogger("cyberdrop_dl").info("Source order\t%s\t%s\t%s", number, public_url(str(url)), chosen)
         media_item = MediaItem(
             url=url,
             domain=self.DOMAIN,
-            download_folder=_prepare_download_path(scrape_item, self.FOLDER_DOMAIN),
+            download_folder=download_folder,
             filename=chosen,
             db_path=self.__db_path__(url),
             referer=referer,
@@ -802,7 +825,7 @@ class Crawler(HTTPMixin, HLSMixin, ABC):
         self, title: str, album_id: str | None = None, thread_id: int | None = None, *, force_album_id: bool = False
     ) -> str:
         """Creates the title for the scrape item."""
-        return compose_title(
+        composed = compose_title(
             self.config,
             self.FOLDER_DOMAIN,
             title,
@@ -810,6 +833,8 @@ class Crawler(HTTPMixin, HLSMixin, ABC):
             thread_id,
             force_album_id=force_album_id,
         )
+        remember_title(composed, " ".join((title or "").split()))  # NEXDROP patch: album name for album filenames
+        return composed
 
     @final
     def create_separate_post_title(
@@ -821,6 +846,8 @@ class Crawler(HTTPMixin, HLSMixin, ABC):
     ) -> str:
         if not self.separate_posts:
             return ""
+        if not POST_FOLDERS.get():  # NEXDROP patch: "Folder for each post" setting
+            return (title or "").strip() if self.POST_TITLE_IS_ALBUM else ""
         title_format = self.config.subfolders.separate_posts.format
         if title_format.strip().casefold() == "{default}":
             title_format = self.DEFAULT_POST_TITLE_FORMAT

@@ -29,6 +29,15 @@ The build script copies them over the vendor tree. Each change is marked `NEXDRO
   `resume` callback. A resumed download reports the bytes already on disk through it, so the bridge moves
   the file's bar without counting those bytes as newly downloaded or in the speed.
 
+- `cyberdrop_dl/source_order.py`, `cyberdrop_dl/url_objects.py` and `cyberdrop_dl/crawlers/crawler.py`: album filenames
+  (`ALBUM_NAMES`, the "Name files after the album" setting). `setup_as_album` keeps the album's folder title, each
+  `create_child` gets its place on the album page, and `handle_file` names the file `<album name> 001.ext` (counted per album
+  folder, one URL keeps its number, no `001_` prefix on top). `create_title` remembers the album name without the
+  ` (Bunkr)` / album ID suffix. Thumbnails and single files keep their names.
+- `POST_FOLDERS` ("Folder for each post"): when off, `create_separate_post_title` returns no folder, even on crawlers that force
+  post folders (X, Bluesky, Patreon, TikTok...). Crawlers whose post title is the gallery itself (`POST_TITLE_IS_ALBUM`:
+  `girlsreleased.py`, `fsiblog.py`, `nsfw_xxx.py`, `wordpress/__init__.py`) keep the plain title.
+
 Engine behaviour changed at run time from `engine/bridge.py` instead (no file changes):
 16 MB database reserve instead of 250 MB, FlareSolverr retry for downloads that hit a bot-check
 page, live per-file speed.

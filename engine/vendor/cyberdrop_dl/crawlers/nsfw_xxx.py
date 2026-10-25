@@ -29,6 +29,7 @@ class NsfwXXXCrawler(Crawler):
     DOMAIN: ClassVar[str] = "nsfw.xxx"
     FOLDER_DOMAIN: ClassVar[str] = DOMAIN
     DEFAULT_POST_TITLE_FORMAT: ClassVar[str] = "{date:%Y-%m} - {title} [{id}]"
+    POST_TITLE_IS_ALBUM: ClassVar[bool] = True  # NEXDROP patch
 
     @property
     def separate_posts(self) -> bool:

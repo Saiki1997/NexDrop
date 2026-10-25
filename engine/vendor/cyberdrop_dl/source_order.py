@@ -10,14 +10,20 @@ from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 ORDER_MODE: ContextVar[str] = ContextVar("ORDER_MODE", default="source")
 SEQUENCE_PREFIX: ContextVar[bool] = ContextVar("SEQUENCE_PREFIX", default=True)
+ALBUM_NAMES: ContextVar[bool] = ContextVar("ALBUM_NAMES", default=False)
+POST_FOLDERS: ContextVar[bool] = ContextVar("POST_FOLDERS", default=True)
 _SENSITIVE = ("password", "token", "auth", "cookie", "session", "sig", "key", "secret")
 _sequences: dict[str, int] = {}
 _next = 1
+_titles: dict[str, str] = {}  # folder title -> album name as the site shows it
+_albums: dict[str, dict[str, int]] = {}  # album folder -> {file URL: number}
+_ALBUM_NAME_MAX = 120
 
 
 def reset(manifest: str | None = None) -> None:
     global _next
     _sequences.clear()
+    _albums.clear()
     _next = 1
     if not manifest:
         return
@@ -69,6 +75,31 @@ def numbered_filename(url: str, original: str, *, enabled: bool | None = None) -
         enabled = SEQUENCE_PREFIX.get()
     name = prefix_name(number, original) if enabled else original
     return number, name
+
+
+def remember_title(title: str, name: str) -> None:
+    """Map a folder title ("Name 123 (Bunkr)") back to the album's own name."""
+    _titles[title] = name
+
+
+def album_name(title: str) -> str:
+    return (_titles.get(title) or title).strip()
+
+
+def album_filename(album: str, folder: str, url: str, ext: str, preferred: int | None = None) -> str:
+    """'<album> 001.ext'. Numbers count per album folder; one URL keeps its number."""
+    numbers = _albums.setdefault(folder, {})
+    key = public_url(url)
+    number = numbers.get(key)
+    if number is None:
+        used = set(numbers.values())
+        if preferred and preferred > 0 and preferred not in used:
+            number = preferred
+        else:
+            number = max(used | {0}) + 1
+        numbers[key] = number
+    name = " ".join(album.split())[:_ALBUM_NAME_MAX].strip() or "Album"
+    return f"{name} {number:03d}{ext}"
 
 
 def order_urls(html: str, urls: list[str]) -> list[str]:

@@ -261,6 +261,10 @@ class ScrapeItem:
     _uploaded_at: int | None = None
     retry_info: RetryInfo | None = None
     markers: list[Any] = dataclasses.field(default_factory=list)
+    # NEXDROP patch: album folder title and each child's place on the album page, for album filenames
+    album_title: str | None = None
+    album_index: int | None = None
+    _album_children: int = 0
 
     __repr__ = signature.simple_repr("url", "folders", "uploaded_at")
 
@@ -362,6 +366,9 @@ class ScrapeItem:
             self.album_id = album_id
         if self.type != item_type:
             self.type = item_type
+        self.album_title = title if item_type == ScrapeItemType.ALBUM else None
+        self.album_index = None
+        self._album_children = 0
         self.append_folders(title)
 
     def create_new(
@@ -388,7 +395,11 @@ class ScrapeItem:
         return scrape_item
 
     def create_child(self, url: AbsoluteHttpURL) -> Self:
-        return self.create_new(url, part_of_album=True, add_parent=True)
+        child = self.create_new(url, part_of_album=True, add_parent=True)
+        if self.album_title and self._type == ScrapeItemType.ALBUM:
+            self._album_children += 1
+            child.album_index = self._album_children
+        return child
 
     def setup_as_album(self: ScrapeItem, title: str, *, album_id: str | None = None) -> None:
         return self.setup_as(title, ScrapeItemType.ALBUM, album_id=album_id)
