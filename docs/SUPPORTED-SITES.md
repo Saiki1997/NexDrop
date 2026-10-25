@@ -1,7 +1,7 @@
 # Supported sites
 
 Sites the bundled engine (patched [Cyberdrop-DL](https://github.com/Cyberdrop-DL/cyberdrop-dl) 10.10.0) has a crawler for in this build,
-226 in total. Generated from the engine's own registry (`cyberdrop_dl.commands.supported_sites`).
+228 in total. Generated from the engine's own registry (`cyberdrop_dl.commands.supported_sites`).
 Being listed means the site is registered, not that every site was live-tested; sites change often.
 
 Telegram public channels work without an account; NEXDROP adds a Telegram account sign-in for private
@@ -40,6 +40,7 @@ chats and large files. Direct file links (for example `https://host/file.mp4`) a
 | cloud.mail.ru | [https://cloud.mail.ru](https://cloud.mail.ru) | `cloud.mail.ru` | Public files / folders |
 | CloudflareStream | [https://cloudflarestream.com](https://cloudflarestream.com) | `cloudflarestream.com`, `videodelivery.net` | Public Video, Restricted Access Video |
 | Clyp.it | [https://clyp.it](https://clyp.it) | `clyp.it` | Audio, User |
+| Coomer | [https://coomer.st](https://coomer.st) | `coomer.party`, `coomer.st`, `coomer.su` | Creator, Direct links, Favorites, Post, Search |
 | CrazyShit | [https://crazyshit.com](https://crazyshit.com) | `crazyshit.*` | Series, Video |
 | Cyberdrop | [https://cyberdrop.cr](https://cyberdrop.cr) | `cyberdrop.*`, `cyberdrop.cr`, `cyberdrop.me`, `cyberdrop.to`, `k1-cd.cdn.gigachad-cdn.ru` | Album, Direct links, File |
 | Cyberfile | [https://cyberfile.me](https://cyberfile.me) | `cyberfile.*` | Files, Public Folders, Shared folders |
@@ -97,6 +98,7 @@ chats and large files. Direct file links (for example `https://host/file.mp4`) a
 | Imgur | [https://imgur.com](https://imgur.com) | `imgur.*` | Album, Direct links, Gallery, Image |
 | Imx.to | [https://imx.to](https://imx.to) | `imx.to` | Gallery, Image, Thumbnail |
 | InPorn | [https://inporn.com](https://inporn.com) | `inporn.com`, `inporn.tube` | Video |
+| Kemono | [https://kemono.cr](https://kemono.cr) | `kemono.cr`, `kemono.party`, `kemono.su` | Creator, Direct links, Favorites, Post, Search |
 | Kick | [https://kick.com](https://kick.com) | `kick.*` | Channel clips, Channel videos, Clip, VOD |
 | Koofr | [https://koofr.eu](https://koofr.eu) | `k00.fr`, `koofr.eu`, `koofr.net` | Public Share |
 | LeakedModels | [https://leakedmodels.com/forum](https://leakedmodels.com/forum) | `leakedmodels.*` | **NOTE**, Attachments, Threads |

@@ -1,3 +1,9 @@
+# NEXDROP 2.4.2
+
+## Fixed
+- **Coomer and Kemono profiles.** Links like `https://coomer.st/onlyfans/user/<name>` and `https://kemono.cr/patreon/user/<id>` were rejected with "No handler accepted this page" and nothing was downloaded. NEXDROP now downloads Coomer and Kemono creator profiles, single posts, searches (`/posts?q=...`) and favorites (with your sign-in cookies), page by page through every post. Old `coomer.su`, `coomer.party`, `kemono.su` and `kemono.party` links work too.
+- Coomer and Kemono are asked for at most 2 pages a second, so a large profile doesn't get your IP rate-limited.
+
 # NEXDROP 2.4.1
 
 Every error in the 2026-10-25 run log was checked. These are fixed or have a workaround now.
