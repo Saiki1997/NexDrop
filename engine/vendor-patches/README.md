@@ -70,3 +70,12 @@ after a run and loaded next run where the user's cookie file doesn't set the sam
   links were "Unsupported URL". API requests send `Accept: text/css` (the sites answer 403 otherwise) at 2 a second. The full
   creator list is not fetched at start (tens of MB on Coomer); names come from each creator's profile. Old hosts
   (`*.coomer.party`, `coomer.su`, `*.kemono.party`, `kemono.su`) are moved to the main domain.
+
+2.4.3:
+- `cyberdrop_dl/filepath.py` (new in this folder): `get_filename_and_ext` accepts a short list of real extensions longer than
+  5 characters (`.blend`, `.blend1`, `.unitypackage`, `.safetensors`, `.procreate`, `.aseprite`, `.torrent`, `.sketch`)
+  instead of raising `InvalidExtensionError`.
+
+Also at run time from `engine/bridge.py` (2.4.3): downloads are counted per site (`n3.coomer.st` counts as `coomer.st`).
+After 8 connection timeouts in a row with no successful download in between, the site's remaining downloads fail at once
+with `DownloadError("Server unreachable")` instead of each waiting out the connect timeout.

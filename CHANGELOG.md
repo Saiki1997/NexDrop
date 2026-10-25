@@ -1,3 +1,16 @@
+# NEXDROP 2.4.3
+
+From the 2026-10-25 23:18 (Coomer) and 23:21 (Kemono) runs on 2.4.2.
+
+## Fixed
+- **Coomer and Kemono runs no longer hang when the file servers can't be reached.** The profiles were read fine, but every file download to `n1`–`n4.coomer.st` and `n2`–`n4.kemono.cr` timed out before the server answered, so a big profile sat for an hour without saving anything. After 8 timeouts in a row on one site, NEXDROP now skips that site's other files at once and marks them failed, so **Retry unfinished** can get them later. Other sites in the same run carry on.
+- The end-of-run summary explains it: the site opened but its file servers never answered, which almost always means your internet provider or network blocks them. Open one of the failed links in your browser. If it doesn't load there either, turn on a VPN or set a proxy (Settings → Speed → Proxy, "Use the proxy for": everything), then use Retry unfinished.
+- **Blender files.** `.blend` files on Dropbox (and `.blend1`, `.unitypackage`, `.safetensors`, `.procreate`, `.aseprite`, `.torrent`, `.sketch`) were rejected as "Invalid File Extension". They download now.
+
+## Not fixable from NEXDROP
+- `patreon.com/<creator>/posts?tag=...` links inside Kemono posts point at the creator's Patreon page itself. Kemono already archives those posts, so they are left alone.
+- `of.tv` and `onlyfans.com` links inside Coomer posts have no downloader. MEGA files that were deleted (410 Gone) can't be fetched.
+
 # NEXDROP 2.4.2
 
 ## Fixed
