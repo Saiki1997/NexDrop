@@ -373,7 +373,7 @@ class TelegramDownloads:
             self.hooks.failed(url, explain(error))
             return
         size = target.stat().st_size
-        self.hooks.update(url, state="done", read=size, total=size, speed=0, reason="")
+        self.hooks.update(url, state="done", read=size, total=size, speed=0, reason="", path=str(target))
         self.hooks.saved(url, target)
 
 

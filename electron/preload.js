@@ -23,6 +23,14 @@ contextBridge.exposeInMainWorld("api", {
   authTest: (id) => ipcRenderer.invoke("auth-test", id),
   authChrome: (body) => ipcRenderer.invoke("auth-chrome", body),
   telegramLogin: (body) => ipcRenderer.invoke("telegram-login", body),
+  applyAppOptions: () => ipcRenderer.invoke("app-options"),
+  openReleasePage: (url) => ipcRenderer.invoke("open-release-page", url),
+  updateCheck: () => ipcRenderer.invoke("update-check"),
+  updateInstall: () => ipcRenderer.invoke("update-install"),
+  updateSkip: (version) => ipcRenderer.invoke("update-skip", version),
+  updateAuto: (on) => ipcRenderer.invoke("update-auto", on),
+  historySearch: (query) => ipcRenderer.invoke("history-search", query),
+  historyReveal: (id) => ipcRenderer.invoke("history-reveal", id),
   onPipelineEvent: (callback) => {
     const listener = (_event, data) => callback(data);
     ipcRenderer.on("pipeline-event", listener);

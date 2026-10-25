@@ -61,13 +61,30 @@
     speedLimitMB: { el: "#speed-limit", type: "int", def: 0, min: 0, max: 1000 },
     connectionTimeout: { el: "#connect-timeout", type: "int", def: 15, min: 10, max: 30 },
     readTimeout: { el: "#read-timeout", type: "int", def: 60, min: 30, max: 300 },
+    proxy: { el: "#proxy", type: "text", def: "", max: 500 },
+    scheduleOn: { el: "#schedule-on", type: "check", def: false },
+    scheduleFrom: { el: "#schedule-from", type: "time", def: "01:00" },
+    scheduleTo: { el: "#schedule-to", type: "time", def: "07:00" },
+    quietOn: { el: "#quiet-on", type: "check", def: false },
+    quietFrom: { el: "#quiet-from", type: "time", def: "18:00" },
+    quietTo: { el: "#quiet-to", type: "time", def: "23:00" },
+    quietSpeedMB: { el: "#quiet-speed", type: "int", def: 2, min: 1, max: 1000 },
+    updateCheck: { el: "#update-auto", type: "check", def: true },
+    closeToTray: { el: "#close-to-tray", type: "check", def: false },
+    startWithWindows: { el: "#start-with-windows", type: "check", def: false },
+    clipboardWatch: { el: "#clipboard-watch", type: "check", def: false },
+    linkHandler: { el: "#link-handler", type: "check", def: false },
   };
+  // Applied by the main process (tray, start with Windows, clipboard, nexdrop:// links).
+  const APP_OPTION_KEYS = ["closeToTray", "startWithWindows", "clipboardWatch", "linkHandler"];
 
   function readField(spec) {
     if (spec.get) return spec.get();
     const el = $(spec.el);
     if (!el) return spec.def;
     if (spec.type === "check") return el.checked;
+    if (spec.type === "text") return String(el.value || "").trim().slice(0, spec.max);
+    if (spec.type === "time") return fmt.clockMinutes(el.value) === null ? spec.def : el.value;
     const n = parseInt(el.value, 10);
     return Number.isFinite(n) ? Math.max(spec.min, Math.min(spec.max, n)) : spec.def;
   }
@@ -87,9 +104,13 @@
   let prefTimer = 0;
   function savePrefsSoon() {
     clearTimeout(prefTimer);
-    prefTimer = setTimeout(() => {
+    prefTimer = setTimeout(async () => {
+      const before = prefs;
       prefs = collectPrefs();
-      api.saveGuiSetting({ prefs });
+      await api.saveGuiSetting({ prefs });
+      if (APP_OPTION_KEYS.some((key) => Boolean(before[key]) !== Boolean(prefs[key]))) api.applyAppOptions();
+      if ((before.updateCheck !== false) !== prefs.updateCheck) api.updateAuto(prefs.updateCheck);
+      showSchedule();
     }, 300);
   }
 
@@ -116,14 +137,17 @@
     }
   });
 
+  /** Adds links to the box and returns how many were not in it yet. */
   function addLinks(text, replace) {
     const { urls, unsupported } = fmt.parseLinks(text);
     const lines = [...urls, ...unsupported];
     if (!lines.length) return 0;
     const existing = replace ? [] : urlsBox.value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const known = new Set(existing);
+    const added = lines.filter((line) => !known.has(line));
     urlsBox.value = [...new Set([...existing, ...lines])].join("\n");
     autoGrow();
-    return lines.length;
+    return added.length;
   }
 
   $("#btn-import").addEventListener("click", () => $("#import-file").click());
@@ -193,7 +217,14 @@
 
   async function startRun() {
     if (run.running) return addToQueue();
-    if (!urlsBox.value.trim() && queue.length && $("#resume").hidden) return startNextInQueue();
+    // Start with an empty box starts the queue now, even outside the download hours.
+    if (!urlsBox.value.trim() && queue.length && $("#resume").hidden) return startNextInQueue(true);
+    if (!scheduleAllows() && urlsBox.value.trim()) {
+      const before = queue.length;
+      addToQueue();
+      if (queue.length > before) log("info", `Downloads are set to start between ${prefs.scheduleFrom} and ${prefs.scheduleTo} (Settings > Speed). This waits in the queue until then; press Start with an empty links box to start now.`);
+      return;
+    }
     const job = jobFromInput();
     if (!job) return;
     if (!job.redownload && job.urls.length) {
@@ -228,6 +259,9 @@
     } else {
       log("phase", job.watchId ? `Checking watched thread: ${job.label}` : `Starting: ${job.label}`);
     }
+    const quiet = quietActive();
+    const speedMB = quiet ? (prefs.speedLimitMB ? Math.min(prefs.speedLimitMB, prefs.quietSpeedMB) : prefs.quietSpeedMB) : prefs.speedLimitMB;
+    if (quiet) log("info", `Quiet hours (${prefs.quietFrom}–${prefs.quietTo}): this run is capped at ${speedMB} MB/s.`);
     api.startPipeline({
       urls: job.urls,
       unsupported: job.unsupported || [],
@@ -253,7 +287,8 @@
       fileTypes: { images: prefs.typeImages, videos: prefs.typeVideos, audio: prefs.typeAudio, other: prefs.typeOther },
       minImageKB: prefs.minImageKB,
       skipUrls: job.doneUrls || [],
-      speedLimit: prefs.speedLimitMB * 1024 * 1024,
+      speedLimit: speedMB * 1024 * 1024,
+      proxy: prefs.proxy || "",
       connectionTimeout: prefs.connectionTimeout,
       readTimeout: prefs.readTimeout,
     });
@@ -301,9 +336,11 @@
     }
   }
 
-  function startNextInQueue() {
+  // force: the user pressed Start, so the download hours don't apply.
+  function startNextInQueue(force = false) {
     if (run.running || !queue.length) return;
     if (!$("#resume").hidden) return; // a paused run waits for Resume or Discard first
+    if (!force && !scheduleAllows()) return;
     const next = queue.shift();
     saveQueue();
     runJob(next);
@@ -444,9 +481,32 @@
   }
 
   setInterval(() => {
+    showSchedule();
     if (run.running || !$("#resume").hidden) return;
     dueWatches().forEach(checkWatch);
+    startNextInQueue(); // the download hours may have just begun
   }, WATCH_TICK_MS);
+
+  // ─── download hours and quiet hours ───────────────────────────────────────
+  function scheduleAllows(now = new Date()) {
+    return !prefs.scheduleOn || fmt.inTimeWindow(now, prefs.scheduleFrom, prefs.scheduleTo);
+  }
+
+  function quietActive(now = new Date()) {
+    return Boolean(prefs.quietOn) && fmt.inTimeWindow(now, prefs.quietFrom, prefs.quietTo);
+  }
+
+  function showSchedule() {
+    for (const row of $$("[data-needs]")) {
+      const on = $(`#${row.dataset.needs}`).checked;
+      row.toggleAttribute("data-off", !on);
+      $$("input", row).forEach((input) => { input.disabled = !on; });
+    }
+    const parts = [];
+    if (prefs.scheduleOn) parts.push(scheduleAllows() ? `Download hours now (until ${prefs.scheduleTo}).` : `Outside download hours: queued links start at ${prefs.scheduleFrom}.`);
+    if (prefs.quietOn) parts.push(quietActive() ? `Quiet hours now: new runs are capped at ${prefs.quietSpeedMB} MB/s.` : `Quiet hours start at ${prefs.quietFrom}.`);
+    setStatus("#schedule-status", parts.join(" "), null);
+  }
 
   function renderWatches() {
     const list = $("#watch-list");
@@ -538,16 +598,6 @@
     });
   }
 
-  function stopRun() {
-    if (!run.running) return;
-    $("#btn-stop").disabled = true;
-    $("#btn-stop").textContent = "Stopping…";
-    api.stopPipeline();
-  }
-
-  $("#btn-start").addEventListener("click", startRun);
-  $("#btn-stop").addEventListener("click", stopRun);
-
   function setRunning(on) {
     run.running = on;
     $("#app").dataset.state = on ? "running" : run.order.length ? "done" : "idle";
@@ -629,6 +679,28 @@
         break;
       case "flare":
         showFlare(event.state, event.message, true);
+        break;
+      case "update":
+        showUpdate(event);
+        break;
+      case "update-progress":
+        showUpdateProgress(event);
+        break;
+      case "clipboard-links": {
+        const added = addLinks(event.text || "", false);
+        if (added) log("info", `Added ${added} copied ${added === 1 ? "link" : "links"}. Press Start to download.`);
+        break;
+      }
+      case "external-links": {
+        const added = addLinks((event.urls || []).join("\n"), false);
+        log("info", added ? `Added ${added} ${added === 1 ? "link" : "links"} from the browser. Press Start to download.` : "The browser sent links that are already in the box.");
+        urlsBox.focus();
+        break;
+      }
+      case "app-command":
+        if (event.command === "pause") stopRun();
+        else if (event.command === "check-watches") watches.forEach(checkWatch);
+        else if (event.command === "open-folder") api.openPath(run.root || downloadsDir);
         break;
       case "error":
         log("error", event.message);
@@ -1099,6 +1171,7 @@
     $$("#sheet-tabs button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.pane === name)));
     $$(".sheet .pane").forEach((p) => { p.hidden = p.dataset.pane !== name; });
     if (name === "accounts") loadAccounts();
+    if (name === "history") searchHistory();
   }
   $("#btn-settings").addEventListener("click", () => openSheet());
   $("#btn-settings-close").addEventListener("click", closeSheet);
@@ -1401,6 +1474,176 @@
   });
   $("#btn-source-open").addEventListener("click", () => api.openLogs());
 
+  // ─── updates ──────────────────────────────────────────────────────────────
+  let updateInfo = null;
+  let updating = false;
+
+  function showUpdate(info) {
+    if (updating) return;
+    updateInfo = info;
+    $("#update-text").textContent = `NEXDROP ${info.version} is available. You have ${info.current}.`;
+    const install = $("#btn-update-install");
+    install.textContent = info.installable ? "Update now" : "Download";
+    install.disabled = false;
+    $("#btn-update-skip").hidden = false;
+    $("#update-bar").hidden = true;
+    $("#update").hidden = false;
+  }
+
+  function showUpdateProgress(event) {
+    const text = $("#update-text");
+    const bar = $("#update-bar");
+    if (event.stage === "download") {
+      const pct = event.total ? Math.min(100, Math.floor((event.read / event.total) * 100)) : 0;
+      text.textContent = `Downloading NEXDROP ${updateInfo?.version || ""}… ${event.total ? `${pct}%, ${fmt.bytes(event.read)} of ${fmt.bytes(event.total)}` : fmt.bytes(event.read)}`;
+      bar.hidden = false;
+      $("#update-bar-fill").style.width = `${pct}%`;
+    } else if (event.stage === "checksum") {
+      text.textContent = "Getting the release's checksum…";
+    } else if (event.stage === "unpack") {
+      text.textContent = "Checksum matches. Unpacking the update…";
+      bar.hidden = true;
+    } else if (event.stage === "restart") {
+      text.textContent = "Restarting NEXDROP to finish the update…";
+    }
+  }
+
+  $("#btn-update-install").addEventListener("click", async () => {
+    if (!updateInfo) return;
+    if (!updateInfo.installable) {
+      api.openReleasePage(updateInfo.page);
+      return;
+    }
+    if (run.running) {
+      $("#update-text").textContent = "Pause or finish the current download first. The update restarts NEXDROP.";
+      return;
+    }
+    updating = true;
+    $("#btn-update-install").disabled = true;
+    $("#btn-update-skip").hidden = true;
+    $("#btn-start").disabled = true;
+    log("info", `Updating to NEXDROP ${updateInfo.version}. Settings, sign-ins and downloads are kept.`);
+    const result = await api.updateInstall().catch((error) => ({ ok: false, error: String(error?.message || error) }));
+    if (!result?.ok) {
+      updating = false;
+      $("#btn-start").disabled = false;
+      $("#btn-update-install").disabled = false;
+      $("#btn-update-install").textContent = "Try again";
+      $("#update-bar").hidden = true;
+      $("#update-text").textContent = result?.error || "The update failed. Nothing was changed.";
+      log("warning", result?.error || "The update failed. Nothing was changed.");
+    }
+  });
+  $("#btn-update-notes").addEventListener("click", () => api.openReleasePage(updateInfo?.page));
+  $("#btn-update-skip").addEventListener("click", () => {
+    if (updateInfo) api.updateSkip(updateInfo.version);
+    $("#update").hidden = true;
+  });
+  $("#btn-update-close").addEventListener("click", () => {
+    if (!updating) $("#update").hidden = true;
+  });
+  $("#btn-update-check").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    setStatus("#update-status", "Checking GitHub…", null);
+    try {
+      const status = await api.updateCheck();
+      setStatus("#update-status", status?.message || "No answer.", status?.state === "error" ? "bad" : status?.state === "available" ? "ok" : null);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  // ─── download history ─────────────────────────────────────────────────────
+  let historyTimer = 0;
+  let historySeq = 0;
+
+  function searchHistorySoon() {
+    clearTimeout(historyTimer);
+    historyTimer = setTimeout(searchHistory, 250);
+  }
+
+  async function searchHistory() {
+    const seq = ++historySeq;
+    setStatus("#history-status-line", "Searching…", null);
+    const result = await api.historySearch({
+      text: $("#history-text").value,
+      host: $("#history-host").value,
+      status: $("#history-status").value,
+      limit: 200,
+    }).catch(() => null);
+    if (seq !== historySeq) return; // a newer search is on its way
+    if (!result || result.ok === false) {
+      setStatus("#history-status-line", result?.error || "The history could not be read.", "bad");
+      return;
+    }
+    const hostSelect = $("#history-host");
+    const keep = hostSelect.value;
+    if (Array.isArray(result.hosts) && hostSelect.options.length <= 1) {
+      for (const host of result.hosts) {
+        const option = document.createElement("option");
+        option.value = host;
+        option.textContent = host;
+        hostSelect.appendChild(option);
+      }
+      hostSelect.value = keep;
+    }
+    const total = Number(result.total) || 0;
+    const shown = (result.items || []).length;
+    setStatus("#history-status-line", total ? (total > shown ? `${total.toLocaleString()} files, newest ${shown} shown.` : `${total.toLocaleString()} ${total === 1 ? "file" : "files"}.`) : "Nothing found.", null);
+    renderHistory(result.items || []);
+  }
+
+  function renderHistory(items) {
+    const list = $("#history-list");
+    list.textContent = "";
+    if (!items.length) {
+      const li = document.createElement("li");
+      li.className = "empty-note";
+      li.textContent = $("#history-text").value.trim() ? "No files match." : "Files appear here after a run.";
+      list.appendChild(li);
+      return;
+    }
+    for (const item of items) {
+      const li = document.createElement("li");
+      li.className = "history-item";
+      const info = document.createElement("div");
+      info.className = "history-info";
+      const name = document.createElement("strong");
+      name.textContent = item.name || item.url;
+      name.title = item.url;
+      const meta = document.createElement("small");
+      const when = new Date(Number(item.at) * 1000);
+      meta.textContent = [item.host, item.bytes ? fmt.bytes(item.bytes) : "", Number.isFinite(when.getTime()) ? when.toLocaleString() : "", item.status !== "completed" ? item.status : ""].filter(Boolean).join(" · ");
+      meta.title = item.source ? `From ${item.source}` : "";
+      info.append(name, meta);
+      const show = document.createElement("button");
+      show.type = "button";
+      show.className = "btn btn-quiet btn-small";
+      show.textContent = "Show";
+      show.title = item.hasPath ? "Show the file in its folder" : "Open the folder of that run";
+      show.addEventListener("click", async () => {
+        const result = await api.historyReveal(item.id);
+        if (!result?.ok || result.message) setStatus("#history-status-line", result?.error || result?.message, result?.ok ? null : "bad");
+      });
+      const again = document.createElement("button");
+      again.type = "button";
+      again.className = "btn btn-quiet btn-small";
+      again.textContent = "Add link";
+      again.title = item.source ? `Add ${item.source} to the links box` : "Add this file's link to the links box";
+      again.addEventListener("click", () => {
+        addLinks(item.source || item.url, false);
+        setStatus("#history-status-line", "Added to the links box.", "ok");
+      });
+      li.append(info, show, again);
+      list.appendChild(li);
+    }
+  }
+
+  $("#history-text").addEventListener("input", searchHistorySoon);
+  $("#history-host").addEventListener("change", searchHistory);
+  $("#history-status").addEventListener("change", searchHistory);
+
   // ─── helpers ──────────────────────────────────────────────────────────────
   function flash(el) {
     el.animate?.([{ borderColor: "#cf5f49" }, { borderColor: "" }], { duration: 700 });
@@ -1425,6 +1668,9 @@
       api.saveGuiSetting({ prefs });
     }
     for (const [key, spec] of Object.entries(PREF_FIELDS)) writeField(spec, prefs[key]);
+    prefs = collectPrefs();
+    showSchedule();
+    $("#app-version").textContent = `NEXDROP ${defaults.version || ""}`.trim();
     queue = Array.isArray(defaults.queue) ? defaults.queue : [];
     watches = Array.isArray(defaults.watches) ? defaults.watches : [];
     threadPosts = defaults.threadPosts || {};

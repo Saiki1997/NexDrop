@@ -46,7 +46,9 @@ jobs:
 
       - name: Check window scripts
         shell: bash
-        run: for f in electron/*.js electron/renderer/*.js; do node --check "$f"; done
+        run: |
+          for f in electron/*.js electron/renderer/*.js browser-extension/*.js; do node --check "$f"; done
+          python -c "import json; json.load(open('browser-extension/manifest.json'))"
 
       - name: Node tests
         run: node --test tests/format.test.js

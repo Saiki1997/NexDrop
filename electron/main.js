@@ -1,6 +1,6 @@
 "use strict";
 
-const { app, BrowserWindow, dialog, ipcMain, shell, session, safeStorage, nativeImage, Notification } = require("electron");
+const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell, session, safeStorage, nativeImage, Notification, Tray } = require("electron");
 const { spawn, spawnSync } = require("child_process");
 const { StringDecoder } = require("string_decoder");
 const fs = require("fs");
@@ -8,6 +8,8 @@ const https = require("https");
 const os = require("os");
 const path = require("path");
 const { createVault, CATALOG } = require("./credential-store");
+const { createUpdater } = require("./updater");
+const fmt = require("./renderer/format.js");
 
 // ─── paths ──────────────────────────────────────────────────────────────────
 
@@ -32,13 +34,15 @@ const PYTHON = [
   path.join(ROOT, "engine", ".venv", "Scripts", "python.exe"),
   path.join(ROOT, "engine", ".venv", "bin", "python"),
 ].find((item) => fs.existsSync(item)) || (process.platform === "win32" ? "python.exe" : "python3");
-const SETTING_KEYS = new Set(["downloads_dir", "cookie_files", "prefs", "window", "queue", "watches", "active_run", "thread_posts"]);
+const SETTING_KEYS = new Set(["downloads_dir", "cookie_files", "prefs", "window", "queue", "watches", "active_run", "thread_posts", "update_skip"]);
 const LOG_DIR = path.join(APPDATA, "logs");
 const FLARE_BIN = ["flaresolverr.exe", "flaresolverr"].map((n) => path.join(ROOT, "runtime", "flaresolverr", n)).find((f) => fs.existsSync(f)) || "";
 const FLARE_URL = "http://127.0.0.1:8191/v1";
 const STOP_GRACE_MS = 6000;
 
 let mainWindow = null;
+let quitting = false; // true once the user really quits (not "close to tray")
+const START_HIDDEN = process.argv.includes("--hidden");
 
 // ─── settings and log ───────────────────────────────────────────────────────
 
@@ -112,6 +116,13 @@ function sendLog(message, level = "info") {
   send({ type: "log", level, message });
 }
 
+function showWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (!mainWindow.isVisible()) mainWindow.show();
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.focus();
+}
+
 function appIcon() {
   for (const name of ["icon.png", "logo.png", "logo.jpg"]) {
     const file = path.join(__dirname, "renderer", "assets", name);
@@ -151,15 +162,29 @@ function createWindow() {
   mainWindow = new BrowserWindow(options);
   mainWindow.once("ready-to-show", () => {
     if (saved.maximized) mainWindow.maximize();
+    // Started with Windows: stay in the tray, or start minimised when the tray is off.
+    if (START_HIDDEN && appOptions().closeToTray) return;
     mainWindow.show();
+    if (START_HIDDEN) mainWindow.minimize();
   });
   mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
-  mainWindow.on("close", () => {
+  mainWindow.on("close", (event) => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     try {
       writeSettings({ window: { ...mainWindow.getNormalBounds(), maximized: mainWindow.isMaximized() } });
     } catch {
       /* window position is a convenience */
+    }
+    if (!quitting && tray && appOptions().closeToTray) {
+      // Keep downloads and watched threads going; Quit in the tray menu really exits.
+      event.preventDefault();
+      mainWindow.hide();
+      if (!trayHinted) {
+        trayHinted = true;
+        if (Notification.isSupported()) {
+          new Notification({ title: "NEXDROP is still running", body: "Downloads and watched threads continue. Use the tray icon to open NEXDROP or quit.", icon: appIcon(), silent: true }).show();
+        }
+      }
     }
   });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -350,8 +375,10 @@ function taskbar(event) {
     const c = event.counts || {};
     const finished = (c.done || 0) + (c.skipped || 0) + (c.failed || 0) + (c.cancelled || 0);
     mainWindow.setProgressBar(Math.min(1, finished / event.total), { mode: c.failed ? "error" : "normal" });
+    setTrayTip(`${progress.label ? `${progress.label}: ` : ""}${finished} of ${event.total} files`);
   } else if (event.type === "finished") {
     mainWindow.setProgressBar(-1);
+    setTrayTip("");
     notifyFinished(event);
   }
 }
@@ -365,10 +392,7 @@ function notifyFinished(event) {
   if (!mainWindow.isFocused()) mainWindow.flashFrame(true);
   if (Notification.isSupported() && !mainWindow.isFocused()) {
     const note = new Notification({ title, body, icon: appIcon(), silent: false });
-    note.on("click", () => {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-    });
+    note.on("click", showWindow);
     note.show();
   }
 }
@@ -905,6 +929,210 @@ ipcMain.handle("auth-chrome", (_event, body) => {
   };
 });
 
+// ─── app options: tray, start with Windows, clipboard, browser links ────────
+// These live in prefs (saved by the window) and are applied here, in the main process.
+
+let tray = null;
+let trayHinted = false;
+
+function appOptions() {
+  const prefs = readSettings().prefs || {};
+  return {
+    closeToTray: prefs.closeToTray === true,
+    startWithWindows: prefs.startWithWindows === true,
+    clipboardWatch: prefs.clipboardWatch === true,
+    linkHandler: prefs.linkHandler === true,
+    updateCheck: prefs.updateCheck !== false,
+  };
+}
+
+function setTrayTip(text) {
+  if (tray && !tray.isDestroyed()) tray.setToolTip(text ? `NEXDROP – ${text}` : "NEXDROP");
+}
+
+function command(name) {
+  send({ type: "app-command", command: name });
+}
+
+function ensureTray(on) {
+  if (!on) {
+    if (tray && !tray.isDestroyed()) tray.destroy();
+    tray = null;
+    return;
+  }
+  if (tray && !tray.isDestroyed()) return;
+  const icon = appIcon();
+  tray = new Tray(icon ? icon.resize({ width: 16, height: 16 }) : nativeImage.createEmpty());
+  tray.setToolTip("NEXDROP");
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: "Open NEXDROP", click: showWindow },
+    { type: "separator" },
+    { label: "Pause downloads", click: () => command("pause") },
+    { label: "Check watched threads now", click: () => command("check-watches") },
+    { label: "Open download folder", click: () => command("open-folder") },
+    { type: "separator" },
+    { label: "Quit NEXDROP", click: () => { quitting = true; app.quit(); } },
+  ]));
+  tray.on("click", showWindow);
+}
+
+function applyStartWithWindows(on) {
+  if (process.platform !== "win32" && process.platform !== "darwin") return;
+  try {
+    const args = process.defaultApp ? [path.resolve(process.argv[1] || "."), "--hidden"] : ["--hidden"];
+    app.setLoginItemSettings({ openAtLogin: Boolean(on), path: process.execPath, args });
+  } catch (error) {
+    logFile.write(`[startup] could not change start with Windows: ${error.message}`);
+  }
+}
+
+// Clipboard: links copied in other programs go into the links box. Text NEXDROP copied
+// itself (Copy link, Copy log) is ignored by the window.
+const clip = { timer: null, last: "" };
+
+function watchClipboard(on) {
+  clearInterval(clip.timer);
+  clip.timer = null;
+  if (!on) return;
+  clip.last = clipboard.readText();
+  clip.timer = setInterval(() => {
+    let text;
+    try {
+      text = clipboard.readText();
+    } catch {
+      return;
+    }
+    if (!text || text === clip.last) return;
+    clip.last = text;
+    if (text.length > 100000 || !/https?:\/\/|t\.me\//i.test(text)) return;
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused()) return; // copied inside NEXDROP
+    send({ type: "clipboard-links", text });
+  }, 1500);
+}
+
+// nexdrop:// links from the browser extension. The links only land in the links box;
+// nothing starts without pressing Start.
+const pendingLinks = [];
+
+function protocolArgs() {
+  return process.defaultApp ? [path.resolve(process.argv[1] || ".")] : [];
+}
+
+function applyLinkHandler(on) {
+  try {
+    if (on) app.setAsDefaultProtocolClient("nexdrop", process.execPath, protocolArgs());
+    else if (app.isDefaultProtocolClient("nexdrop", process.execPath, protocolArgs())) app.removeAsDefaultProtocolClient("nexdrop", process.execPath, protocolArgs());
+  } catch (error) {
+    logFile.write(`[links] could not change the nexdrop:// handler: ${error.message}`);
+  }
+}
+
+function linksFromArgv(argv) {
+  const urls = [];
+  for (const arg of argv || []) {
+    if (/^nexdrop:/i.test(String(arg))) urls.push(...fmt.appLinkUrls(arg));
+  }
+  return [...new Set(urls)];
+}
+
+function deliverLinks(urls) {
+  if (!urls.length) return;
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoading()) {
+    pendingLinks.push(...urls);
+    return;
+  }
+  send({ type: "external-links", urls });
+  showWindow();
+}
+
+function applyAppOptions() {
+  const options = appOptions();
+  ensureTray(options.closeToTray);
+  applyStartWithWindows(options.startWithWindows);
+  watchClipboard(options.clipboardWatch);
+  applyLinkHandler(options.linkHandler);
+  return options;
+}
+
+ipcMain.handle("app-options", () => applyAppOptions());
+ipcMain.handle("open-release-page", (_event, url) => {
+  const target = String(url || "");
+  shell.openExternal(/^https:\/\/github\.com\/Saiki1997\/NexDrop\//i.test(target) ? target : updater.releasesPage);
+  return { ok: true };
+});
+
+// ─── updates ────────────────────────────────────────────────────────────────
+
+const updater = createUpdater({
+  root: ROOT,
+  appdata: APPDATA,
+  version: app.getVersion(),
+  send,
+  log: (message) => sendLog(message, "info"),
+  isBusy: () => Boolean(current),
+  quit: () => { quitting = true; app.quit(); },
+});
+const UPDATE_EVERY_MS = 12 * 3600 * 1000;
+let updateTimer = null;
+
+async function checkForUpdate(manual) {
+  const status = await updater.check();
+  const skipped = String(readSettings().update_skip || "");
+  if (status.state === "available" && (manual || status.version !== skipped)) send({ type: "update", ...status });
+  if (status.state === "error") logFile.write(`[update] ${status.message}`);
+  return status;
+}
+
+function scheduleUpdateChecks(on) {
+  clearInterval(updateTimer);
+  updateTimer = null;
+  if (!on) return;
+  setTimeout(() => checkForUpdate(false), 8000);
+  updateTimer = setInterval(() => checkForUpdate(false), UPDATE_EVERY_MS);
+}
+
+ipcMain.handle("update-check", () => checkForUpdate(true));
+ipcMain.handle("update-install", () => updater.install());
+ipcMain.handle("update-skip", (_event, version) => {
+  writeSettings({ update_skip: String(version || "") });
+  return { ok: true };
+});
+ipcMain.handle("update-auto", (_event, on) => {
+  scheduleUpdateChecks(Boolean(on));
+  return { ok: true };
+});
+
+// ─── download history ───────────────────────────────────────────────────────
+
+const JOBS_DB = path.join(APPDATA, "jobs.sqlite");
+
+ipcMain.handle("history-search", async (_event, body) => {
+  if (!fs.existsSync(JOBS_DB)) return { ok: true, items: [], total: 0 };
+  const query = { text: String(body?.text || "").slice(0, 200), host: String(body?.host || "").slice(0, 200), status: String(body?.status || "completed"), limit: Math.max(1, Math.min(500, Number(body?.limit) || 200)) };
+  const result = await runPython([path.join(ROOT, "desktop", "job_store.py"), "search", JOBS_DB], { input: `${JSON.stringify(query)}\n`, timeout: 30000 });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "History search failed.").slice(0, 300), items: [] };
+});
+
+// The window passes only an item id; the path comes from the history database.
+ipcMain.handle("history-reveal", async (_event, id) => {
+  const result = await runPython([path.join(ROOT, "desktop", "job_store.py"), "locate", JOBS_DB, String(Number(id) || 0)], { timeout: 20000 });
+  const found = parseJson((result.stdout || "").trim(), null);
+  if (!found) return { ok: false, error: "That file is not in the history." };
+  if (existingFile(found.destination)) {
+    shell.showItemInFolder(path.resolve(found.destination));
+    return { ok: true };
+  }
+  try {
+    if (found.folder && fs.statSync(found.folder).isDirectory()) {
+      const error = await shell.openPath(path.resolve(found.folder));
+      return { ok: !error, error: error || null, message: "The file was moved or deleted, so its run's folder was opened." };
+    }
+  } catch {
+    /* folder gone too */
+  }
+  return { ok: false, error: "The file and its folder are no longer on this computer." };
+});
+
 // ─── app lifecycle ──────────────────────────────────────────────────────────
 
 try {
@@ -921,10 +1149,11 @@ if (process.platform === "win32") app.setAppUserModelId("NEXDROP"); // needed fo
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on("second-instance", () => {
+  app.on("second-instance", (_event, argv) => {
     if (!mainWindow) return;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.focus();
+    const links = linksFromArgv(argv);
+    if (links.length) deliverLinks(links);
+    else showWindow();
   });
 
   app.whenReady().then(async () => {
@@ -932,6 +1161,14 @@ if (!app.requestSingleInstanceLock()) {
       callback(permission === "clipboard-sanitized-write" || permission === "clipboard-read");
     });
     createWindow();
+    const options = applyAppOptions();
+    pendingLinks.push(...linksFromArgv(process.argv));
+    mainWindow.webContents.once("did-finish-load", () => {
+      const done = updater.lastResult();
+      if (done) sendLog(done.message, done.ok ? "ok" : "warning");
+      if (pendingLinks.length) deliverLinks(pendingLinks.splice(0));
+    });
+    scheduleUpdateChecks(options.updateCheck);
     const prefs = readSettings().prefs || {};
     if (prefs.flareSolver !== false) mainWindow.webContents.once("did-finish-load", () => startFlare());
     // Job recovery runs after the window is up, so startup is not held back by Python.
@@ -949,6 +1186,8 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 app.on("before-quit", () => {
+  quitting = true;
+  clearInterval(clip.timer);
   killSession(true);
   stopFlare();
   stopTelegramLogin();

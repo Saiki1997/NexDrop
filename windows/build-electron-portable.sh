@@ -54,6 +54,9 @@ for path in patches.rglob("*.py"):
     shutil.copy2(path, dest)
 PY
 
+# Browser extension (load unpacked; see browser-extension/README.txt)
+cp -r "$ROOT/browser-extension" "$STAGE/browser-extension"
+
 # Telegram sign-in and account downloads (Telethon, pinned)
 sh "$ROOT/windows/telegram-libs.sh" "$STAGE/engine/thirdparty"
 

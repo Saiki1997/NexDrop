@@ -56,6 +56,18 @@
       </button>
     </div>
 
+    <!-- New version on GitHub -->
+    <div class="notice notice-update" id="update" role="status" hidden>
+      <span class="notice-text" id="update-text"></span>
+      <span class="update-bar" id="update-bar" hidden><span class="update-bar-fill" id="update-bar-fill"></span></span>
+      <button class="btn btn-primary btn-small" id="btn-update-install" type="button" title="Download, check the SHA-256 checksum and restart. Settings, sign-ins and downloads are kept.">Update now</button>
+      <button class="btn btn-quiet btn-small" id="btn-update-notes" type="button">What's new</button>
+      <button class="btn btn-quiet btn-small" id="btn-update-skip" type="button">Skip this version</button>
+      <button class="btn btn-icon btn-icon-small" id="btn-update-close" type="button" aria-label="Hide until next start" title="Later">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 6l8 8M14 6l-8 8"/></svg>
+      </button>
+    </div>
+
     <!-- Paused run and waiting links -->
     <div class="notice" id="resume" role="status" hidden>
       <span class="notice-text" id="resume-text"></span>
@@ -167,7 +179,9 @@
       <button role="tab" type="button" data-pane="network" aria-selected="false">Speed</button>
       <button role="tab" type="button" data-pane="accounts" aria-selected="false">Sign-ins</button>
       <button role="tab" type="button" data-pane="watched" aria-selected="false">Watched</button>
+      <button role="tab" type="button" data-pane="history" aria-selected="false">History</button>
       <button role="tab" type="button" data-pane="sources" aria-selected="false">Sites</button>
+      <button role="tab" type="button" data-pane="app" aria-selected="false">App</button>
     </nav>
 
     <div class="sheet-body">
@@ -219,6 +233,25 @@
           <label class="field"><span class="field-label">Connect timeout, s</span><input type="number" id="connect-timeout" min="10" max="30" value="15"></label>
           <label class="field"><span class="field-label">Read timeout, s</span><input type="number" id="read-timeout" min="30" max="300" value="60"></label>
         </div>
+        <label class="field">
+          <span class="field-label">Proxy</span>
+          <input type="text" id="proxy" placeholder="http://127.0.0.1:8080" spellcheck="false" autocomplete="off">
+          <small class="field-help">An http:// or https:// proxy for every download. Empty connects directly. Telegram account downloads always connect directly. The engine log records this address, so leave out a password if you share logs.</small>
+        </label>
+
+        <div class="divider"></div>
+        <label class="switch"><input type="checkbox" id="schedule-on"><span class="switch-text">Only start downloads at certain times<small>Links you start outside these hours wait in the queue, and so do watched-thread checks. Press Start with an empty links box to start the queue now anyway.</small></span></label>
+        <div class="field-row time-row" data-needs="schedule-on">
+          <label class="field"><span class="field-label">From</span><input type="time" id="schedule-from" value="01:00"></label>
+          <label class="field"><span class="field-label">Until</span><input type="time" id="schedule-to" value="07:00"></label>
+        </div>
+        <label class="switch"><input type="checkbox" id="quiet-on"><span class="switch-text">Slower in quiet hours<small>Runs that start in these hours use the lower speed cap below. A run keeps its speed until it ends.</small></span></label>
+        <div class="field-row time-row" data-needs="quiet-on">
+          <label class="field"><span class="field-label">From</span><input type="time" id="quiet-from" value="18:00"></label>
+          <label class="field"><span class="field-label">Until</span><input type="time" id="quiet-to" value="23:00"></label>
+          <label class="field"><span class="field-label">Speed cap, MB/s</span><input type="number" id="quiet-speed" min="1" max="1000" value="2"></label>
+        </div>
+        <p class="status-line" id="schedule-status" role="status"></p>
       </section>
 
       <section class="pane" data-pane="accounts" hidden>
@@ -288,6 +321,23 @@
         <ul class="watch-list" id="watch-list"></ul>
       </section>
 
+      <section class="pane" data-pane="history" hidden>
+        <p class="pane-intro">Every file from earlier runs. Search by file name, link, site or the link you pasted.</p>
+        <div class="field-row">
+          <label class="visually-hidden" for="history-text">Search history</label>
+          <input type="text" id="history-text" class="history-search" placeholder="Search files…" spellcheck="false" autocomplete="off">
+          <select class="select" id="history-host" aria-label="Site"><option value="">All sites</option></select>
+          <select class="select" id="history-status" aria-label="Result">
+            <option value="completed">Saved</option>
+            <option value="failed">Failed</option>
+            <option value="skipped">Skipped</option>
+            <option value="all">Everything</option>
+          </select>
+        </div>
+        <p class="status-line" id="history-status-line" role="status"></p>
+        <ul class="history-list" id="history-list"></ul>
+      </section>
+
       <section class="pane" data-pane="sources" hidden>
         <p class="pane-intro">NexDrop uses its bundled download engine. Links that no site handler accepts are logged here so you can see what is missing.</p>
         <p class="status-line" id="source-status">Not checked yet.</p>
@@ -298,6 +348,25 @@
           <button class="btn btn-quiet btn-danger" id="btn-source-clear" type="button">Clear log</button>
         </div>
         <pre class="report" id="source-report" hidden></pre>
+      </section>
+
+      <section class="pane" data-pane="app" hidden>
+        <div class="field">
+          <span class="field-label">Version</span>
+          <div class="field-row">
+            <span class="version-text" id="app-version">NEXDROP</span>
+            <button class="btn btn-quiet" id="btn-update-check" type="button">Check for updates</button>
+          </div>
+          <p class="status-line" id="update-status" role="status"></p>
+        </div>
+        <label class="switch"><input type="checkbox" id="update-auto" checked><span class="switch-text">Check for updates automatically<small>Asks GitHub for the newest release when NEXDROP starts and twice a day. Nothing is downloaded until you press Update now.</small></span></label>
+        <div class="divider"></div>
+        <label class="switch"><input type="checkbox" id="close-to-tray"><span class="switch-text">Keep running in the tray when closed<small>Closing the window keeps downloads and watched threads going. Quit from the tray icon to exit.</small></span></label>
+        <label class="switch"><input type="checkbox" id="start-with-windows"><span class="switch-text">Start with Windows<small>Opens NEXDROP when you sign in to Windows, in the tray if the option above is on, so watched threads keep being checked.</small></span></label>
+        <label class="switch"><input type="checkbox" id="clipboard-watch"><span class="switch-text">Add copied links automatically<small>Links you copy in other programs are added to the links box. Nothing starts until you press Start.</small></span></label>
+        <div class="divider"></div>
+        <label class="switch"><input type="checkbox" id="link-handler"><span class="switch-text">Open links sent from the browser<small>Lets the NEXDROP browser extension (in the browser-extension folder) send pages and links here with right-click &gt; Download with NEXDROP. Registers nexdrop:// links for this folder.</small></span></label>
+        <p class="field-help">To add the extension: open chrome://extensions or edge://extensions, turn on Developer mode, choose Load unpacked and pick the browser-extension folder next to NexDrop.exe.</p>
       </section>
     </div>
   </aside>
