@@ -106,5 +106,71 @@
     return { tone: failed ? "warning" : "ok", message: `Finished. ${parts.join(", ")}.` };
   }
 
-  return { bytes, speed, mbps, duration, ago, parseLinks, host, finishText };
+  /** Compare "2.3.4" with "v2.4.0": negative, 0 or positive. Pre-release tags sort before the release. */
+  function compareVersions(a, b) {
+    const split = (v) => {
+      const [main, pre = ""] = String(v || "").trim().replace(/^v/i, "").split("-", 2);
+      return { parts: main.split(".").map((n) => parseInt(n, 10) || 0), pre };
+    };
+    const x = split(a);
+    const y = split(b);
+    for (let i = 0; i < Math.max(x.parts.length, y.parts.length, 3); i += 1) {
+      const d = (x.parts[i] || 0) - (y.parts[i] || 0);
+      if (d) return d;
+    }
+    if (x.pre === y.pre) return 0;
+    if (!x.pre) return 1;
+    if (!y.pre) return -1;
+    return x.pre.localeCompare(y.pre);
+  }
+
+  /** "HH:MM" to minutes after midnight, or null. */
+  function clockMinutes(text) {
+    const match = /^(\d{1,2}):(\d{2})$/.exec(String(text || "").trim());
+    if (!match) return null;
+    const h = Number(match[1]);
+    const m = Number(match[2]);
+    return h < 24 && m < 60 ? h * 60 + m : null;
+  }
+
+  /** Is the time of `date` inside from–to? Windows may cross midnight (22:00–06:00). Equal ends mean all day. */
+  function inTimeWindow(date, from, to) {
+    const start = clockMinutes(from);
+    const end = clockMinutes(to);
+    if (start === null || end === null || start === end) return true;
+    const now = date.getHours() * 60 + date.getMinutes();
+    return start < end ? now >= start && now < end : now >= start || now < end;
+  }
+
+  /**
+   * Links from a nexdrop:// address, as sent by the browser extension:
+   * nexdrop://add?url=<encoded>&url=<encoded>. Only http(s) links, at most 50.
+   */
+  function appLinkUrls(address) {
+    let parsed;
+    try {
+      parsed = new URL(String(address || ""));
+    } catch {
+      return [];
+    }
+    if (parsed.protocol !== "nexdrop:") return [];
+    const urls = [];
+    for (const value of parsed.searchParams.getAll("url")) {
+      const url = String(value).trim();
+      if (url.length <= 4096 && /^https?:\/\/[^\s/]+\.[^\s]+$/i.test(url) && !urls.includes(url)) urls.push(url);
+      if (urls.length >= 50) break;
+    }
+    return urls;
+  }
+
+  /** The SHA-256 for `name` in a SHA256SUMS.txt ("<hash>  <name>" per line), lower case, or "". */
+  function checksumFor(text, name) {
+    for (const line of String(text || "").split(/\r?\n/)) {
+      const match = /^([0-9a-fA-F]{64})\s+\*?(.+)$/.exec(line.trim());
+      if (match && match[2].trim() === name) return match[1].toLowerCase();
+    }
+    return "";
+  }
+
+  return { bytes, speed, mbps, duration, ago, parseLinks, host, finishText, compareVersions, clockMinutes, inTimeWindow, appLinkUrls, checksumFor };
 });

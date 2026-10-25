@@ -412,6 +412,22 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 _OPENER = urllib.request.build_opener(_NoRedirect)
+_PROXY_RE = re.compile(r"^https?://(?:[^\s:@/]+(?::[^\s@/]*)?@)?[A-Za-z0-9.-]+(?::\d{1,5})?/?$")
+
+
+def proxy_url(raw) -> str:
+    """The proxy setting if it is an http(s)://host:port address, else ''."""
+    text = str(raw or "").strip()
+    return text.rstrip("/") if _PROXY_RE.match(text) else ""
+
+
+def use_proxy(proxy: str) -> None:
+    """Direct file downloads go through the same proxy as the engine."""
+    global _OPENER
+    handlers = [_NoRedirect]
+    if proxy:
+        handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    _OPENER = urllib.request.build_opener(*handlers)
 
 
 _ORDER = None
@@ -507,7 +523,7 @@ def http_save(url: str, folder: Path) -> dict:
             raise
         finally:
             response.close()
-        FILES.update(url, state="done", read=read, total=read, speed=0)
+        FILES.update(url, state="done", read=read, total=read, speed=0, path=str(target))
         return {"url": url, "filename": target.name, "bytes": read}
     raise ValueError("Too many redirects")
 
@@ -1086,7 +1102,7 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
                 "url": row["url"], "host": row.get("host") or "", "event": event,
                 "sequence": row.get("sequence") or 0, "name": row.get("name") or "",
                 "bytes_read": row.get("read") or 0, "bytes_total": row.get("total") or 0,
-                "status": row.get("reason") or "",
+                "status": row.get("reason") or "", "destination": row.get("path") or "",
             })
         except Exception:  # noqa: BLE001
             return
@@ -1106,6 +1122,12 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
     TYPE_FOLDERS_ON = bool(config.get("typeFolders"))
     NUMBERED = True if config.get("sequencePrefix") is None else bool(config.get("sequencePrefix"))
     trim_manifest()
+    proxy = proxy_url(config.get("proxy"))
+    if config.get("proxy") and not proxy:
+        log("warning", "The proxy setting is not an http:// or https:// address with a host and port, so no proxy is used.")
+    elif proxy:
+        log("info", "Downloads go through the proxy from Settings > Speed. Telegram account downloads connect directly.")
+    use_proxy(proxy)
     order_mode = config.get("orderMode") if config.get("orderMode") in {"source", "parallel", "fastest"} else "source"
     payload = {
         "urls": urls,
@@ -1122,6 +1144,7 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         "readTimeout": _int(config.get("readTimeout"), 60, 30, 300),
         "threadDepth": _int(config.get("threadDepth"), 0, 0, 3),
         "speedLimit": _int(config.get("speedLimit"), 0, 0, 10_000 * 1024 * 1024),
+        "proxy": proxy,
         "ignoreHistory": redownload,
         "deepScrape": bool(config.get("deepScrape")),
         "cookieFolder": cookie_folder or "",
@@ -1233,7 +1256,8 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
                 if url:
                     saved_urls.append(url)
                     size = event.get("bytes") or None
-                    FILES.update(url, state="done", name=str(event.get("filename") or "") or None, read=size, total=size, speed=0, reason="")
+                    FILES.update(url, state="done", name=str(event.get("filename") or "") or None, read=size, total=size, speed=0, reason="",
+                                 path=str(event.get("path") or "") or None)
             elif kind == "failed":
                 url = str(event.get("url") or "")
                 reason = str(event.get("reason") or "failed")

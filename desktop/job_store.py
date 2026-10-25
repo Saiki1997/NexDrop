@@ -98,12 +98,13 @@ class JobStore:
         now = time.time()
         self.conn.execute(
             """
-            INSERT INTO items(job_id, url, host, sequence, filename, status, bytes_read, bytes_total, retries, error, updated_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO items(job_id, url, host, sequence, filename, destination, status, bytes_read, bytes_total, retries, error, updated_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(job_id, url) DO UPDATE SET
                 host = CASE WHEN excluded.host != '' THEN excluded.host ELSE items.host END,
                 sequence = CASE WHEN items.sequence > 0 THEN items.sequence ELSE excluded.sequence END,
                 filename = CASE WHEN excluded.filename != '' THEN excluded.filename ELSE items.filename END,
+                destination = CASE WHEN excluded.destination != '' THEN excluded.destination ELSE items.destination END,
                 status = excluded.status,
                 bytes_read = CASE WHEN excluded.bytes_read > 0 THEN excluded.bytes_read ELSE items.bytes_read END,
                 bytes_total = CASE WHEN excluded.bytes_total > 0 THEN excluded.bytes_total ELSE items.bytes_total END,
@@ -117,6 +118,7 @@ class JobStore:
                 str(payload.get("host") or ""),
                 int(payload.get("sequence") or 0),
                 str(payload.get("name") or ""),
+                str(payload.get("destination") or "")[:1000],
                 status,
                 int(payload.get("bytes_read") or 0),
                 int(payload.get("bytes_total") or 0),
@@ -162,12 +164,77 @@ class JobStore:
         return found
 
 
+    def search(self, text: str = "", host: str = "", status: str = "completed", limit: int = 200) -> dict:
+        """Files from earlier runs, newest first. Words must all appear in the name, link, site or source link."""
+        where = []
+        args: list = []
+        if status in {"completed", "failed", "skipped"}:
+            where.append("items.status = ?")
+            args.append(status)
+        if host:
+            where.append("items.host = ?")
+            args.append(host.lower().removeprefix("www."))
+        for word in str(text or "").split()[:8]:
+            pattern = "%" + word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            where.append(
+                "(items.filename LIKE ? ESCAPE '\\' OR items.url LIKE ? ESCAPE '\\' OR items.host LIKE ? ESCAPE '\\'"
+                " OR jobs.source_urls LIKE ? ESCAPE '\\')"
+            )
+            args.extend([pattern] * 4)
+        clause = f"WHERE {' AND '.join(where)}" if where else ""
+        base = f"FROM items JOIN jobs ON jobs.id = items.job_id {clause}"
+        total = int(self.conn.execute(f"SELECT COUNT(*) {base}", args).fetchone()[0])
+        rows = self.conn.execute(
+            f"""SELECT items.id, items.url, items.host, items.filename, items.destination, items.status,
+                       items.bytes_total, items.bytes_read, items.updated_at, jobs.source_urls, jobs.download_dir
+                {base} ORDER BY items.updated_at DESC LIMIT ?""",
+            (*args, max(1, min(500, int(limit)))),
+        ).fetchall()
+        items = []
+        for row in rows:
+            sources = [line for line in str(row["source_urls"]).split("\n") if line]
+            items.append({
+                "id": int(row["id"]),
+                "url": row["url"],
+                "host": row["host"],
+                "name": row["filename"] or Path(str(row["url"]).split("?")[0]).name,
+                "bytes": int(row["bytes_total"] or row["bytes_read"] or 0),
+                "status": row["status"],
+                "at": float(row["updated_at"]),
+                "source": sources[0] if sources else "",
+                "hasPath": bool(row["destination"]),
+            })
+        hosts = [r[0] for r in self.conn.execute(
+            "SELECT host FROM items WHERE host != '' GROUP BY host ORDER BY COUNT(*) DESC LIMIT 60").fetchall()]
+        return {"ok": True, "total": total, "items": items, "hosts": hosts}
+
+    def locate(self, item_id: int) -> dict | None:
+        row = self.conn.execute(
+            "SELECT items.destination, jobs.download_dir FROM items JOIN jobs ON jobs.id = items.job_id WHERE items.id = ?",
+            (int(item_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return {"destination": row["destination"], "folder": row["download_dir"]}
+
+
 def main() -> None:
     if len(sys.argv) < 3:
-        raise SystemExit("usage: job_store.py recover <jobs.sqlite>")
+        raise SystemExit("usage: job_store.py recover|search|locate <jobs.sqlite> [item id]")
     store = JobStore(Path(sys.argv[2]))
     if sys.argv[1] == "recover":
         print(json.dumps({"interrupted": store.recover()}))
+    elif sys.argv[1] == "search":
+        # The query arrives as one JSON line on stdin, so search words never reach a command line.
+        try:
+            query = json.loads(sys.stdin.readline() or "{}")
+        except json.JSONDecodeError:
+            query = {}
+        query = query if isinstance(query, dict) else {}
+        print(json.dumps(store.search(str(query.get("text") or ""), str(query.get("host") or ""),
+                                      str(query.get("status") or "completed"), int(query.get("limit") or 200)), ensure_ascii=False))
+    elif sys.argv[1] == "locate":
+        print(json.dumps(store.locate(int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3].isdigit() else 0), ensure_ascii=False))
     else:
         raise SystemExit(f"Unknown command {sys.argv[1]}")
     store.close()

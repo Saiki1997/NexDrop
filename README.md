@@ -18,8 +18,10 @@ Download `NexDrop-windows-x64.zip` from the latest [release](https://github.com/
 and check it against the SHA-256 checksum published with it (`SHA256SUMS.txt`). Extract the whole folder
 and run `NexDrop.exe`. Nothing else needs installing: Python, ffmpeg and FlareSolverr are bundled.
 
-To update an existing NEXDROP folder, close NEXDROP and extract the new zip over it. Settings, sign-ins,
-history and downloads in `engine\appdata` and `downloads` are kept.
+NEXDROP 2.4.0 and later check GitHub for a new release and update themselves: press **Update now** on the
+banner. The zip is checked against the release's SHA-256 checksum before anything is replaced. To update
+by hand (or from 2.3.4 and earlier), close NEXDROP and extract the new zip over the folder. Settings,
+sign-ins, history and downloads in `engine\appdata` and `downloads` are kept either way.
 
 ### System requirements
 
@@ -48,6 +50,15 @@ history and downloads in `engine\appdata` and `downloads` are kept.
   groups you've joined. NEXDROP only reads and downloads; it never posts, joins or leaves anything.
 - **Sign-ins**: API tokens, a MEGA account, a Telegram account or per-site cookie files. Secrets are
   encrypted with Windows credential protection and never shown again.
+- **History**: search every file from earlier runs by name, link or site, show it in its folder or add
+  its link again.
+- **Download hours and quiet hours**: start queued links and watched-thread checks only at night, or use a
+  lower speed cap in the evening. An optional **proxy** applies to every download.
+- **Tray and start with Windows**: closing the window can keep NEXDROP running in the tray, so watched
+  threads keep being checked.
+- **Copied links and the browser**: optionally add links you copy to the links box, or right-click in
+  Chrome, Edge or Brave with the bundled extension (`browser-extension`) to send pages and links.
+- Checks for new versions and updates itself (Settings → App).
 - Taskbar progress and a Windows notification when a run finishes.
 - Every run writes a readable log to `engine\appdata\logs\runs`; press **Open log** in the Activity panel.
 
@@ -102,6 +113,8 @@ This repository holds the full source of the Windows build:
 | `engine/bridge.py` | Adapter between NEXDROP and the bundled engine |
 | `engine/vendor/` | Patched Cyberdrop-DL 10.10.0 (GPL-3.0), with the fixes from `engine/vendor-patches/` applied |
 | `windows/` | `build-electron-portable.sh`, `make-release.sh`, `telegram-libs.sh` (pinned Telethon for `engine\thirdparty`) and the pinned Python requirements |
+| `browser-extension/` | "Send to NEXDROP" extension for Chromium browsers (load unpacked) |
+| `tools/` | `engine-upstream-report.py`: read-only comparison of the bundled engine with a newer Cyberdrop-DL |
 | `tests/` | Python and Node tests, run on Windows by GitHub Actions on every push |
 | `docs/` | Supported sites, release notes, screenshots |
 

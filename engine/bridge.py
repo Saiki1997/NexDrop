@@ -633,7 +633,7 @@ def _install_progress() -> None:
         try:
             path = Path(media_item.path)
             size = path.stat().st_size if path.is_file() else 0
-            emit({"type": "saved", "url": str(media_item.url), "filename": path.name, "bytes": size})
+            emit({"type": "saved", "url": str(media_item.url), "filename": path.name, "bytes": size, "path": str(path)})
         except Exception:  # noqa: BLE001
             emit({"type": "saved", "url": str(getattr(media_item, "url", "")), "filename": "", "bytes": 0})
 
@@ -869,6 +869,9 @@ def _run() -> int:
     if flare_url:
         network["flaresolverr"] = flare_url
         network["flaresolverr_wait"] = 5
+    proxy = str(payload.get("proxy") or "").strip()
+    if proxy:
+        network["proxy"] = proxy
     fields["network"] = Network(**network)
     download_fields = {
         "concurrency": downloads,

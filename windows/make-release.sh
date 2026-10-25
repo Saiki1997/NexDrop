@@ -37,6 +37,10 @@ cp -r "$ROOT/engine/vendor" "$S/engine/vendor"
 # Telegram sign-in and account downloads (Telethon, pinned)
 sh "$ROOT/windows/telegram-libs.sh" "$S/engine/thirdparty"
 
+# Browser extension (load unpacked; see browser-extension/README.txt)
+rm -rf "$S/browser-extension"
+cp -r "$ROOT/browser-extension" "$S/browser-extension"
+
 # Docs and licences
 cp "$ROOT/windows/ELECTRON-README.txt" "$S/README.txt"
 cp "$ROOT/CHANGELOG.md" "$S/CHANGELOG.md"

@@ -38,3 +38,39 @@ test("Telegram links without https and chat IDs are accepted", () => {
   assert.deepEqual(urls, ["https://t.me/somechannel", "https://t.me/c/1988700745", "https://t.me/c/1988700745/12"]);
   assert.deepEqual(ignored, ["-12345"]);
 });
+
+test("compareVersions orders releases and tags", () => {
+  assert.ok(fmt.compareVersions("v2.4.0", "2.3.4") > 0);
+  assert.ok(fmt.compareVersions("2.3.4", "2.3.10") < 0);
+  assert.strictEqual(fmt.compareVersions("v2.3.4", "2.3.4"), 0);
+  assert.ok(fmt.compareVersions("2.4.0-beta.1", "2.4.0") < 0);
+  assert.ok(fmt.compareVersions("2.4", "2.3.9") > 0);
+});
+
+test("inTimeWindow handles windows across midnight", () => {
+  const at = (h, m) => new Date(2026, 0, 1, h, m);
+  assert.strictEqual(fmt.inTimeWindow(at(2, 0), "01:00", "07:00"), true);
+  assert.strictEqual(fmt.inTimeWindow(at(7, 0), "01:00", "07:00"), false);
+  assert.strictEqual(fmt.inTimeWindow(at(23, 30), "22:00", "06:00"), true);
+  assert.strictEqual(fmt.inTimeWindow(at(5, 59), "22:00", "06:00"), true);
+  assert.strictEqual(fmt.inTimeWindow(at(12, 0), "22:00", "06:00"), false);
+  assert.strictEqual(fmt.inTimeWindow(at(12, 0), "08:00", "08:00"), true);
+  assert.strictEqual(fmt.inTimeWindow(at(12, 0), "bad", "06:00"), true);
+  assert.strictEqual(fmt.clockMinutes("24:00"), null);
+});
+
+test("appLinkUrls keeps only web links from nexdrop:// addresses", () => {
+  const address = `nexdrop://add?url=${encodeURIComponent("https://bunkr.cr/a/x")}&url=${encodeURIComponent("javascript:alert(1)")}&url=${encodeURIComponent("https://bunkr.cr/a/x")}&url=${encodeURIComponent("http://t.me/s/chan")}`;
+  assert.deepStrictEqual(fmt.appLinkUrls(address), ["https://bunkr.cr/a/x", "http://t.me/s/chan"]);
+  assert.deepStrictEqual(fmt.appLinkUrls("https://example.com/?url=https://a.b/c"), []);
+  assert.deepStrictEqual(fmt.appLinkUrls("not a url"), []);
+  const many = `nexdrop://add?${Array.from({ length: 80 }, (_, i) => `url=https://a.com/${i}`).join("&")}`;
+  assert.strictEqual(fmt.appLinkUrls(many).length, 50);
+});
+
+test("checksumFor reads SHA256SUMS.txt", () => {
+  const hash = "a".repeat(64);
+  const text = `${"b".repeat(64)}  NexDrop-source.zip\n${hash.toUpperCase()}  NexDrop-windows-x64.zip\n`;
+  assert.strictEqual(fmt.checksumFor(text, "NexDrop-windows-x64.zip"), hash);
+  assert.strictEqual(fmt.checksumFor(text, "other.zip"), "");
+});
