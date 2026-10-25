@@ -109,6 +109,22 @@ def _truncate_text(text: str, max_bytes: int) -> str:
     return str_bytes.decode("utf-8", "ignore").strip()
 
 
+# NEXDROP patch: real file types whose extension is longer than the 5-character limit
+# (Blender scenes on Dropbox were rejected as "Invalid File Extension").
+_LONG_EXTENSIONS = frozenset(
+    {
+        ".aseprite",
+        ".blend",
+        ".blend1",
+        ".procreate",
+        ".safetensors",
+        ".sketch",
+        ".torrent",
+        ".unitypackage",
+    }
+)
+
+
 def get_filename_and_ext(
     filename: str,
     /,
@@ -134,7 +150,7 @@ def get_filename_and_ext(
 
         filename_as_path = Path(filename)
 
-    if len(filename_as_path.suffix) > 5:
+    if len(filename_as_path.suffix) > 5 and filename_as_path.suffix.lower() not in _LONG_EXTENSIONS:
         raise InvalidExtensionError(str(filename_as_path))
 
     filename_as_path = Path(compose_filename(filename_as_path.stem, filename_as_path.suffix, max_len=max_len))

@@ -785,6 +785,7 @@ class Hints:
         self.nested = 0
         self.password_links: list[str] = []
         self.no_such_host: dict[str, int] = {}
+        self.unreachable: dict[str, int] = {}
         self.bot_blocked: list[str] = []
         self.files_in_thread = 0
 
@@ -805,6 +806,8 @@ class Hints:
             bucket = "quota"
         elif "ClientConnectorDNSError" in reason or "getaddrinfo failed" in reason or "Name or service not known" in reason:
             bucket = "no_such_host"
+        elif "Connection timeout to host" in reason or "Server unreachable" in reason:
+            bucket = "unreachable"
         elif "503" in reason or "502" in reason or "429" in reason:
             bucket = "busy"
         elif "404" in reason or "410" in reason:
@@ -893,6 +896,13 @@ class Hints:
             out.append(
                 f"{count} file(s) on {host} failed because that server name no longer exists (DNS lookup failed). "
                 "The site has moved or shut down; the files can only come from a newer link in the thread."
+            )
+        for host, count in self.unreachable.items():
+            out.append(
+                f"{count} file(s) from {host} failed because its file servers never answered (connection timed out). "
+                f"{host} itself opened, so your internet provider or network is most likely blocking its file servers. "
+                "Open one of the failed links in your browser: if it doesn't load there either, turn on a VPN or set a proxy "
+                "under Settings > Speed > Proxy, then use Retry unfinished."
             )
         if self.password_links:
             out.append(

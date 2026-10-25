@@ -292,7 +292,7 @@ def _install_download_clearance() -> None:
 
     try:
         from cyberdrop_dl.clients import downloads as dl
-        from cyberdrop_dl.exceptions import DDOSGuardError, InvalidContentTypeError
+        from cyberdrop_dl.exceptions import DDOSGuardError, DownloadError, InvalidContentTypeError
         from cyberdrop_dl.url_objects import AbsoluteHttpURL
     except Exception:  # noqa: BLE001
         return
@@ -351,7 +351,13 @@ def _install_download_clearance() -> None:
 
     async def download_with_backoff(self, domain, media_item):
         try:
-            return await download(self, domain, media_item)
+            site = UNREACHABLE.site((await media_item.resolve()).host or "")
+        except Exception:  # noqa: BLE001
+            site = ""
+        if UNREACHABLE.is_down(site):
+            raise DownloadError("Server unreachable", f"{site}'s file servers could not be reached earlier in this run")
+        try:
+            result = await download(self, domain, media_item)
         except Exception as error:
             text = str(error)
             if "429" in text or "503" in text:
@@ -360,7 +366,13 @@ def _install_download_clearance() -> None:
                 except Exception:  # noqa: BLE001
                     host = ""
                 SERVER_SLOTS.back_off(host)
+            if UNREACHABLE.failed(site, text):
+                emit({"type": "log", "level": "warning", "message": (
+                    f"Can't connect to {site}'s file servers: {UNREACHABLE.limit} downloads in a row timed out before the server answered. "
+                    f"Skipping the rest of {site}'s files this run, so they show as failed and Retry unfinished can get them later.")})
             raise
+        UNREACHABLE.ok(site)
+        return result
 
     dl.DownloadClient._download = download_with_backoff
 
@@ -625,6 +637,51 @@ class _HostSlots:
         async with self.cond:
             self.active -= 1
             self.cond.notify_all()
+
+
+class _UnreachableSites:
+    """Stops asking a site whose file servers can't be reached at all.
+
+    Coomer and Kemono pages load, but their file servers (n1..n4) can be blocked on
+    some networks: every download then waits out the connection timeout, twice,
+    and a big profile sits there for an hour without saving anything. After
+    `limit` connection timeouts in a row for one site (no download in between
+    worked), its remaining files fail at once with "Server unreachable".
+    """
+
+    _TIMEOUTS = ("Connection timeout to host", "ConnectionTimeoutError", "semaphore timeout period has expired")
+
+    def __init__(self, limit: int = 8) -> None:
+        self.limit = limit
+        self.streak: dict[str, int] = {}
+        self.down: set[str] = set()
+
+    @staticmethod
+    def site(host: str) -> str:
+        """n3.coomer.st and coomer.st count as one site."""
+        return ".".join((host or "").lower().split(".")[-2:])
+
+    def is_down(self, site: str) -> bool:
+        return bool(site) and site in self.down
+
+    def failed(self, site: str, text: str) -> bool:
+        """Count a failed download; True when this one marks the site unreachable."""
+        if not site or site in self.down:
+            return False
+        if not any(mark in text for mark in self._TIMEOUTS):
+            self.streak.pop(site, None)
+            return False
+        self.streak[site] = self.streak.get(site, 0) + 1
+        if self.streak[site] < self.limit:
+            return False
+        self.down.add(site)
+        return True
+
+    def ok(self, site: str) -> None:
+        self.streak.pop(site, None)
+
+
+UNREACHABLE = _UnreachableSites()
 
 
 class _ServerSlots:
