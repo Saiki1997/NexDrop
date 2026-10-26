@@ -157,11 +157,13 @@ class CheveretoCrawler(Crawler, is_generic=True):
         results: Mapping[str, bool] | None = None,
     ) -> None:
         results = results or {}
-        for web_url, src_url in self._get_album_files(soup):
+        for web_url, src_url, title in self._get_album_files(soup):
             if self.check_album_results(src_url, results):
                 continue
 
             new_scrape_item = scrape_item.create_child(web_url)
+            if title:
+                new_scrape_item.naming["media_title"] = title  # NEXDROP patch (smart naming V2)
             self.create_eager_task(self.direct_file(new_scrape_item, src_url))
             scrape_item.add_children()
 
@@ -202,13 +204,14 @@ class CheveretoCrawler(Crawler, is_generic=True):
         scrape_item.uploaded_at = self.parse_iso_date(Selector.DATE(soup))
         await self.direct_file(scrape_item, source)
 
-    def _get_album_files(self, soup: BeautifulSoup) -> Generator[tuple[AbsoluteHttpURL, AbsoluteHttpURL]]:
+    def _get_album_files(self, soup: BeautifulSoup) -> Generator[tuple[AbsoluteHttpURL, AbsoluteHttpURL, str]]:
         for item in css.iselect(soup, ".list-item[data-object]"):
             web_url = self.parse_url(css.select(item, "a.image-container", "href"))
             encoded_data = css.attr(item, "data-object")
             data = json.loads(urllib.parse.unquote(encoded_data))
             src_url = self.parse_url(data["image"]["url"])
-            yield self.transform_url(web_url), src_url
+            # NEXDROP patch (smart naming V2): the image's own title, when the uploader gave one
+            yield self.transform_url(web_url), src_url, str(data.get("title") or "")
 
 
 def _id(slug: str) -> str:

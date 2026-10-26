@@ -208,7 +208,7 @@ class TwitterCrawler(Crawler):
     def _tweet(self, scrape_item: ScrapeItem, tweet: Tweet) -> None:
         scrape_item.setup_as_album(self.create_title(f"@{tweet.author['screen_name']}"))
         scrape_item.uploaded_at = tweet.created_timestamp
-        post_title = self.create_separate_post_title(None, tweet.id, scrape_item.uploaded_at)
+        post_title = self.create_separate_post_title(None, tweet.id, scrape_item.uploaded_at, caption=tweet.text)  # NEXDROP patch
         scrape_item.append_folders(post_title)
         self.create_eager_task(self.write_metadata(scrape_item, tweet.id, tweet))
         self.__extract_files(scrape_item, tweet)

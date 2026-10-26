@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol, final
 
 from cyberdrop_dl import aio
 from cyberdrop_dl.source_order import ORDER_MODE, order_urls
+from cyberdrop_dl.smart_naming import forum_caption  # NEXDROP patch
 from cyberdrop_dl.crawlers.crawler import Crawler
 from cyberdrop_dl.exceptions import LoginError, MaxChildrenError, ScrapeError
 from cyberdrop_dl.url_objects import AbsoluteHttpURL
@@ -485,7 +486,8 @@ class HTMLMessageBoardCrawler(MessageBoardCrawler, is_abc=True):
     @error_handling_wrapper
     async def post(self, scrape_item: ScrapeItem, post: ForumPostProtocol) -> None:
         scrape_item.setup_as_post("")
-        post_title = self.create_separate_post_title(None, str(post.id), post.date)
+        # NEXDROP patch: the post's own first line names its attachments (smart naming)
+        post_title = self.create_separate_post_title(None, str(post.id), post.date, caption=forum_caption(post.content))
         scrape_item.append_folders(post_title)
         ordered = self._collect_post_urls(post)
         self.log.info("Ordering method document for post %s (%s item(s))", post.id, len(ordered))

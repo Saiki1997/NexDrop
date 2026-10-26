@@ -130,7 +130,20 @@ class _LogBridge(logging.Handler):
         if raw.startswith("Source order\t"):
             parts = raw.split("\t")
             if len(parts) >= 3 and parts[1].isdigit():
-                emit({"type": "order", "sequence": int(parts[1]), "url": parts[2], "name": parts[3] if len(parts) > 3 else ""})
+                event = {"type": "order", "sequence": int(parts[1]), "url": parts[2], "name": parts[3] if len(parts) > 3 else ""}
+                # Smart naming record for the job: folder, original name, where the name came from.
+                for index, key in enumerate(("folder", "original", "source", "confidence", "strategy", "title", "parent", "naming"), 4):
+                    if len(parts) > index:
+                        event[key] = parts[index]
+                if len(parts) > 12:
+                    # Smart naming V2: the file's identity (post, album, creator, type), links without query strings
+                    try:
+                        identity = json.loads(parts[12])
+                    except ValueError:
+                        identity = None
+                    if isinstance(identity, dict):
+                        event["identity"] = identity
+                emit(event)
             return
         if raw.startswith("Telegram needs sign-in\t"):
             parts = raw.split("\t")
@@ -1199,15 +1212,25 @@ def _run() -> int:
         fields["filters"] = Filters(**filters)
     except Exception as error:  # noqa: BLE001
         emit({"type": "log", "level": "warning", "message": f"File filters could not be applied: {error}"})
+    from cyberdrop_dl.smart_naming import CORRECTIONS, REGISTRY, REPORT, SETTINGS as NAMING, NamingSettings
+
+    naming = NamingSettings.from_payload(payload)
     fields["max_children"] = MaxChildren()
-    prefix_on = True if payload.get("sequencePrefix") is None else bool(payload.get("sequencePrefix"))
+    try:
+        from cyberdrop_dl.config.settings import SubFolders, _SubFoldersInclude
+
+        # "Include Website Name in Folder" (off by default since 2.5): "@allecakes", not "@allecakes (Twitter)".
+        fields["subfolders"] = SubFolders(include=_SubFoldersInclude(domain=naming.site_in_folder))
+    except Exception as error:  # noqa: BLE001
+        emit({"type": "log", "level": "warning", "message": f"Folder naming could not be applied: {error}"})
+    prefix_on = naming.numbering != "off"
     album_names_on = True if payload.get("albumNames") is None else bool(payload.get("albumNames"))
     post_folders_on = True if payload.get("postFolders") is None else bool(payload.get("postFolders"))
     emit({
         "type": "log",
         "stage": "system",
         "level": "info",
-        "message": f"Limits: {downloads} downloads, {per_host} per site, {attempts} attempts, order {order_mode}, names {'numbered' if prefix_on else 'original'}{', album name for albums' if album_names_on else ''}, {'a folder for each post' if post_folders_on else 'no post folders'}, SimpCity every {int(GENTLE.gap)} s{' through the proxy' if proxy and proxy_scope == 'simpcity' else ''}.",
+        "message": f"Limits: {downloads} downloads, {per_host} per site, {attempts} attempts, order {order_mode}, names: {naming.describe()}{', album name for albums' if album_names_on and not naming.smart else ''}, {'a folder for each post' if post_folders_on else 'no post folders'}, SimpCity every {int(GENTLE.gap)} s{' through the proxy' if proxy and proxy_scope == 'simpcity' else ''}.",
     })
     start_page = max(1, int(payload.get("startPage") or 1))
     end_raw = payload.get("endPage")
@@ -1216,10 +1239,15 @@ def _run() -> int:
         emit({"type": "error", "message": "Last page cannot be lower than the start page"})
         return 2
     from cyberdrop_dl.crawlers._forum import FORUM_PAGE_END, FORUM_PAGE_START
-    from cyberdrop_dl.source_order import ALBUM_NAMES, ORDER_MODE, POST_FOLDERS, SEQUENCE_PREFIX, reset as reset_order
+    from cyberdrop_dl.source_order import ALBUM_NAMES, NUMBER_MODE, ORDER_MODE, POST_FOLDERS, SEQUENCE_PREFIX, reset as reset_order
 
-    reset_order(str(payload.get("orderManifest") or ""))
+    reset_order(str(payload.get("orderManifest") or ""), str(payload.get("jobKey") or "") or None)
+    REGISTRY.load(str(payload.get("folderRegistry") or "") or None, destination)
+    CORRECTIONS.load(str(payload.get("namingCorrections") or "") or None)
+    REPORT.open(str(payload.get("namingReport") or "") or None)
     order_token = ORDER_MODE.set(order_mode)
+    naming_token = NAMING.set(naming)
+    number_token = NUMBER_MODE.set(naming.numbering)
     prefix_token = SEQUENCE_PREFIX.set(prefix_on)
     album_token = ALBUM_NAMES.set(album_names_on)
     post_token = POST_FOLDERS.set(post_folders_on)
@@ -1250,6 +1278,8 @@ def _run() -> int:
                 save_site_cookies(manager.http_client.cookies)
             except Exception as error:  # noqa: BLE001 - never fail a finished run over cookies
                 emit({"type": "log", "level": "info", "message": f"SimpCity's session was not saved for the next run: {str(error)[:120]}"})
+            if payload.get("embeddedTitles"):
+                _embedded_titles(manager, naming)
             saved = []
             for item in manager.completed_downloads:
                 path = Path(item.path)
@@ -1269,10 +1299,35 @@ def _run() -> int:
         FORUM_PAGE_START.reset(page_start)
         FORUM_PAGE_END.reset(page_end)
         ORDER_MODE.reset(order_token)
+        NAMING.reset(naming_token)
+        NUMBER_MODE.reset(number_token)
         SEQUENCE_PREFIX.reset(prefix_token)
         ALBUM_NAMES.reset(album_token)
         POST_FOLDERS.reset(post_token)
     return 0
+
+
+def _embedded_titles(manager, naming) -> None:
+    """Smart naming V2, optional: files that kept a meaningless name get the title written inside them."""
+    from cyberdrop_dl.smart_naming import embedded_name
+
+    for item in manager.completed_downloads:
+        try:
+            path = Path(item.path)
+            if not path.is_file():
+                continue
+            name, where = embedded_name(str(item.url), path, naming)
+            if not name or name == path.name:
+                continue
+            target = path.with_name(name)
+            if target.exists():
+                continue
+            path.rename(target)
+            item.path = target
+        except Exception as error:  # noqa: BLE001 - a tag never costs a download
+            emit({"type": "log", "level": "info", "message": f"Could not read the title inside {getattr(item, 'url', '')}: {str(error)[:120]}"})
+            continue
+        emit({"type": "renamed", "url": str(item.url), "name": name, "path": str(target), "source": where})
 
 
 if __name__ == "__main__":

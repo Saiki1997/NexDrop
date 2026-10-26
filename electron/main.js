@@ -1113,6 +1113,24 @@ ipcMain.handle("history-search", async (_event, body) => {
   return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "History search failed.").slice(0, 300), items: [] };
 });
 
+// Smart naming V2: renaming a file from History. The window passes the item id and the new
+// name; the path comes from the history database. With "Learn from my renames" on, the name is
+// remembered for files from the same post, album or thread (engine\appdata\naming-corrections.jsonl).
+const NAMING_CORRECTIONS = path.join(APPDATA, "naming-corrections.jsonl");
+
+ipcMain.handle("history-rename", async (_event, body) => {
+  const query = { id: Number(body?.id) || 0, name: String(body?.name || "").slice(0, 240), corrections: body?.learn ? NAMING_CORRECTIONS : "" };
+  const result = await runPython([path.join(ROOT, "desktop", "job_store.py"), "rename", JOBS_DB], { input: `${JSON.stringify(query)}\n`, timeout: 20000 });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "Rename failed.").slice(0, 300) };
+});
+
+ipcMain.handle("naming-corrections", async (_event, body) => {
+  const action = { remove: "corrections-remove", clear: "corrections-clear" }[String(body?.action)] || "corrections-list";
+  const input = action === "corrections-remove" ? `${JSON.stringify({ context: String(body?.context || ""), title: String(body?.title || "") })}\n` : "\n";
+  const result = await runPython([path.join(ROOT, "desktop", "job_store.py"), action, JOBS_DB, NAMING_CORRECTIONS], { input, timeout: 20000 });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "Learned names could not be read.").slice(0, 300), rules: [] };
+});
+
 // The window passes only an item id; the path comes from the history database.
 ipcMain.handle("history-reveal", async (_event, id) => {
   const result = await runPython([path.join(ROOT, "desktop", "job_store.py"), "locate", JOBS_DB, String(Number(id) || 0)], { timeout: 20000 });

@@ -70,6 +70,8 @@ class DownloadClient:
         if media_item.is_segment:
             media_item.partial_file = media_item.path = media_item.download_folder / media_item.filename
         else:
+            # NEXDROP patch: before the range request, so the old ".part" file is the one resumed
+            await self._keep_unfinished_location(media_item, domain)
             name = (
                 await self.manager.database.history.get_downloaded_filename(domain, media_item) or media_item.filename
             )
@@ -305,6 +307,33 @@ class DownloadClient:
         media_item.download_filename = media_item.path.name
         await self.manager.database.history.add_download_filename(domain, media_item)
         return proceed, skip
+
+    async def _keep_unfinished_location(self, media_item: MediaItem, domain: str) -> None:
+        """NEXDROP patch: a half-downloaded file keeps the folder and name it was started with.
+
+        New naming rules (smart naming in 2.5, for example) would otherwise give the same URL a
+        new name, and the download would start again from zero beside the old ".part" file.
+        """
+        try:
+            previous = await self.manager.database.history.get_unfinished_location(domain, media_item)
+        except Exception:  # noqa: BLE001
+            return
+        if not previous or not all(previous):
+            return
+        from pathlib import Path  # only imported for type checking at module level
+
+        folder, filename = Path(previous[0]), previous[1]
+        old_path = folder / filename
+        if old_path == media_item.download_folder / media_item.filename:
+            return
+        old_partial = old_path.with_suffix(old_path.suffix + constants.TempExt.PART)
+        if not await aio.exists(old_partial):
+            return
+        logger.info(f"Resuming {old_partial.name} in its original folder instead of starting {media_item.filename}")
+        media_item.download_folder = folder
+        media_item.filename = filename
+        if media_item.path:
+            media_item.path = old_path
 
     async def iterate_filename(self, complete_file: Path, media_item: MediaItem) -> tuple[Path, Path]:
         """Iterates the filename until it is unique."""

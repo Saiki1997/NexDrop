@@ -108,4 +108,6 @@ class ImgurCrawler(Crawler):
         scrape_item.uploaded_at = image["datetime"]
         url = self.parse_url(image["link"])
         filename, ext = self.get_filename_and_ext(url.name)
-        await self.handle_file(url, scrape_item, filename, ext, metadata=image)
+        # NEXDROP patch (smart naming V2): each image's own title and description
+        await self.handle_file(url, scrape_item, filename, ext, metadata=image,
+                               media_title=image.get("title"), media_caption=image.get("description"))

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import json
 import logging
 import re
 from abc import ABC, abstractmethod
@@ -16,6 +17,7 @@ from aiohttp import hdrs
 
 from cyberdrop_dl import aio, env  # NEXDROP patch: used at runtime by new_task_group() and debug-crawler registration
 from cyberdrop_dl.source_order import ALBUM_NAMES, POST_FOLDERS, album_filename, album_name, numbered_filename, public_url, remember_title
+from cyberdrop_dl import smart_naming  # NEXDROP patch: smart naming (folder and file names)
 from cyberdrop_dl.cache import TTLCacheAdapter
 from cyberdrop_dl.clients.downloads import IGNORE_CONTENT_TYPE
 from cyberdrop_dl.clients.http import HTTPClient, HTTPConfig, HTTPContext, HTTPMixin
@@ -559,10 +561,13 @@ class Crawler(HTTPMixin, HLSMixin, ABC):
         thumbnail: AbsoluteHttpURL | str | None = None,
         headers: Mapping[str, str] | None = None,
         uploaded_at: int | None = None,
+        media_title: str | None = None,
+        media_caption: str | None = None,
     ) -> None:
         """Creates a MediaItem and hands it off to the downloader.
 
-        Referer is the referer to use for the db, not the actual HTTP referer"""
+        Referer is the referer to use for the db, not the actual HTTP referer.
+        `media_title` / `media_caption`: what the site says about this one file (smart naming)."""
 
         referer = referer or scrape_item.url
         if frag:
@@ -570,9 +575,38 @@ class Crawler(HTTPMixin, HLSMixin, ABC):
 
         chosen = custom_filename or filename
         download_folder = _prepare_download_path(scrape_item, self.FOLDER_DOMAIN)
-        # NEXDROP patch: "Name files after the album" setting
-        use_album = bool(ALBUM_NAMES.get() and scrape_item.album_title and scrape_item.part_of_album and frag != "thumbnail")
-        if use_album:
+        naming = smart_naming.SETTINGS.get()
+        # NEXDROP patch: "Name files after the album" setting (only when smart naming is off)
+        use_album = bool(
+            not naming.smart
+            and ALBUM_NAMES.get()
+            and scrape_item.album_title
+            and scrape_item.part_of_album
+            and frag != "thumbnail"
+        )
+        decision = None
+        file_naming = scrape_item.naming
+        if media_title or media_caption:
+            file_naming = {**file_naming, "media_title": media_title or "", "media_caption": media_caption or ""}
+        if naming.smart or naming.numbering == "suffix":
+            # NEXDROP patch: smart naming picks the name from the crawl's metadata
+            decision = smart_naming.name_file(
+                url,
+                chosen,
+                ext or Path(filename).suffix,
+                file_naming,
+                scrape_item.url,
+                download_folder,
+                lambda name: sanitize_filename(name, "-"),
+                thumbnail=frag == "thumbnail",
+            )
+            number, chosen = decision.number, decision.filename
+            if decision.group and not (scrape_item.retry_info and USE_RETRY_PATH.get()):
+                # "Folder for each title": files go into a folder named after their title
+                if smart_naming.is_generic_folder(download_folder.name):
+                    download_folder = download_folder.parent
+                download_folder = download_folder / decision.group
+        elif use_album:
             assert scrape_item.album_title
             chosen = sanitize_filename(
                 album_filename(
@@ -584,8 +618,10 @@ class Crawler(HTTPMixin, HLSMixin, ABC):
                 ),
                 "-",
             )
-        number, chosen = numbered_filename(str(url), chosen, enabled=False if use_album else None)
-        logging.getLogger("cyberdrop_dl").info("Source order\t%s\t%s\t%s", number, public_url(str(url)), chosen)
+        if decision is None:
+            number, chosen = numbered_filename(str(url), chosen, enabled=False if use_album else None)
+        _log_order(number, url, chosen, download_folder, self.config.download_folder, filename, decision, scrape_item,
+                   file_naming, ext or Path(filename).suffix)
         media_item = MediaItem(
             url=url,
             domain=self.DOMAIN,
@@ -834,6 +870,7 @@ class Crawler(HTTPMixin, HLSMixin, ABC):
             force_album_id=force_album_id,
         )
         remember_title(composed, " ".join((title or "").split()))  # NEXDROP patch: album name for album filenames
+        smart_naming.note_title(composed, title, self.DOMAIN, album_id or thread_id)  # NEXDROP patch: folder owner
         return composed
 
     @final
@@ -843,6 +880,21 @@ class Crawler(HTTPMixin, HLSMixin, ABC):
         id: str | None = None,  # noqa: A002
         date: datetime.datetime | datetime.date | float | None = None,
         /,
+        *,
+        caption: str | None = None,
+    ) -> str:
+        # NEXDROP patch: the returned folder name also carries the post's title and caption
+        # (smart_naming.PostTitle), which name the post's files.
+        folder = self._separate_post_folder(title, id, date)
+        if self._FORUM:  # a forum post's first line is a weaker title than a creator's caption
+            return smart_naming.PostTitle(folder, title, caption, id, "forum post", 0.55)
+        return smart_naming.PostTitle(folder, title, caption, id)
+
+    def _separate_post_folder(
+        self,
+        title: str | None,
+        id: str | None,  # noqa: A002
+        date: datetime.datetime | datetime.date | float | None,
     ) -> str:
         if not self.separate_posts:
             return ""
@@ -1299,10 +1351,85 @@ def _should_skip_by_config(media_item: MediaItem, config: Config) -> bool:
 def _prepare_download_path(item: ScrapeItem, domain: str) -> Path:
     if item.retry_info and USE_RETRY_PATH.get():
         return item.retry_info.download_path
-    path = item.download_folder / item.path
-    if item.is_loose_file:
-        path = path / f"Loose Files ({domain})"
-    return path
+    naming = smart_naming.SETTINGS.get()
+    # NEXDROP: no "Loose Files" folder. A file linked on its own goes into the folder of the page
+    # that linked it (or the download folder); "Folder for each title" then files it by its title.
+    if naming.folders == "original":
+        return item.download_folder / item.path
+    # NEXDROP patch (smart naming): content-title folders, no site suffix, equal titles from
+    # different collections kept apart.
+    levels = smart_naming.pick_levels(item.folder_levels(), naming.folders, naming.replace_generic)
+    return item.download_folder / smart_naming.REGISTRY.resolve(item.download_folder, levels)
+
+
+def _log_order(  # noqa: PLR0913
+    number: int,
+    url: AbsoluteHttpURL,
+    name: str,
+    folder: Path,
+    root: Path,
+    original: str,
+    decision: smart_naming.Decision | None,
+    item: ScrapeItem,
+    naming: dict[str, str] | None = None,
+    ext: str = "",
+) -> None:
+    """NEXDROP patch: the bridge turns this line into the window's sequence number and the
+    job's naming record (folder, original name, where the name came from, the file's identity)."""
+    try:
+        relative = folder.relative_to(root).as_posix()
+    except ValueError:
+        relative = str(folder)
+    naming = item.naming if naming is None else naming
+    identity = _media_identity(number, url, name, relative, original, decision, item, naming, ext)
+    if decision is not None:
+        smart_naming.REPORT.write(decision, relative, identity)
+    fields = [str(number), public_url(str(url)), name, relative, original]
+    if decision is not None:
+        fields += [decision.source, str(decision.confidence), decision.strategy, decision.title]
+    else:
+        fields += ["original filename", "1", "off", ""]
+    fields.append(item.naming.get("album") or item.naming.get("thread") or item.naming.get("profile") or "")
+    fields.append(smart_naming.SETTINGS.get().fingerprint())
+    fields.append(json.dumps(identity, ensure_ascii=False, separators=(",", ":")))
+    clean = [" ".join(str(field).split()) for field in fields]
+    logging.getLogger("cyberdrop_dl").info("Source order\t%s", "\t".join(clean))
+
+
+def _media_identity(  # noqa: PLR0913
+    number: int,
+    url: AbsoluteHttpURL,
+    name: str,
+    folder: str,
+    original: str,
+    decision: smart_naming.Decision | None,
+    item: ScrapeItem,
+    naming: dict[str, str],
+    ext: str,
+) -> dict[str, object]:
+    """NEXDROP patch (smart naming V2): what this file is and where it came from. Links lose
+    their query strings, so tokens and signatures never reach the job database or a report."""
+    identity: dict[str, object] = {
+        "media_url": smart_naming.safe_url(url),
+        "page_url": smart_naming.safe_url(item.url),
+        "post_url": smart_naming.safe_url(naming.get("post_url")),
+        "post_id": naming.get("post_id") or "",
+        "album_id": item.album_id or "",
+        "creator": naming.get("profile") or "",
+        "original": original,
+        "media_title": naming.get("media_title") or "",
+        "post_title": smart_naming.clean_title(naming.get("post_title") or naming.get("caption"), 120) or "",
+        "album": naming.get("album") or "",
+        "thread": naming.get("thread") or "",
+        "type": smart_naming.media_type(ext),
+        "index": number,
+        "confidence": decision.confidence if decision else 1.0,
+        "source": decision.source if decision else "original filename",
+        "name": name,
+        "folder": folder,
+        "context": smart_naming.context_map(naming),
+    }
+    return {key: value for key, value in identity.items() if value not in ("", None, [], {})}
 
 
 def compose_title(  # noqa: PLR0913

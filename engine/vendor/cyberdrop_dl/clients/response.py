@@ -15,6 +15,7 @@ from aiohttp import ClientResponse, hdrs
 from multidict import CIMultiDict, CIMultiDictProxy
 from typing_extensions import TypeVar
 
+from cyberdrop_dl import smart_naming  # NEXDROP patch
 from cyberdrop_dl.clients import get_logger, wreq
 from cyberdrop_dl.clients.flaresolverr import Solution as FlaresolverrSolution
 from cyberdrop_dl.exceptions import InvalidContentTypeError, ScrapeError
@@ -211,7 +212,9 @@ class AbstractResponse(ABC, Generic[_ResponseT]):
     async def soup(self, encoding: str | None = None) -> BeautifulSoup:
         self.__check_content_type("text", "html", expecting="HTML")
         if content := await self.text(encoding):
-            return await css.asoup(content)
+            soup = await css.asoup(content)
+            smart_naming.note_page(self.url, soup)  # NEXDROP patch: page titles for smart naming, no extra request
+            return soup
 
         raise ScrapeError(204, "Received empty HTML response")
 

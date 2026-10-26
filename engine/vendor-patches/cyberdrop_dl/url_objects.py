@@ -17,6 +17,7 @@ from cyberdrop_dl import signature
 from cyberdrop_dl.exceptions import MaxChildrenError
 from cyberdrop_dl.filepath import sanitize_folder
 from cyberdrop_dl.source_order import ALBUM_NAMES, album_name  # NEXDROP patch: album folder names
+from cyberdrop_dl import smart_naming  # NEXDROP patch: smart naming metadata
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Generator, Iterable, Mapping, Sequence
@@ -266,6 +267,10 @@ class ScrapeItem:
     album_title: str | None = None
     album_index: int | None = None
     _album_children: int = 0
+    # NEXDROP patch (smart naming): what the pages said about this file (album, thread, post,
+    # caption...) and, for each entry in `folders`, its kind and owner key.
+    naming: dict[str, str] = dataclasses.field(default_factory=dict)
+    folder_meta: list[tuple[str, str]] = dataclasses.field(default_factory=list)
 
     __repr__ = signature.simple_repr("url", "folders", "uploaded_at")
 
@@ -333,14 +338,66 @@ class ScrapeItem:
             self._append_folder(folder)
 
     def _append_folder(self, folder: str, /) -> None:
+        post = folder if isinstance(folder, smart_naming.PostTitle) else None
+        if post is not None:
+            self._note_post(post)
         if not folder:
             return
 
+        kind, key = self._folder_owner(folder, post)
         folder = sanitize_folder(folder)
         if _has_domain(folder) and (last_domain := _extract_last_domain(self.folders)):
             folder = _remove_domain_if_duplicate(folder, last_domain)
 
+        del self.folder_meta[len(self.folders) :]  # crawlers may pop folders directly
+        self.folder_meta.extend([("", "")] * (len(self.folders) - len(self.folder_meta)))
         self.folders.append(folder)
+        self.folder_meta.append((kind, key))
+
+    def _note_post(self, post: smart_naming.PostTitle) -> None:
+        """NEXDROP patch: a new post replaces the previous post's caption and title."""
+        self.naming["post_title"] = post.raw
+        self.naming["caption"] = post.caption
+        self.naming["caption_source"] = post.source
+        self.naming["caption_confidence"] = str(post.confidence)
+        self.naming["post_id"] = post.post_id
+        # V2: where the post lives, so files from a linked host keep the post's context
+        ident = post.post_id or post.raw
+        self.naming["post_key"] = smart_naming.owner_key(domain="", url=self.url, title="", post_id=ident) if ident else ""
+        self.naming["post_url"] = str(self.parents[-1] if self.parents and post.post_id and post.post_id in str(self.parents[-1]) else self.url)
+
+    def _folder_owner(self, folder: str, post: smart_naming.PostTitle | None) -> tuple[str, str]:
+        """NEXDROP patch: the folder's kind and who owns it, so equal titles from different
+        collections don't share one folder."""
+        kind = {
+            ScrapeItemType.ALBUM: "album",
+            ScrapeItemType.PROFILE: "profile",
+            ScrapeItemType.FORUM: "forum",
+            ScrapeItemType.FORUM_POST: "post",
+        }.get(self._type, "")  # pyright: ignore[reportArgumentType]
+        title, domain, ident = smart_naming.title_info(str(folder))
+        title = album_name(title) or title
+        if post is not None:
+            return "post", smart_naming.owner_key(domain=domain, url=self.url, title=title, post_id=post.post_id or title)
+        if kind == "album":
+            ident = ident or (self.album_id or "")
+        key = smart_naming.owner_key(domain=domain, url=self.url, title=title, ident=ident)
+        if kind == "album":
+            self.naming["album"] = title
+            self.naming["album_key"] = key
+        elif kind == "profile" or (kind != "forum" and title.startswith("@")):
+            self.naming["profile"] = title
+            self.naming["profile_key"] = key
+        elif kind == "forum":
+            self.naming["thread"] = title
+            self.naming["thread_key"] = key
+        return kind, key
+
+    def folder_levels(self) -> list[tuple[str, str, str]]:
+        """NEXDROP patch: (folder, kind, owner key) from the outermost folder in."""
+        meta = self.folder_meta[: len(self.folders)]
+        meta += [("", "")] * (len(self.folders) - len(meta))
+        return [(name, kind, key) for name, (kind, key) in zip(self.folders, meta, strict=True)]
 
     def add_children(self, number: int = 1) -> None:
         self._children_count += number
@@ -360,8 +417,12 @@ class ScrapeItem:
             self.parent_threads = set()
         if reset_parent_title:
             self.folders.clear()
+            self.folder_meta.clear()
+            self.naming.clear()
 
     def setup_as(self, title: str, item_type: ScrapeItemType, /, *, album_id: str | None = None) -> None:
+        if isinstance(title, smart_naming.PostTitle):
+            self._note_post(title)  # NEXDROP patch: the album-name step below drops the caption
         self.part_of_album = True
         if album_id:
             self.album_id = album_id

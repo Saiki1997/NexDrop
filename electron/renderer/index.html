@@ -144,6 +144,7 @@
         <footer class="activity-foot">
           <span class="flare-pill" id="flare-pill" data-state="off" title="FlareSolverr solves bot checks such as DDoS-Guard">Bot check: off</span>
           <button class="btn btn-quiet btn-small" id="btn-log-open" type="button" title="Open this run's full log">Open log</button>
+          <button class="btn btn-quiet btn-small" id="btn-log-naming" type="button" title="Why each file in this run got its name" hidden>Naming report</button>
           <button class="btn btn-quiet btn-small" id="btn-log-folder" type="button" title="Open the folder with every run log">Logs folder</button>
           <button class="btn btn-quiet btn-small" id="btn-log-copy" type="button">Copy</button>
           <button class="btn btn-quiet btn-small" id="btn-log-clear" type="button">Clear</button>
@@ -193,8 +194,31 @@
             <button class="btn btn-quiet" id="btn-pick-dir" type="button">Change</button>
           </div>
         </div>
-        <label class="switch"><input type="checkbox" id="sequence-prefix" checked><span class="switch-text">Number files in page order<small>Adds 001_, 002_ so files sort the way the post shows them.</small></span></label>
-        <label class="switch"><input type="checkbox" id="album-names" checked><span class="switch-text">Name files after the album<small>Files from an album are saved as the album's name and their place in it, like "Peachuu Tae 001.png", in a folder with the same name ("Peachuu Tae"). Single files keep their own name.</small></span></label>
+        <div class="divider"></div>
+        <span class="field-label">Smart naming</span>
+        <label class="switch"><input type="checkbox" id="smart-names" checked><span class="switch-text">Enable smart filename detection<small>Files named like a hash ("a9c82fa8.jpg", "IMG_8403.png") take the post, caption or album title instead, like "Summer Photoshoot-001.jpg". Nothing is made up: with no title, the file keeps its own name.</small></span></label>
+        <div class="field-grid">
+          <label class="field" data-needs="smart-names"><span class="field-label">Filename strategy</span><select id="name-strategy" class="select"><option value="auto">Automatic (recommended)</option><option value="original">Original filename</option><option value="media">Media title</option><option value="post">Post title</option><option value="album">Album/collection title</option></select></label>
+          <label class="field"><span class="field-label">Sequence numbering</span><select id="numbering" class="select"><option value="suffix">Suffix: filename-001.jpg</option><option value="prefix">Prefix: 001_filename.jpg</option><option value="off">Disabled</option></select><small class="field-help">Numbers follow the page order across the whole job, even when files finish out of order.</small></label>
+          <label class="field"><span class="field-label">Folder naming</span><select id="folder-naming" class="select"><option value="auto">Automatic content title</option><option value="album">Album/collection title</option><option value="post">Post/thread title</option><option value="original">Original folder structure</option></select></label>
+          <label class="field"><span class="field-label">Maximum filename length</span><input type="number" id="max-name-length" min="20" max="200" value="120"><small class="field-help">Characters, without the extension.</small></label>
+        </div>
+        <label class="switch"><input type="checkbox" id="site-in-folder"><span class="switch-text">Include website name in folder<small>"allecakes (Bunkr)" instead of "allecakes". Off: two different collections with the same title get "allecakes" and "allecakes (2)".</small></span></label>
+        <label class="switch" data-needs="smart-names"><input type="checkbox" id="title-folders" checked><span class="switch-text">Folder for each title<small>Renamed files go into a folder named after their title: "Leaked set pics-193.jpg" is saved in "Leaked set pics". Files that keep their own name stay in the thread's or album's folder.</small></span></label>
+        <label class="switch"><input type="checkbox" id="replace-generic"><span class="switch-text">Replace generic folder names<small>Folders named only "Untitled", "Videos" or "Photos" are left out, so the files go into the folder above them.</small></span></label>
+        <label class="switch" data-needs="smart-names"><input type="checkbox" id="keep-meaningful" checked><span class="switch-text">Preserve meaningful original filenames<small>"Beach day.jpg" keeps its name; only hash-like names are replaced.</small></span></label>
+        <label class="switch" data-needs="smart-names"><input type="checkbox" id="embedded-titles"><span class="switch-text">Read titles inside files<small>When nothing on the site names a file, use the title stored inside it: video and audio tags, photo titles, or the one folder inside a zip. Read on this PC only; nothing is extracted or uploaded.</small></span></label>
+        <label class="switch" data-needs="smart-names"><input type="checkbox" id="learn-names" checked><span class="switch-text">Learn from my renames<small>When you rename a file in History, later files with the same title from the same post, album or thread get your name. Never applied anywhere else.</small></span></label>
+        <label class="switch" data-needs="smart-names"><input type="checkbox" id="explain-names"><span class="switch-text">Explain file names<small>Writes a naming report beside each run log: every title NexDrop considered, its score, and why it was chosen or rejected. Links are shown without query strings.</small></span></label>
+        <div class="field" data-needs="smart-names">
+          <div class="field-row">
+            <span class="field-label">Learned names</span>
+            <button class="btn btn-quiet btn-small" id="btn-learned-refresh" type="button">Show</button>
+            <button class="btn btn-quiet btn-small" id="btn-learned-clear" type="button">Forget all</button>
+          </div>
+          <ul class="learned-list" id="learned-list" hidden></ul>
+        </div>
+        <div class="divider"></div>
         <label class="switch"><input type="checkbox" id="post-folders" checked><span class="switch-text">Folder for each post<small>Puts each X, TikTok, Bluesky, Patreon or Kemono post in its own dated folder, like "2024-12-30 - 1873747839563755753". Off saves them all in the profile's folder.</small></span></label>
         <div class="field">
           <span class="field-label">File types to download</span>

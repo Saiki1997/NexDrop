@@ -1,3 +1,26 @@
+# NEXDROP 2.5.0
+
+## Smart file names
+- **Hash-like names get a real title.** Files named like `a9c82fa8.jpg` or `IMG_8403.png` take the title of what they belong to: the file's own title on the host, the post's caption or title, the album, the thread or the creator. For example `Summer Photoshoot-001.jpg`. Settings → Smart naming → "Enable smart filename detection" (on by default).
+- **Nothing is made up.** Every possible title gets a score. Site names, "Download"/"Watch" pages, sign-in and error pages, adverts, "here are the links", thank-you and credit replies and questions to other members are rejected. If no title scores well enough, the file keeps its own name. Real names like `Beach day.jpg` are kept ("Preserve meaningful original filenames").
+- **The linking post wins.** A file on Bunkr, Cyberdrop, GoFile and similar hosts that was linked from a SimpCity (or other forum) post is named after that post, not the host's random album name. Each post's files get that post's title, never a neighbour's.
+- **Captions are tidied.** Lead-ins ("Here is my new ..."), calls to action ("Check my profile ..."), trailing thanks, picture counts, emoji and hashtag runs are taken off.
+- **Per-file titles** from ImgBB and other Chevereto hosts, Imgur, Flickr and RedGifs, and tweet and TikTok captions.
+- **Numbers follow the page order** across the whole job (`-001`, `-002` ...), even when files finish out of order, and the same names come back after a restart. Settings → Smart naming → "Sequence numbering": suffix, prefix or off.
+- Options: filename strategy (automatic, original, media title, post title, album title), folder naming, maximum filename length, website name in the folder.
+
+## Folders
+- **Folder for each title.** A renamed file goes into a folder named after its title: `Leaked set pics-193.jpg` is saved in `Leaked set pics`. Files that keep their own name stay in the thread's or album's folder. Settings → Smart naming → "Folder for each title" (on by default).
+- **No more "Loose Files" folders.** A file linked on its own goes into the folder of the thread that linked it, or straight into your download folder.
+
+## New, all optional and on this PC only
+- **Read titles inside files** (off by default): when nothing on the site names a file, use the title stored inside it, from video and audio tags, photo titles or the one folder inside a zip. Nothing is extracted or uploaded.
+- **Learn from my renames** (on): rename a file in History, and later files with the same title from the same post, album or thread get your name. Settings → Smart naming → Learned names shows them and can forget them.
+- **Explain file names** (off): writes a `.naming.log` beside each run log with every title considered, its score and why it was picked or rejected. Links are written without query strings, and no cookies or tokens are written.
+
+## Measured
+On the labelled test cases in `tests/` (`python tests/naming_accuracy.py`), the right title was picked for 98% of 102 cases, 100% of 44 held-out cases and 95% of 21 more held-out cases (the earlier engine: 60%, 50%, 48%). No file was given another post's title.
+
 # NEXDROP 2.4.3
 
 From the 2026-10-25 23:18 (Coomer) and 23:21 (Kemono) runs on 2.4.2.

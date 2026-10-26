@@ -40,8 +40,19 @@
   // ─── preferences ──────────────────────────────────────────────────────────
   const PREF_FIELDS = {
     orderMode: { get: () => $("#order-seg [aria-checked=true]")?.dataset.order || "parallel", set: (v) => setOrder(v) },
-    sequencePrefix: { el: "#sequence-prefix", type: "check", def: true },
-    albumNames: { el: "#album-names", type: "check", def: true },
+    smartNames: { el: "#smart-names", type: "check", def: true },
+    nameStrategy: { el: "#name-strategy", type: "text", def: "auto", max: 20 },
+    numbering: { el: "#numbering", type: "text", def: "suffix", max: 20 },
+    folderNaming: { el: "#folder-naming", type: "text", def: "auto", max: 20 },
+    siteInFolder: { el: "#site-in-folder", type: "check", def: false },
+    replaceGenericFolders: { el: "#replace-generic", type: "check", def: false },
+    namingVersion: { get: () => 2, set: () => {} },
+    keepMeaningfulNames: { el: "#keep-meaningful", type: "check", def: true },
+    embeddedTitles: { el: "#embedded-titles", type: "check", def: false },
+    learnNames: { el: "#learn-names", type: "check", def: true },
+    explainNames: { el: "#explain-names", type: "check", def: false },
+    titleFolders: { el: "#title-folders", type: "check", def: true },
+    maxNameLength: { el: "#max-name-length", type: "int", def: 120, min: 20, max: 200 },
     postFolders: { el: "#post-folders", type: "check", def: true },
     deepScrape: { el: "#deep-scrape", type: "check", def: false },
     flareSolver: { el: "#flare", type: "check", def: true },
@@ -273,8 +284,19 @@
       endPage: job.endPage || null,
       cookieFiles,
       orderMode: prefs.orderMode,
-      sequencePrefix: prefs.sequencePrefix,
-      albumNames: prefs.albumNames,
+      sequencePrefix: prefs.numbering !== "off",
+      numbering: prefs.numbering,
+      smartNames: prefs.smartNames,
+      nameStrategy: prefs.nameStrategy,
+      folderNaming: prefs.folderNaming,
+      siteInFolder: prefs.siteInFolder,
+      replaceGenericFolders: prefs.replaceGenericFolders,
+      keepMeaningfulNames: prefs.keepMeaningfulNames,
+      embeddedTitles: prefs.embeddedTitles,
+      learnNames: prefs.learnNames,
+      explainNames: prefs.explainNames,
+      titleFolders: prefs.titleFolders,
+      maxNameLength: prefs.maxNameLength,
       postFolders: prefs.postFolders,
       deepScrape: prefs.deepScrape,
       flareSolver: prefs.flareSolver,
@@ -504,7 +526,7 @@
     for (const row of $$("[data-needs]")) {
       const on = $(`#${row.dataset.needs}`).checked;
       row.toggleAttribute("data-off", !on);
-      $$("input", row).forEach((input) => { input.disabled = !on; });
+      $$("input, select", row).forEach((input) => { input.disabled = !on; });
     }
     const parts = [];
     if (prefs.scheduleOn) parts.push(scheduleAllows() ? `Download hours now (until ${prefs.scheduleTo}).` : `Outside download hours: queued links start at ${prefs.scheduleFrom}.`);
@@ -665,6 +687,8 @@
     switch (event.type) {
       case "run":
         run.log = event.log || "";
+        run.namingLog = event.namingLog || "";
+        $("#btn-log-naming").hidden = !run.namingLog;
         run.root = event.root || run.root;
         if (run.root) showFolder(run.root);
         break;
@@ -1086,6 +1110,10 @@
     if (result && !result.ok && result.error) log("warning", result.error);
   });
   $("#btn-log-folder").addEventListener("click", () => api.openLogs("run"));
+  $("#btn-log-naming").addEventListener("click", async () => {
+    const result = run.namingLog ? await api.openLogFile(run.namingLog) : null;
+    if (result && !result.ok && result.error) log("warning", "The naming report appears once the first file is named.");
+  });
 
   // ─── FlareSolverr status ──────────────────────────────────────────────────
   const FLARE_TEXT = { off: "Bot check: off", starting: "Bot check: starting", ready: "Bot check: ready", failed: "Bot check: failed", missing: "Bot check: not installed" };
@@ -1639,10 +1667,88 @@
         addLinks(item.source || item.url, false);
         setStatus("#history-status-line", "Added to the links box.", "ok");
       });
-      li.append(info, show, again);
+      const parts = [info, show];
+      if (item.hasPath && item.status === "completed") parts.push(renameButton(item, name));
+      li.append(...parts, again);
       list.appendChild(li);
     }
   }
+
+  // Smart naming V2: rename a downloaded file here; with "Learn from my renames" on, later files
+  // with the same title from the same post, album or thread get the new name too.
+  function renameButton(item, nameEl) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn btn-quiet btn-small";
+    button.textContent = "Rename";
+    button.title = "Rename this file on disk";
+    button.addEventListener("click", () => {
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "history-rename";
+      input.value = nameEl.textContent;
+      input.setAttribute("aria-label", "New file name");
+      nameEl.replaceWith(input);
+      const dot = input.value.lastIndexOf(".");
+      input.focus();
+      input.setSelectionRange(0, dot > 0 ? dot : input.value.length);
+      let done = false;
+      const finish = async (save) => {
+        if (done) return;
+        done = true;
+        const wanted = input.value.trim();
+        if (save && wanted && wanted !== nameEl.textContent) {
+          const result = await api.historyRename({ id: item.id, name: wanted, learn: $("#learn-names").checked });
+          if (result?.ok) {
+            nameEl.textContent = result.name;
+            setStatus("#history-status-line", result.learned ? "Renamed. Later files with that title from the same post or album get this name too." : "Renamed.", "ok");
+          } else {
+            setStatus("#history-status-line", result?.error || "Rename failed.", "bad");
+          }
+        }
+        input.replaceWith(nameEl);
+      };
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") finish(true);
+        else if (event.key === "Escape") finish(false);
+      });
+      input.addEventListener("blur", () => finish(false));
+    });
+    return button;
+  }
+
+  // ─── learned names (Settings > Smart naming) ──────────────────────────────
+  function showLearned(result) {
+    const list = $("#learned-list");
+    list.textContent = "";
+    list.hidden = false;
+    const rules = result?.rules || [];
+    if (!rules.length) {
+      const li = document.createElement("li");
+      li.className = "empty-note";
+      li.textContent = result?.ok === false ? (result.error || "Learned names could not be read.") : "Nothing learned yet. Rename a file in History to teach a name.";
+      list.appendChild(li);
+      return;
+    }
+    for (const rule of rules) {
+      const li = document.createElement("li");
+      const text = document.createElement("span");
+      text.textContent = `\u201c${rule.title}\u201d \u2192 \u201c${rule.use}\u201d`;
+      text.title = `Only for ${rule.context}`;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "btn btn-quiet btn-small";
+      remove.textContent = "Forget";
+      remove.addEventListener("click", async () => showLearned(await api.namingCorrections({ action: "remove", context: rule.context, title: rule.title })));
+      li.append(text, remove);
+      list.appendChild(li);
+    }
+  }
+  $("#btn-learned-refresh").addEventListener("click", async () => showLearned(await api.namingCorrections({ action: "list" })));
+  $("#btn-learned-clear").addEventListener("click", async () => {
+    if (!window.confirm("Forget every name NexDrop learned from your renames? Files already on disk keep their names.")) return;
+    showLearned(await api.namingCorrections({ action: "clear" }));
+  });
 
   $("#history-text").addEventListener("input", searchHistorySoon);
   $("#history-host").addEventListener("change", searchHistory);
@@ -1671,6 +1777,10 @@
       prefs.version = 2;
       api.saveGuiSetting({ prefs });
     }
+    // 2.5: "Number files in page order" became Sequence numbering. Off stays off.
+    if (prefs.numbering === undefined && prefs.sequencePrefix === false) prefs.numbering = "off";
+    // Test build 2: linked files are kept apart by host again unless asked otherwise.
+    if (prefs.namingVersion !== 2) prefs.replaceGenericFolders = false;
     for (const [key, spec] of Object.entries(PREF_FIELDS)) writeField(spec, prefs[key]);
     prefs = collectPrefs();
     showSchedule();
