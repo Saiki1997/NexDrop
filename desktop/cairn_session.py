@@ -53,6 +53,8 @@ HISTORY = APPDATA / "completed-urls.json"
 RUNS = APPDATA / "runs.json"
 RUN_COOKIES = APPDATA / "cookies" / "run"
 MANIFEST = APPDATA / "order-manifest.jsonl"
+FOLDER_REGISTRY = APPDATA / "folder-registry.jsonl"  # smart naming: which collection owns which folder
+CORRECTIONS = APPDATA / "naming-corrections.jsonl"  # smart naming V2: names you changed in History
 DOWNLOADS = ROOT / "downloads" / "nexdrop"
 MAX_BYTES = 80 * 1024 * 1024
 MAX_URLS = 200
@@ -81,6 +83,7 @@ _out_lock = threading.Lock()
 RUN_LOG = None          # text file with everything that happened in this run
 RUN_LOG_PATH: Path | None = None
 ENGINE_LOG_PATH: Path | None = None
+NAMING_LOG_PATH: Path | None = None  # "Explain file names": why each file got its name
 RUN_LOG_KEEP = 30
 
 
@@ -128,15 +131,16 @@ def emit(payload: dict) -> None:
 
 def open_run_log(config: dict, urls: list[str]) -> None:
     """One readable log per run in engine\\appdata\\logs\\runs, plus the engine's detailed log beside it."""
-    global RUN_LOG, RUN_LOG_PATH, ENGINE_LOG_PATH
+    global RUN_LOG, RUN_LOG_PATH, ENGINE_LOG_PATH, NAMING_LOG_PATH
     folder = APPDATA / "logs" / "runs"
     try:
         folder.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
         RUN_LOG_PATH = folder / f"{stamp}.log"
         ENGINE_LOG_PATH = folder / f"{stamp}.engine.log"
+        NAMING_LOG_PATH = folder / f"{stamp}.naming.log" if config.get("explainNames") else None
         RUN_LOG = RUN_LOG_PATH.open("w", encoding="utf-8")
-        old = sorted(p for p in folder.glob("*.log") if not p.name.endswith(".engine.log"))
+        old = sorted(p for p in folder.glob("*.log") if p.name.count(".") == 1)  # not .engine/.naming logs
         for stale in old[:-RUN_LOG_KEEP]:
             for path in [stale, *folder.glob(stale.stem + ".*.log")]:
                 try:
@@ -431,14 +435,42 @@ def use_proxy(proxy: str) -> None:
 
 
 _ORDER = None
+_ORDER_STAMP: tuple[int, int] | None = None
 NUMBERED = True  # "Numbered filenames" setting for this run
+NUMBER_MODE = "suffix"  # Sequence Numbering: suffix (name-001.jpg), prefix (001_name.jpg) or off
+JOB_KEY = ""  # same links, same job: numbers and names survive a resume or restart
 MANIFEST_MAX_LINES = 20_000
+
+
+def _numbering(config: dict) -> str:
+    value = str(config.get("numbering") or "").lower()
+    if value in {"suffix", "prefix", "off"}:
+        return value
+    if config.get("sequencePrefix") is False:
+        return "off"  # "Numbered filenames" was off before 2.5
+    return "suffix"
+
+
+def _choice(value: object, allowed: tuple[str, ...], default: str) -> str:
+    text = str(value or "").lower()
+    return text if text in allowed else default
+
+
+NAMING_ROWS: dict[str, dict] = {}  # url -> this run's naming record, for the job database
 
 
 def _numbered_filename(url: str, original: str) -> tuple[int, str]:
     """Apply the engine's source-order number so fallback files continue its sequence."""
-    global _ORDER
+    global _ORDER, _ORDER_STAMP
     try:
+        try:
+            info = MANIFEST.stat()
+            stamp = (info.st_mtime_ns, info.st_size)
+        except OSError:
+            stamp = None
+        if _ORDER is not None and stamp != _ORDER_STAMP:
+            _ORDER.reset(str(MANIFEST), JOB_KEY or None)  # the engine handed out more numbers since
+            _ORDER_STAMP = stamp
         if _ORDER is None:
             import importlib.util
 
@@ -447,11 +479,47 @@ def _numbered_filename(url: str, original: str) -> tuple[int, str]:
                 return 0, original
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
-            module.reset(str(MANIFEST))  # pick up the numbers the engine already handed out
+            module.reset(str(MANIFEST), JOB_KEY or None)  # pick up the numbers the engine already handed out
             _ORDER = module
-        return _ORDER.numbered_filename(url, original, enabled=NUMBERED)
+            _ORDER_STAMP = stamp
+        known = _ORDER.stored(url)
+        if known and known.get("name") and known.get("mode") == NUMBER_MODE:
+            return int(known.get("sequence") or 0), str(known["name"])
+        number, name = _ORDER.numbered_filename(url, original, enabled=NUMBERED, mode=NUMBER_MODE)
+        _write_manifest({"url": _ORDER.public_url(url), "sequence": number, "name": name, "original": original,
+                         "source": "original filename", "strategy": "off", "mode": NUMBER_MODE})
+        try:
+            info = MANIFEST.stat()
+            _ORDER_STAMP = (info.st_mtime_ns, info.st_size)
+        except OSError:
+            pass
+        return number, name
     except Exception:  # noqa: BLE001 - numbering is cosmetic
         return 0, original
+
+
+def job_key(urls: list[str]) -> str:
+    """One key per set of links, so pressing Resume or rechecking a watched thread is the same job."""
+    import hashlib
+
+    def norm(url: str) -> str:
+        parts = urlparse(url.strip())
+        return f"{parts.scheme.lower()}://{parts.netloc.lower()}{parts.path.rstrip('/')}" + (f"?{parts.query}" if parts.query else "")
+
+    clean = sorted({norm(u) for u in urls if u})
+    return hashlib.sha1("\n".join(clean).encode("utf-8")).hexdigest()[:16] if clean else ""
+
+
+def _write_manifest(row: dict) -> None:
+    """Persist a file's naming record: number, name, folder, original name and where the name came from."""
+    if JOB_KEY:
+        row = {**row, "job": JOB_KEY}
+    try:
+        MANIFEST.parent.mkdir(parents=True, exist_ok=True)
+        with MANIFEST.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
 
 
 def trim_manifest() -> None:
@@ -489,7 +557,7 @@ def http_save(url: str, folder: Path) -> dict:
         if total and total > MAX_BYTES:
             response.close()
             raise ValueError("File exceeds the 80 MB transfer limit")
-        target_dir = folder / "Loose Files"
+        target_dir = folder  # NEXDROP: no "Loose Files" folder
         if TYPE_FOLDERS_ON:
             target_dir = target_dir / type_folder(urlparse(current).path)
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -1095,7 +1163,8 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
     redownload = bool(config.get("redownload"))
     open_run_log(config, urls + rejected)
     emit({"type": "run", "root": str(folder), "urls": urls,
-          "log": str(RUN_LOG_PATH or ""), "engineLog": str(ENGINE_LOG_PATH or "")})
+          "log": str(RUN_LOG_PATH or ""), "engineLog": str(ENGINE_LOG_PATH or ""),
+          "namingLog": str(NAMING_LOG_PATH or "")})
     if not urls:
         emit({"type": "error", "message": "No public http(s) URLs to download."})
         return _finish(urls, folder, [], rejected, [], started, stopped=False)
@@ -1130,6 +1199,7 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
                 "sequence": row.get("sequence") or 0, "name": row.get("name") or "",
                 "bytes_read": row.get("read") or 0, "bytes_total": row.get("total") or 0,
                 "status": row.get("reason") or "", "destination": row.get("path") or "",
+                "naming": NAMING_ROWS.get(row["url"]),
             })
         except Exception:  # noqa: BLE001
             return
@@ -1145,9 +1215,11 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
     if STOP.is_set():
         return _finish(urls, folder, [], rejected, [], started, stopped=True, store=store, job_id=job_id)
 
-    global NUMBERED, TYPE_FOLDERS_ON
+    global NUMBERED, NUMBER_MODE, JOB_KEY, TYPE_FOLDERS_ON
     TYPE_FOLDERS_ON = bool(config.get("typeFolders"))
-    NUMBERED = True if config.get("sequencePrefix") is None else bool(config.get("sequencePrefix"))
+    NUMBER_MODE = _numbering(config)
+    NUMBERED = NUMBER_MODE != "off"
+    JOB_KEY = job_key(urls)
     trim_manifest()
     proxy = proxy_url(config.get("proxy"))
     proxy_scope = "simpcity" if config.get("proxyScope") == "simpcity" else "all"
@@ -1186,11 +1258,27 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         "endPage": end_page,
         "orderMode": order_mode,
         "sequencePrefix": NUMBERED,
+        "numbering": NUMBER_MODE,
         "albumNames": True if config.get("albumNames") is None else bool(config.get("albumNames")),
+        # Smart naming (2.5). Missing settings take the defaults from the naming spec.
+        "smartNames": True if config.get("smartNames") is None else bool(config.get("smartNames")),
+        "nameStrategy": _choice(config.get("nameStrategy"), ("auto", "original", "media", "post", "album"), "auto"),
+        "folderNaming": _choice(config.get("folderNaming"), ("auto", "album", "post", "original"), "auto"),
+        "siteInFolder": bool(config.get("siteInFolder")),
+        "replaceGenericFolders": bool(config.get("replaceGenericFolders")),
+        "titleFolders": True if config.get("titleFolders") is None else bool(config.get("titleFolders")),
+        "keepMeaningfulNames": True if config.get("keepMeaningfulNames") is None else bool(config.get("keepMeaningfulNames")),
+        "maxNameLength": _int(config.get("maxNameLength"), 120, 20, 200),
+        "jobKey": JOB_KEY,
+        "folderRegistry": str(FOLDER_REGISTRY),
         "postFolders": True if config.get("postFolders") is None else bool(config.get("postFolders")),
         "orderManifest": str(MANIFEST),
         "auth": config.get("auth") if isinstance(config.get("auth"), dict) else {},
         "engineLog": str(ENGINE_LOG_PATH or ""),
+        # Smart naming V2: the naming report, names you corrected, titles inside files
+        "namingReport": str(NAMING_LOG_PATH or ""),
+        "namingCorrections": str(CORRECTIONS) if config.get("learnNames") is not False else "",
+        "embeddedTitles": bool(config.get("embeddedTitles")),
     }
     maintain_engine_db()  # tidy up after an earlier crash or forced stop
     env = os.environ.copy()
@@ -1259,12 +1347,26 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
                 sequence = _int(event.get("sequence"), 0, 0, 10**9)
                 if url and sequence:
                     FILES.update(url, sequence=sequence, name=str(event.get("name") or "") or None)
-                    try:
-                        MANIFEST.parent.mkdir(parents=True, exist_ok=True)
-                        with MANIFEST.open("a", encoding="utf-8") as handle:
-                            handle.write(json.dumps({"url": url, "sequence": sequence, "name": event.get("name") or ""}) + "\n")
-                    except OSError:
-                        pass
+                    row = {"url": url, "sequence": sequence, "name": event.get("name") or ""}
+                    for key in ("folder", "original", "source", "confidence", "strategy", "title", "parent", "naming"):
+                        if event.get(key) not in (None, ""):
+                            row[key] = event[key]
+                    _write_manifest(row)
+                    if isinstance(event.get("identity"), dict):
+                        row = {**row, "identity": event["identity"]}  # job database only, not the manifest
+                    NAMING_ROWS[url] = row
+            elif kind == "renamed":
+                # "Read titles inside files" renamed a finished file
+                url = str(event.get("url") or "")
+                name = str(event.get("name") or "")
+                if url and name:
+                    row = NAMING_ROWS.get(url) or {"url": url}
+                    row.update(name=name, source=str(event.get("source") or "title inside the file"), confidence=0.7)
+                    NAMING_ROWS[url] = row
+                    FILES.update(url, name=name, path=str(event.get("path") or "") or None)
+                    if FILES.on_change and url in FILES.rows:
+                        FILES.on_change(dict(FILES.rows[url]))  # the job database gets the new name
+                    log("info", f"Named {name} from the {row['source']} inside the file.")
             elif kind == "file_start":
                 url = str(event.get("url") or "") or f"file:{event.get('name')}"
                 if not downloading:

@@ -184,6 +184,20 @@ class HistoryTable(Table, name="media"):
             cursor = await db_conn.execute(query, (filename,))
             return await cursor.fetchone() is not None
 
+    async def get_unfinished_location(self, domain: str, media_item: MediaItem) -> tuple[str, str] | None:
+        """NEXDROP patch: folder and filename an unfinished download of this URL was started with."""
+        if media_item.is_segment:
+            return None
+        query = (
+            "SELECT download_path, download_filename FROM media WHERE domain = ? and url_path = ? "
+            "and completed = 0 and download_filename != '' LIMIT 1"
+        )
+        async with self.db.reader() as db_conn:
+            cursor = await db_conn.execute(query, (domain, media_item.db_path))
+            if row := await cursor.fetchone():
+                return str(row["download_path"] or ""), str(row["download_filename"] or "")
+        return None
+
     async def get_downloaded_filename(self, domain: str, media_item: MediaItem) -> str | None:
         """Returns the downloaded filename from the database."""
 

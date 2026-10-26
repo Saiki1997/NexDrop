@@ -79,3 +79,50 @@ after a run and loaded next run where the user's cookie file doesn't set the sam
 Also at run time from `engine/bridge.py` (2.4.3): downloads are counted per site (`n3.coomer.st` counts as `coomer.st`).
 After 8 connection timeouts in a row with no successful download in between, the site's remaining downloads fail at once
 with `DownloadError("Server unreachable")` instead of each waiting out the connect timeout.
+
+Smart naming (2.5.0):
+- `cyberdrop_dl/smart_naming.py` (new file): the one place that names folders and files. Crawlers only report metadata
+  (album, thread, post title, caption, page title); `name_file` picks the title in the spec's priority order with a
+  confidence score, keeps meaningful original names, leaves hashes/ids/camera names (`a9c82fa8`, `IMG_8403`) out, adds the
+  source-order number (`name-001.ext` by default) and makes the name Windows-safe. `FolderRegistry` keeps two collections with
+  the same title apart (`allecakes`, `allecakes (2)`) and writes the assignment to `appdata/folder-registry.jsonl`, so retries,
+  restarts and resumes land in the same folder. `note_page` keeps the Open Graph / Twitter card / JSON-LD / `<title>` of pages
+  the crawler already fetched (no extra requests). Default settings are the old behaviour; the bridge turns the new ones on.
+- `cyberdrop_dl/source_order.py`: `NUMBER_MODE` (suffix, prefix, off), `split_name` (keeps `.tar.gz`), and job-scoped numbers:
+  `reset(manifest, job)` starts each job at 1 and reuses only that job's rows (`stored()` returns the saved name).
+- `cyberdrop_dl/url_objects.py`: `ScrapeItem.naming` (album, thread, profile, post title, caption) and `folder_meta` (kind and
+  owner of each folder). `append_folders` reads them from the folder titles and from `PostTitle`.
+- `cyberdrop_dl/crawlers/crawler.py`: `handle_file` asks `smart_naming.name_file` for the name; `_prepare_download_path` builds
+  content-title folders without the site suffix (no `Loose Files` folder since V2); `create_title` records
+  the folder's site and album/thread id; `create_separate_post_title` returns a `PostTitle` that also carries the post's title
+  and an optional `caption=`. The "Source order" log line carries the naming record for the job database.
+- `cyberdrop_dl/crawlers/_forum.py`, `twitter/crawler.py`, `bluesky/crawler.py`: pass the post's first line / tweet text /
+  post text as `caption=`.
+- `cyberdrop_dl/clients/response.py`: `soup()` hands each parsed page to `smart_naming.note_page`.
+- `cyberdrop_dl/clients/downloads.py`, `database/history.py`: a URL with an unfinished `.part` file keeps the folder and name
+  it was started with (`get_unfinished_location`), so changed naming rules never restart or orphan a half-downloaded file.
+
+Smart naming V2 (2.5.0):
+- `cyberdrop_dl/smart_naming.py`: every candidate title (original filename, the file's own title/caption/page, the post's
+  caption or title, album, thread, creator, link text) gets a score = how much that kind of metadata says about one file x
+  what the text is worth. Hashes, generic words, site names, file-host taglines, adverts, bot-check/error pages, download
+  instructions, forum thank-you/credit replies and questions score 0. The best score wins at 0.5 or more; otherwise the
+  original name stays. A linking post's own title outranks a file host's album name. Captions lose lead-ins ("Here is my
+  new ..."), calls to action ("Check my profile ..."), trailing thanks, picture counts and hashtag runs. A host's random id
+  is taken off a real filename ("Beach Sunset-aB3dE9fG" -> "Beach Sunset"). `explain_title` returns every candidate with
+  its verdict; `REPORT` writes them to the run's `.naming.log` when "Explain file names" is on; `CORRECTIONS` applies names
+  you changed in History, only for the same post, album or thread; `embedded_name` names files nothing else could name from
+  the title stored inside them. `safe_url` keeps scheme, host, port and path only.
+- `cyberdrop_dl/media_tags.py` (new file): reads a title from MP4/MOV/M4A (`©nam`), Matroska/WebM (`Title`), MP3 (`TIT2`),
+  FLAC (`TITLE`), JPEG (EXIF XPTitle/ImageDescription, XMP dc:title), PNG (`tEXt Title`) and the single top folder of a zip.
+  Bounded reads, nothing extracted or decoded; encoder and camera names are ignored.
+- `cyberdrop_dl/url_objects.py`: `naming` also records `post_url` and the owner keys of the post, album, thread and creator.
+- `cyberdrop_dl/crawlers/crawler.py`: `handle_file(..., media_title=, media_caption=)` for what a site says about one file;
+  the "Source order" line ends with the file's identity as JSON (links without query strings).
+- `cyberdrop_dl/crawlers/_chevereto.py` (ImgBB and other Chevereto hosts), `imgur.py`, `flickr.py`, `redgifs.py`: pass each
+  image's or gif's own title and description.
+- Folder for each title (`titleFolders`, on by default): `title_folder` gives a decision's `group`, a folder named after the
+  caption, post, album or thread title the file was named from ("Leaked set pics-193.jpg" -> "Leaked set pics/"), unless
+  the file already sits in a folder with that name. `handle_file` saves the file there.
+- No more `Loose Files` folders: `_prepare_download_path` puts a file linked on its own in the folder of the page that
+  linked it (or the download folder). The desktop app's plain-HTTP fallback does the same.

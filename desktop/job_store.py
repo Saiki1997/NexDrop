@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import sys
 import time
@@ -52,8 +53,30 @@ class JobStore:
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.execute("PRAGMA synchronous = NORMAL")
         self.conn.executescript(SCHEMA)
-        self.conn.execute("PRAGMA user_version = 1")
+        self._add_naming_columns()
+        self.conn.execute("PRAGMA user_version = 3")
         self.conn.commit()
+
+    # Smart naming record per file (2.5). Older databases get the columns added; rows they
+    # already have keep empty values.
+    NAMING_COLUMNS = {
+        "original_name": "TEXT NOT NULL DEFAULT ''",
+        "folder": "TEXT NOT NULL DEFAULT ''",
+        "title": "TEXT NOT NULL DEFAULT ''",
+        "parent_title": "TEXT NOT NULL DEFAULT ''",
+        "name_source": "TEXT NOT NULL DEFAULT ''",
+        "name_confidence": "REAL NOT NULL DEFAULT 0",
+        "name_strategy": "TEXT NOT NULL DEFAULT ''",
+        # 2.6 (smart naming V2): what the file is and where it came from, as JSON. Links have
+        # no query strings. Used to learn from names you change in History.
+        "identity": "TEXT NOT NULL DEFAULT ''",
+    }
+
+    def _add_naming_columns(self) -> None:
+        have = {row[1] for row in self.conn.execute("PRAGMA table_info(items)")}
+        for name, kind in self.NAMING_COLUMNS.items():
+            if name not in have:
+                self.conn.execute(f"ALTER TABLE items ADD COLUMN {name} {kind}")
 
     def close(self) -> None:
         self.conn.close()
@@ -127,6 +150,35 @@ class JobStore:
                 now,
             ),
         )
+        naming = payload.get("naming")
+        if isinstance(naming, dict):
+            try:
+                confidence = float(naming.get("confidence") or 0)
+            except (TypeError, ValueError):
+                confidence = 0.0
+            identity = naming.get("identity")
+            identity = json.dumps(identity, ensure_ascii=False)[:4000] if isinstance(identity, dict) else ""
+            self.conn.execute(
+                """
+                UPDATE items SET original_name = ?, folder = ?, title = ?, parent_title = ?, name_source = ?,
+                    name_confidence = ?, name_strategy = ?,
+                    identity = CASE WHEN ? != '' THEN ? ELSE identity END
+                WHERE job_id = ? AND url = ? AND (original_name = '' OR identity = '')
+                """,
+                (
+                    str(naming.get("original") or "")[:500],
+                    str(naming.get("folder") or "")[:1000],
+                    str(naming.get("title") or "")[:300],
+                    str(naming.get("parent") or "")[:300],
+                    str(naming.get("source") or "")[:100],
+                    confidence,
+                    str(naming.get("strategy") or "")[:20],
+                    identity,
+                    identity,
+                    job_id,
+                    url,
+                ),
+            )
         self.conn.commit()
 
     def recover(self) -> list[int]:
@@ -218,6 +270,119 @@ class JobStore:
         return {"destination": row["destination"], "folder": row["download_dir"]}
 
 
+    # ─── renaming a file from History (smart naming V2 learns from it) ─────────
+
+    def rename(self, item_id: int, new_name: str, corrections: Path | None) -> dict:
+        """Rename a downloaded file and, when `corrections` is set, remember the name for its post or album."""
+        row = self.conn.execute(
+            """SELECT items.filename, items.destination, items.sequence, items.title, items.name_source, items.identity,
+                      jobs.download_dir FROM items JOIN jobs ON jobs.id = items.job_id WHERE items.id = ?""",
+            (int(item_id),),
+        ).fetchone()
+        if row is None or not row["destination"]:
+            return {"ok": False, "error": "That file is not in the history."}
+        old = Path(row["destination"])
+        root = Path(row["download_dir"])
+        try:
+            old.resolve().relative_to(root.resolve())
+        except (ValueError, OSError):
+            return {"ok": False, "error": "That file is outside its download folder."}
+        if not old.is_file():
+            return {"ok": False, "error": "The file is no longer where it was saved."}
+        name = clean_filename(new_name, old.suffix)
+        if not name:
+            return {"ok": False, "error": "Type a name."}
+        target = old.with_name(name)
+        if target == old:
+            return {"ok": True, "name": name, "learned": False}
+        if target.exists():
+            return {"ok": False, "error": f"{name} already exists in that folder."}
+        old.rename(target)
+        self.conn.execute("UPDATE items SET filename = ?, destination = ?, updated_at = ? WHERE id = ?",
+                          (name, str(target), time.time(), int(item_id)))
+        self.conn.commit()
+        learned = False
+        if corrections is not None:
+            learned = learn_correction(corrections, row, name)
+        return {"ok": True, "name": name, "learned": learned}
+
+
+_BAD_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_RESERVED = re.compile(r"^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$", re.I)
+
+
+def clean_filename(text: str, extension: str) -> str:
+    """A Windows-safe file name that keeps the file's extension."""
+    name = _BAD_CHARS.sub("-", " ".join(str(text or "").split())).strip().rstrip(". ")
+    if not name:
+        return ""
+    if extension and not name.lower().endswith(extension.lower()):
+        name += extension
+    if _RESERVED.match(name):
+        name = f"_{name}"
+    return name[:200]
+
+
+_SOURCE_CONTEXT = {  # the name came from ... so the correction belongs to ...
+    "caption": "post", "post title": "post", "forum post": "post", "tweet": "post", "post description": "post",
+    "album title": "album", "gallery/creator name": "profile", "thread title": "thread",
+}
+
+
+def strip_number(stem: str, sequence: int) -> str:
+    """"Beach Day-004" -> "Beach Day"; "004_Beach Day" -> "Beach Day" (only this file's own number)."""
+    if sequence > 0:
+        for pattern in (rf"[-_ ]0*{sequence}$", rf"^0*{sequence}[-_ ]"):
+            stem = re.sub(pattern, "", stem)
+    return stem.strip(" -_.")
+
+
+def learn_correction(path: Path, row, new_name: str) -> bool:
+    """Write {"context", "title", "use"} so the next files with this title from the same post,
+    album or thread get your name. Nothing is learned without such a place."""
+    try:
+        identity = json.loads(row["identity"] or "{}")
+    except ValueError:
+        identity = {}
+    contexts = identity.get("context") if isinstance(identity, dict) else None
+    title = str(row["title"] or "")
+    if not isinstance(contexts, dict) or not contexts or not title:
+        return False
+    kind = _SOURCE_CONTEXT.get(str(row["name_source"] or "").split(" (")[0], "")
+    for candidate in (kind, "post", "album", "thread", "profile"):
+        if candidate and contexts.get(candidate):
+            context = str(contexts[candidate])
+            break
+    else:
+        return False
+    use = strip_number(Path(new_name).stem, int(row["sequence"] or 0))
+    if not use or use.casefold() == title.casefold():
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"context": context, "title": title, "use": use, "at": round(time.time())},
+                                ensure_ascii=False) + "\n")
+    return True
+
+
+def read_corrections(path: Path) -> list[dict]:
+    """The names NexDrop learned, newest rule per place and title."""
+    rules: dict[tuple[str, str], dict] = {}
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and row.get("context") and row.get("title"):
+                key = (str(row["context"]), str(row["title"]).casefold())
+                if row.get("removed"):
+                    rules.pop(key, None)
+                else:
+                    rules[key] = {"context": row["context"], "title": row["title"], "use": row.get("use", "")}
+    return list(rules.values())
+
+
 def main() -> None:
     if len(sys.argv) < 3:
         raise SystemExit("usage: job_store.py recover|search|locate <jobs.sqlite> [item id]")
@@ -233,6 +398,36 @@ def main() -> None:
         query = query if isinstance(query, dict) else {}
         print(json.dumps(store.search(str(query.get("text") or ""), str(query.get("host") or ""),
                                       str(query.get("status") or "completed"), int(query.get("limit") or 200)), ensure_ascii=False))
+    elif sys.argv[1] == "rename":
+        # {"id": item id, "name": new name, "corrections": path or ""} as one JSON line on stdin
+        try:
+            query = json.loads(sys.stdin.readline() or "{}")
+        except json.JSONDecodeError:
+            query = {}
+        query = query if isinstance(query, dict) else {}
+        corrections = Path(query["corrections"]) if query.get("corrections") else None
+        try:
+            result = store.rename(int(query.get("id") or 0), str(query.get("name") or ""), corrections)
+        except OSError as error:
+            result = {"ok": False, "error": f"Could not rename: {error.strerror or error}"}
+        print(json.dumps(result, ensure_ascii=False))
+    elif sys.argv[1] in ("corrections-list", "corrections-remove", "corrections-clear"):
+        # argv[3] is the corrections file; a removal arrives as {"context", "title"} on stdin
+        path = Path(sys.argv[3]) if len(sys.argv) > 3 else None
+        if path is None:
+            raise SystemExit("usage: job_store.py corrections-list <jobs.sqlite> <corrections.jsonl>")
+        if sys.argv[1] == "corrections-clear" and path.is_file():
+            path.write_text("", encoding="utf-8")
+        elif sys.argv[1] == "corrections-remove":
+            try:
+                query = json.loads(sys.stdin.readline() or "{}")
+            except json.JSONDecodeError:
+                query = {}
+            if isinstance(query, dict) and query.get("context") and query.get("title"):
+                with path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps({"context": str(query["context"]), "title": str(query["title"]), "removed": True},
+                                            ensure_ascii=False) + "\n")
+        print(json.dumps({"ok": True, "rules": read_corrections(path)}, ensure_ascii=False))
     elif sys.argv[1] == "locate":
         print(json.dumps(store.locate(int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3].isdigit() else 0), ensure_ascii=False))
     else:

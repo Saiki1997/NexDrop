@@ -86,7 +86,8 @@ class BlueskyCrawler(Crawler):
     def _post(self, scrape_item: ScrapeItem, post: PostView) -> None:
         scrape_item.setup_as_post(self.create_title(f"@{post.author.handle}"))
         scrape_item.uploaded_at = date = self.parse_iso_date(post.record["createdAt"])
-        scrape_item.append_folders(self.create_separate_post_title(None, post.id, date))
+        text = post.record.get("text") if isinstance(post.record, dict) else None  # NEXDROP patch: caption for smart naming
+        scrape_item.append_folders(self.create_separate_post_title(None, post.id, date, caption=text))
         self.create_eager_task(self.write_metadata(scrape_item, f"post {post.id}", post))
 
         for media in _extract_media(post.record):

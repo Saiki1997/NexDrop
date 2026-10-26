@@ -1,0 +1,58 @@
+"""Second held-out set: written after the fixes the first held-out run led to, and reported as it
+first ran (no changes to the engine were made for it). Same format as naming_dataset.py.
+"""
+
+from __future__ import annotations
+
+from naming_dataset import FORUM, ORIGINAL, SOCIAL, case, page
+
+CASES = [
+    case("p-01", "hash image", "5a4b3c2d1e.jpg", "Cherry Blossom Walk",
+         naming={"thread": "Hana", "caption": "Cherry blossom walk 🌸🌸", "post_id": "2001", **FORUM}),
+    case("p-02", "hash video", "clip_0098123.mp4", ("Night Market", "Night Market Vibes"),
+         naming={"profile": "@hana", "caption": "night market vibes 🏮 #taipei #travel #food", "post_id": "2002", **SOCIAL},
+         note="'vibes' is filler; either name is fine"),
+    case("p-03", "forum post", "9z8y7x6w.jpg", "Hana",
+         naming={"thread": "Hana", "caption": "Here are the links", "post_id": "2003", **FORUM},
+         wrong=["the links", "Here are the links"]),
+    case("p-04", "forum post", "1q2w3e4r.jpg", "Hana",
+         naming={"thread": "Hana", "caption": "Credit to the original uploader", "post_id": "2004", **FORUM},
+         wrong=["Credit to the original uploader"]),
+    case("p-05", "forum post", "5t6y7u8i.jpg", "Kimono Festival",
+         naming={"thread": "Hana", "caption": "Kimono Festival [32 photos]", "post_id": "2005", **FORUM}),
+    case("p-06", "cross-domain", "0o9i8u7y.jpg", "Kimono Festival",
+         naming={"thread": "Hana", "caption": "Kimono Festival [32 photos]", "post_id": "2005", **FORUM, "album": "hana_0523"},
+         page=page("https://cyberdrop.cr/f/0o9i8u7y", og_title="0o9i8u7y.jpg", og_site_name="Cyberdrop")),
+    case("p-07", "cross-domain", "6t5r4e3w.mp4", "Hana",
+         naming={"thread": "Hana", "caption": "", "post_id": "2006", **FORUM, "album": "Videos"},
+         page=page("https://bunkr.cr/v/6t5r4e3w", og_title="Watch 6t5r4e3w.mp4 | Bunkr")),
+    case("p-08", "cross-domain", "Festival Highlights.mp4", ORIGINAL,
+         naming={"thread": "Hana", "caption": "Kimono Festival", "post_id": "2007", **FORUM}),
+    case("p-09", "social caption", "GqR12oMK6QQrs5p.jpg", "New Hair",
+         naming={"profile": "@hana", "caption": "new hair, who dis? 💇‍♀️", "post_id": "2008", **SOCIAL}),
+    case("p-10", "social caption", "GrS23pNL7RRst6q.jpg", "@hana",
+         naming={"profile": "@hana", "caption": "Turn on notifications so you never miss a post!", "post_id": "2009", **SOCIAL},
+         wrong=["Turn on notifications so you never miss a post"]),
+    case("p-11", "social caption", "7456789012.mp4", "Matcha Latte at Home",
+         naming={"profile": "@hana", "post_title": "matcha latte at home 🍵 #matcha #latte #homecafe", "post_id": "7456789012"}),
+    case("p-12", "per-file title", "ffFF66.jpg", "Temple Gate",
+         naming={"album": "Kyoto", "media_title": "Temple gate"}, v2_only=["media_title"]),
+    case("p-13", "per-file title", "ggGG77.jpg", "Kyoto",
+         naming={"album": "Kyoto", "media_title": "20240405_101112"}, v2_only=["media_title"]),
+    case("p-14", "misleading page", "hhHH88.jpg", "Kyoto",
+         naming={"album": "Kyoto"}, page=page("https://ibb.co/hhHH88", og_title="ImgBB — Upload Image — Free Image Hosting")),
+    case("p-15", "misleading page", "iiII99.jpg", "Kyoto",
+         naming={"album": "Kyoto"}, page=page("https://host.example/i/iiII99", og_title="Sign in to continue")),
+    case("p-16", "missing metadata", "jjJJ00.jpg", ORIGINAL, naming={"album": "Images"}),
+    case("p-17", "missing metadata", "kkKK11.mp4", ORIGINAL,
+         page=page("https://host.example/v/kkKK11", og_title="Video", og_site_name="Host")),
+    case("p-18", "original name", "Hana_Kyoto_Trip_Day2.jpg", ORIGINAL, naming={"album": "Kyoto"}),
+    case("p-19", "original name", "tea-ceremony.mp4", ORIGINAL,
+         naming={"profile": "@hana", "caption": "So peaceful", "post_id": "2010", **SOCIAL}),
+    case("p-20", "conflicting", "llLL22.jpg", "Bamboo Forest",
+         naming={"album": "Kyoto", "caption": "Bamboo forest", "post_id": "2011", **SOCIAL, "profile": "@hana"},
+         page=page("https://bunkr.cr/f/llLL22", og_title="llLL22.jpg - Bunkr")),
+    case("p-21", "conflicting", "mmMM33.jpg", "Kyoto",
+         naming={"album": "Kyoto", "profile": "@hana", "description": "Tokyo based. Business inquiries: hana@example.com"},
+         wrong=["Tokyo based"]),
+]

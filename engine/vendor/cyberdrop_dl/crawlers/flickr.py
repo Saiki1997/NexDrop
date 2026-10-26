@@ -78,6 +78,8 @@ class FlickrCrawler(Crawler):
             source.suffix,
             custom_filename=filename,
             metadata=photo,
+            media_title=name if title else None,  # NEXDROP patch (smart naming V2)
+            media_caption=_content(photo.get("description")),
         )
 
     async def _get_source(self, photo: dict[str, Any]) -> AbsoluteHttpURL:
@@ -151,3 +153,10 @@ def _parse_resolution(stream_name: str) -> Resolution:
         return Resolution.parse(stream_name)
     except ValueError:
         return Resolution.unknown()
+
+
+def _content(value: object) -> str | None:
+    """NEXDROP patch: Flickr wraps text as {"_content": ...}."""
+    if isinstance(value, dict):
+        value = value.get("_content")
+    return value if isinstance(value, str) else None

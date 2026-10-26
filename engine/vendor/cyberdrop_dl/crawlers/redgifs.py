@@ -148,7 +148,8 @@ class RedGifsCrawler(Crawler):
         src = self.parse_url(gif.hd or gif.sd)
         scrape_item.uploaded_at = gif.create_date
         filename, ext = self.get_filename_and_ext(src.name)
-        await self.handle_file(src, scrape_item, filename, ext, metadata=gif)
+        # NEXDROP patch (smart naming V2): the gif's own title names the file
+        await self.handle_file(src, scrape_item, filename, ext, metadata=gif, media_title=gif.title)
 
 
 def _id(name: str) -> str:
