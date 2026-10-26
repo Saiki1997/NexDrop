@@ -52,6 +52,8 @@ class SmartCase(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        # Registered first, so it runs last: on Windows an open job database or log can't be deleted.
+        self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name).resolve()
         source_order.reset()
         smart_naming.REGISTRY.load(None, self.root)
@@ -63,7 +65,6 @@ class SmartCase(unittest.TestCase):
     def tearDown(self):
         for var, token in reversed(self.tokens):
             var.reset(token)
-        self.tmp.cleanup()
 
     def item(self, url: str) -> ScrapeItem:
         return ScrapeItem(url=URL(url), download_folder=self.root)
