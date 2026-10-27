@@ -198,6 +198,10 @@ svg { stroke: currentColor; stroke-width: 1.6; fill: none; stroke-linecap: round
 .queue-list li.held .queue-open::before { content: "Held · "; color: var(--ash); }
 .queue-list li.parked .queue-open::before { content: "Paused · "; color: var(--ash); }
 .queue-tag { font-size: 11px; color: var(--ash); white-space: nowrap; }
+.bg-job { gap: 8px !important; }
+.bg-job .bg-name { font-weight: 600; max-width: 140px; }
+.bg-job .bg-state { color: var(--ash); font: 400 11.5px var(--font-mono); }
+.bg-job.failed .bg-state { color: var(--rust, #d9826b); }
 .dialog-job { width: min(560px, calc(100vw - 32px)); }
 .dialog-job .field, .dialog-job .switch { margin-bottom: 12px; }
 .dialog-job .dialog-actions + .dialog-actions { margin-top: 10px; }

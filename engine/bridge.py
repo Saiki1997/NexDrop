@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-PORTABLE = ROOT / "appdata"
+PORTABLE = Path(os.environ.get("NEXDROP_APPDATA") or ROOT / "appdata")  # the override is for tests
 PORTABLE.mkdir(parents=True, exist_ok=True)
 # Windows ignores XDG_* and otherwise writes to %APPDATA%\cyberdrop-dl.
 os.environ["CDL_APPDATA_FOLDER"] = str(PORTABLE)
@@ -26,6 +26,11 @@ if _ffmpeg.is_dir():
     os.environ["PATH"] = str(_ffmpeg) + os.pathsep + os.environ.get("PATH", "")
 _template = ROOT / "user-config.yaml"
 _installed = PORTABLE / "config.yaml"
+try:  # 0: the job shown in the window; 1 and up: jobs running beside it, with their own cookies and logs
+    SLOT = max(0, min(8, int(os.environ.get("NEXDROP_SLOT", "0"))))
+except ValueError:
+    SLOT = 0
+ENGINE_COOKIES = PORTABLE / "cookies" / ("engine" if SLOT == 0 else f"engine-{SLOT}")
 
 
 def _config_version(text: str) -> int:
@@ -1043,6 +1048,75 @@ def _install_db_reserve() -> None:
             module.pre_allocate_250mb = pre_allocate_small
 
 
+def _file_lock(path: Path, timeout: float = 60.0):
+    """An OS file lock on `path` (msvcrt on Windows, fcntl elsewhere); released when the process dies."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def held():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(path, "a+b")  # noqa: SIM115
+        deadline = time.monotonic() + timeout
+        locked = False
+        try:
+            while not locked:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = True
+                except OSError:
+                    if time.monotonic() > deadline:
+                        break
+                    time.sleep(0.05)
+            yield locked
+        finally:
+            if locked:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            handle.close()
+
+    return held()
+
+
+def _install_db_open_lock() -> None:
+    """With several jobs at once, two engines can open the database together. Creating or
+    upgrading it is done by one engine at a time; reading and writing afterwards is SQLite's job."""
+    try:
+        from cyberdrop_dl.database._db import Database
+    except Exception:  # noqa: BLE001
+        return
+    original = Database.__aenter__
+
+    async def aenter(self):
+        import asyncio
+
+        lock = _file_lock(PORTABLE / "engine-db.lock")
+        await asyncio.to_thread(lock.__enter__)
+        try:
+            return await original(self)
+        finally:
+            await asyncio.to_thread(lock.__exit__, None, None, None)
+
+    Database.__aenter__ = aenter
+
+
 def _install_progress() -> None:
     """Report progress per file and success only when the engine records a saved file."""
     from contextlib import contextmanager
@@ -1184,7 +1258,7 @@ def _cookie_source(value: object) -> Path | None:
     if not isinstance(value, str) or not value:
         return None
     candidate = Path(value).resolve()
-    allowed = (ROOT / "appdata").resolve()
+    allowed = PORTABLE.resolve()
     try:
         candidate.relative_to(allowed)
     except ValueError:
@@ -1224,7 +1298,7 @@ def _filter_cookies(source: Path | None, mapping: dict, urls: list[str]) -> Path
         files = [source] if source.is_file() else sorted(source.glob("*.txt"))
     keys = [str(key).lower() for key in mapping]
     hosts = {(urlparse(url).hostname or "").lower().removeprefix("www.") for url in urls} - {""}
-    target = PORTABLE / "cookies" / "engine"
+    target = ENGINE_COOKIES
     shutil.rmtree(target, ignore_errors=True)
     target.mkdir(parents=True, exist_ok=True)
     kept_sites: set[str] = set()
@@ -1287,6 +1361,7 @@ def _run() -> int:
     destination.mkdir(parents=True, exist_ok=True)
     _install_progress()
     _install_db_reserve()
+    _install_db_open_lock()
     _install_download_clearance()
     _install_server_slots(_bound_int(payload.get("serverSlots"), 1, 6, 3))
     _install_type_folders(bool(payload.get("typeFolders")))
@@ -1422,6 +1497,13 @@ def _run() -> int:
     if problem:
         emit({"type": "log", "level": "warning", "message": f"The filename template is not used: {problem}."})
     fields["max_children"] = MaxChildren()
+    if SLOT:
+        try:  # the engine clears its CSV logs on start; a second job must not clear the first one's
+            from cyberdrop_dl.config.settings import Logs
+
+            fields["logs"] = Logs(folder=PORTABLE / "logs" / f"job{SLOT}")
+        except Exception:  # noqa: BLE001
+            pass
     try:
         from cyberdrop_dl.config.settings import SubFolders, _SubFoldersInclude
 
@@ -1504,7 +1586,7 @@ def _run() -> int:
             emit({"type": "done", "saved": saved, "completed": len(saved)})
     finally:
         # The filtered cookie copies are sign-ins in plain text; they only exist during the run.
-        shutil.rmtree(PORTABLE / "cookies" / "engine", ignore_errors=True)
+        shutil.rmtree(ENGINE_COOKIES, ignore_errors=True)
         FORUM_PAGE_START.reset(page_start)
         FORUM_PAGE_END.reset(page_end)
         ORDER_MODE.reset(order_token)

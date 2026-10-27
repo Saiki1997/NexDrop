@@ -60,6 +60,7 @@
     flareSolver: { el: "#flare", type: "check", def: true },
     threadDepth: { el: "#thread-depth", type: "int", def: 0, min: 0, max: 3 },
     downloadMode: { el: "#download-mode", type: "text", def: "auto", max: 20 },
+    jobsAtOnce: { el: "#jobs-at-once", type: "int", def: 1, min: 1, max: 4 },
     maxDownloads: { el: "#max-downloads", type: "int", def: 16, min: 1, max: 32 },
     perHost: { el: "#per-host", type: "int", def: 6, min: 1, max: 16 },
     serverSlots: { el: "#server-slots", type: "int", def: 3, min: 1, max: 6 },
@@ -340,17 +341,31 @@
     } else {
       log("phase", job.watchId ? `Checking watched thread: ${job.label}` : `Starting: ${job.label}`);
     }
+    const config = pipelineConfig(job, log);
+    api.startPipeline(config);
+  }
+
+  // Settings for one job's run. With several jobs at once, each gets an equal share of the
+  // download limit and speed cap (3.1 scheduler).
+  function pipelineConfig(job, note) {
     const quiet = quietActive();
     // A job's own speed cap and download mode win over Settings (3.0 job manager).
     const capMB = Number.isFinite(job.speedMB) ? job.speedMB : prefs.speedLimitMB;
-    const speedMB = quiet ? (capMB ? Math.min(capMB, prefs.quietSpeedMB) : prefs.quietSpeedMB) : capMB;
-    if (quiet) log("info", `Quiet hours (${prefs.quietFrom}–${prefs.quietTo}): this run is capped at ${speedMB} MB/s.`);
+    let speedMB = quiet ? (capMB ? Math.min(capMB, prefs.quietSpeedMB) : prefs.quietSpeedMB) : capMB;
+    if (quiet) note("info", `Quiet hours (${prefs.quietFrom}–${prefs.quietTo}): this run is capped at ${speedMB} MB/s.`);
     const mode = job.mode || prefs.downloadMode;
     if (job.folder || job.mode || Number.isFinite(job.speedMB)) {
       const own = [job.folder && `folder ${job.folder}`, job.mode && `${job.mode} mode`, Number.isFinite(job.speedMB) && (job.speedMB ? `${job.speedMB} MB/s cap` : "no speed cap")];
-      log("info", `This job's own settings: ${own.filter(Boolean).join(", ")}.`);
+      note("info", `This job's own settings: ${own.filter(Boolean).join(", ")}.`);
     }
-    api.startPipeline({
+    const limits = fmt.modeLimits(mode, prefs);
+    const share = Math.max(1, prefs.jobsAtOnce || 1);
+    if (share > 1) {
+      limits.maxDownloads = Math.max(2, Math.ceil(limits.maxDownloads / share));
+      if (speedMB) speedMB = Math.max(1, Math.round(speedMB / share));
+    }
+    return {
+      label: job.label || "",
       urls: job.urls,
       unsupported: job.unsupported || [],
       downloadsDir: job.folder || downloadsDir,
@@ -379,7 +394,7 @@
       flareSolver: prefs.flareSolver,
       threadDepth: prefs.threadDepth,
       downloadMode: mode,
-      ...fmt.modeLimits(mode, prefs),
+      ...limits,
       tiktokAudio: prefs.tiktokAudio,
       attempts: prefs.attempts,
       autoRetry: prefs.autoRetry,
@@ -393,7 +408,7 @@
       simpcityGap: prefs.simpcityGap,
       connectionTimeout: prefs.connectionTimeout,
       readTimeout: prefs.readTimeout,
-    });
+    };
   }
 
   // Called when a run ends. Paused runs stay saved for Resume; finished ones start the next job.
@@ -431,6 +446,7 @@
     }
     queue.push(item);
     saveQueue();
+    if (run.running) setTimeout(fillSlots, 300);
     if (!job) {
       urlsBox.value = "";
       autoGrow();
@@ -443,12 +459,159 @@
     if (run.running || !queue.length) return;
     if (!$("#resume").hidden) return; // a paused run waits for Resume, Queue it or Discard first
     if (!force && !scheduleAllows()) return;
-    const index = queue.findIndex((q) => !q.hold);
+    const busy = busySites(); // sites of jobs still running beside the window
+    const index = queue.findIndex((q) => !q.hold && ![...jobSites(q)].some((site) => busy.has(site)));
     if (index < 0) return;
     const [next] = queue.splice(index, 1);
     saveQueue();
     runJob(next.parked ? { ...next, resumed: true } : next);
+    setTimeout(() => fillSlots(force), 1000);
   }
+
+  // ─── jobs at once (3.1) ───────────────────────────────────────────────────
+  // Queued jobs start beside the window's own run, up to "Jobs at once" in total. A job whose
+  // sites overlap a running job's waits, so two jobs never hit the same site together.
+  const bgJobs = new Map(); // slot -> { job, counts, total, bytes, speed, phase, failed }
+
+  function siteKey(url) {
+    try {
+      return new URL(url).hostname.toLowerCase().replace(/^www\./, "").split(".").slice(-2).join(".");
+    } catch {
+      return "";
+    }
+  }
+
+  function jobSites(job) {
+    return new Set([...(job.urls || []), ...(job.unsupported || [])].map(siteKey).filter(Boolean));
+  }
+
+  function busySites() {
+    const sites = new Set();
+    const add = (job) => job && jobSites(job).forEach((site) => sites.add(site));
+    if (run.running) add(activeJob);
+    for (const entry of bgJobs.values()) add(entry.job);
+    return sites;
+  }
+
+  async function fillSlots(force = false) {
+    if (!run.running || (prefs.jobsAtOnce || 1) <= 1) return;
+    if (!force && !scheduleAllows()) return;
+    while (1 + bgJobs.size < (prefs.jobsAtOnce || 1)) {
+      const busy = busySites();
+      const index = queue.findIndex((q) => !q.hold && ![...jobSites(q)].some((site) => busy.has(site)));
+      if (index < 0) return;
+      const [job] = queue.splice(index, 1);
+      saveQueue();
+      const notes = [];
+      const config = pipelineConfig(job, (_level, text) => notes.push(text));
+      if (job.parked && job.doneUrls) config.skipUrls = job.doneUrls;
+      const result = await api.startJob(config).catch((error) => ({ ok: false, error: error.message }));
+      if (!result || !result.ok) {
+        queue.unshift(job);
+        saveQueue();
+        return;
+      }
+      bgJobs.set(result.slot, { job, counts: {}, total: 0, bytes: 0, speed: 0, phase: "Starting", failed: false });
+      log("phase", `Started beside this one: ${job.label}`);
+      renderBgJobs();
+    }
+  }
+
+  function bgEvent(slot, event) {
+    const entry = bgJobs.get(slot);
+    if (!entry) return;
+    switch (event.type) {
+      case "phase":
+        entry.phase = event.message || entry.phase;
+        break;
+      case "files":
+        entry.counts = event.counts || entry.counts;
+        entry.total = event.total || entry.total;
+        if (event.bytes) entry.bytes = event.bytes;
+        entry.speed = event.speed || 0;
+        break;
+      case "log":
+        if (event.level === "error") log("warning", `${entry.job.label}: ${event.message}`);
+        break;
+      case "error":
+        log("error", `${entry.job.label}: ${event.message}`);
+        break;
+      case "finished":
+        entry.done = true;
+        bgFinished(slot, entry, event);
+        return;
+      case "exit":
+        if (!entry.done) bgFinished(slot, entry, { stopped: true, crashed: Boolean(event.code) });
+        return;
+      default:
+        break;
+    }
+    renderBgJobs();
+  }
+
+  function bgFinished(slot, entry, event) {
+    bgJobs.delete(slot);
+    const { job } = entry;
+    if (event.stopped) {
+      // Back at the top of the queue; the engine's history skips what it already saved.
+      if (!queue.some((q) => q.id === job.id)) queue.unshift({ ...job, parked: true });
+      saveQueue();
+      log(event.crashed ? "error" : "info", event.crashed
+        ? `${job.label} stopped unexpectedly. It is back in the queue; its log is in engine\\appdata\\logs\\runs.`
+        : `${job.label} is paused in the queue. It continues where it stopped when its turn comes.`);
+    } else {
+      const result = fmt.finishText(event);
+      log(result.tone === "ok" ? "ok" : "warning", `${job.label}: ${result.message}`);
+      if (job.watchId) watchFinished(job.watchId, event);
+      loadRecent();
+    }
+    renderBgJobs();
+    if (!entry.pausing) setTimeout(() => (run.running ? fillSlots() : startNextInQueue()), 1500);
+  }
+
+  function pauseBgJob(slot) {
+    const entry = bgJobs.get(slot);
+    if (!entry) return;
+    entry.pausing = true;
+    entry.phase = "Pausing";
+    api.stopJob(slot);
+    renderBgJobs();
+  }
+
+  function renderBgJobs() {
+    const box = $("#bg-jobs");
+    const list = $("#bg-list");
+    list.textContent = "";
+    for (const [slot, entry] of bgJobs) {
+      const li = document.createElement("li");
+      li.className = "bg-job";
+      li.classList.toggle("failed", Boolean(entry.counts && entry.counts.failed));
+      const name = document.createElement("span");
+      name.className = "bg-name";
+      name.textContent = entry.job.label;
+      name.title = entry.job.urls.join("\n");
+      const state = document.createElement("span");
+      state.className = "bg-state";
+      const c = entry.counts || {};
+      const parts = [];
+      if (entry.total) parts.push(`${(c.done || 0) + (c.skipped || 0)}/${entry.total}`);
+      if (c.failed) parts.push(`${c.failed} failed`);
+      if (entry.speed) parts.push(fmt.speed(entry.speed));
+      state.textContent = parts.length ? parts.join(" · ") : entry.phase;
+      const pause = document.createElement("button");
+      pause.className = "queue-remove";
+      pause.type = "button";
+      pause.title = `Pause ${entry.job.label}`;
+      pause.setAttribute("aria-label", pause.title);
+      pause.innerHTML = '<svg viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="3" width="3" height="10" rx="1"/><rect x="9" y="3" width="3" height="10" rx="1"/></svg>';
+      pause.disabled = Boolean(entry.pausing);
+      pause.addEventListener("click", () => pauseBgJob(slot));
+      li.append(name, state, pause);
+      list.appendChild(li);
+    }
+    box.hidden = bgJobs.size === 0;
+  }
+  $("#btn-bg-pause").addEventListener("click", () => [...bgJobs.keys()].forEach(pauseBgJob));
 
   function renderQueue() {
     const box = $("#queue");
@@ -903,6 +1066,9 @@
         urlsBox.focus();
         break;
       }
+      case "job-event":
+        bgEvent(event.slot, event.event || {});
+        break;
       case "app-command":
         if (event.command === "pause") stopRun();
         else if (event.command === "check-watches") watches.forEach(checkWatch);

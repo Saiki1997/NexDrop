@@ -43,16 +43,30 @@ from auth_cookies import convert_any  # noqa: E402
 import error_classes  # noqa: E402
 from job_store import JobStore  # noqa: E402
 from scrape_status import classify_scrape_message  # noqa: E402
+from state_lock import RunningMarker, shared_state  # noqa: E402
 import telegram_account  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 ENGINE = ROOT / "engine"
 BRIDGE = ENGINE / "bridge.py"
 VENDOR = ENGINE / "vendor"
-APPDATA = ENGINE / "appdata"
+APPDATA = Path(os.environ.get("NEXDROP_APPDATA") or ENGINE / "appdata")  # the override is for tests
 HISTORY = APPDATA / "completed-urls.json"
 RUNS = APPDATA / "runs.json"
-RUN_COOKIES = APPDATA / "cookies" / "run"
+
+def _slot() -> int:
+    try:
+        return max(0, min(8, int(os.environ.get("NEXDROP_SLOT", "0"))))
+    except ValueError:
+        return 0
+
+
+# 0 is the job shown in the window; 1 and up are jobs running beside it (3.1). Each slot has its
+# own cookie copies and engine logs; history files are shared under a lock.
+SLOT = _slot()
+RUN_COOKIES = APPDATA / "cookies" / ("run" if SLOT == 0 else f"run-{SLOT}")
+ENGINE_COOKIES = APPDATA / "cookies" / ("engine" if SLOT == 0 else f"engine-{SLOT}")
+MARKER = RunningMarker(APPDATA, SLOT)
 MANIFEST = APPDATA / "order-manifest.jsonl"
 FOLDER_REGISTRY = APPDATA / "folder-registry.jsonl"  # smart naming: which collection owns which folder
 CORRECTIONS = APPDATA / "naming-corrections.jsonl"  # smart naming V2: names you changed in History
@@ -136,7 +150,7 @@ def open_run_log(config: dict, urls: list[str]) -> None:
     folder = APPDATA / "logs" / "runs"
     try:
         folder.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S") + (f"-job{SLOT}" if SLOT else "")
         RUN_LOG_PATH = folder / f"{stamp}.log"
         ENGINE_LOG_PATH = folder / f"{stamp}.engine.log"
         NAMING_LOG_PATH = folder / f"{stamp}.naming.log" if config.get("explainNames") else None
@@ -672,7 +686,7 @@ def prepare_cookies(account_folder: str, fallback_files: list[str], account_text
 
 def clear_run_cookies() -> None:
     """Cookie copies are sign-ins in plain text; none stays on disk after a run."""
-    for folder in (RUN_COOKIES, APPDATA / "cookies" / "engine"):
+    for folder in (RUN_COOKIES, ENGINE_COOKIES):
         shutil.rmtree(folder, ignore_errors=True)
 
 
@@ -858,8 +872,8 @@ def maintain_engine_db() -> None:
 
     db = APPDATA / "cyberdrop.db"
     wal = db.with_name(db.name + "-wal")
-    if not db.is_file():
-        return
+    if not db.is_file() or MARKER.others():
+        return  # another job's engine has the database open
     try:
         before = db.stat().st_size + (wal.stat().st_size if wal.is_file() else 0)
         if before < 32 * 1024 * 1024:
@@ -1270,7 +1284,8 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
     job_id = None
     try:
         store = JobStore(APPDATA / "jobs.sqlite")
-        recovered = store.recover()
+        # Jobs still marked running belong to a crashed session, unless another job is running now
+        recovered = [] if MARKER.others() else store.recover()
         if recovered:
             log("warning", f"Marked {len(recovered)} unfinished job(s) as interrupted. They were not started again.")
         job_id = store.start_job(urls, str(folder))
@@ -1661,13 +1676,14 @@ def _finish(urls, folder, saved_urls, failed, skipped_urls, started, *, stopped,
             FILES.update(url, state="skipped", reason="not downloaded", speed=0)
     FILES.flush()
     try:
-        history = load_history()
-        history.update(saved_urls)
-        history.update(skipped_urls)
-        if history:
-            save_history(history)
-        if urls:
-            record_runs(urls, len(saved_urls), len(failed), len(skipped_urls), stopped)
+        with shared_state(APPDATA):  # another job may finish at the same moment
+            history = load_history()
+            history.update(saved_urls)
+            history.update(skipped_urls)
+            if history:
+                save_history(history)
+            if urls:
+                record_runs(urls, len(saved_urls), len(failed), len(skipped_urls), stopped)
     except OSError as error:
         log("warning", f"Could not save history: {error}")
     if store and job_id:
@@ -1708,7 +1724,8 @@ def main() -> int:
     if not isinstance(config, dict):
         config = {}
     threading.Thread(target=_listen_for_stop, daemon=True).start()
-    return run(config)
+    with MARKER:
+        return run(config)
 
 
 if __name__ == "__main__":

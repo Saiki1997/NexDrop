@@ -5,6 +5,8 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("api", {
   startPipeline: (config) => ipcRenderer.invoke("start-pipeline", config),
   stopPipeline: () => ipcRenderer.invoke("stop-pipeline"),
+  startJob: (config) => ipcRenderer.invoke("start-job", config),
+  stopJob: (slot) => ipcRenderer.invoke("stop-job", slot),
   openPath: (targetPath) => ipcRenderer.invoke("open-path", targetPath),
   openLogs: (which) => ipcRenderer.invoke("open-logs", which),
   openLogFile: (file) => ipcRenderer.invoke("open-log-file", file),

@@ -75,6 +75,11 @@
       <button class="btn btn-quiet btn-small" id="btn-park" type="button" title="Keep it paused in the queue and start the next job">Queue it</button>
       <button class="btn btn-quiet btn-small" id="btn-discard" type="button">Discard</button>
     </div>
+    <div class="queue" id="bg-jobs" hidden>
+      <span class="queue-title">Also running</span>
+      <ol class="queue-list" id="bg-list"></ol>
+      <button class="btn btn-quiet btn-small" id="btn-bg-pause" type="button" title="Pause every job running beside this one">Pause all</button>
+    </div>
     <div class="queue" id="queue" hidden>
       <span class="queue-title">Up next <span id="queue-count"></span></span>
       <ol class="queue-list" id="queue-list"></ol>
@@ -289,6 +294,16 @@
       </section>
 
       <section class="pane" data-pane="network" hidden>
+        <label class="field">
+          <span class="field-label">Jobs at once</span>
+          <select id="jobs-at-once" class="select">
+            <option value="1">1 (one after another)</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+          </select>
+          <small class="field-help">Queued jobs start beside the running one, up to this many in total. The download limits and speed cap are shared equally between them, and two jobs from the same site never run at the same time.</small>
+        </label>
         <label class="field">
           <span class="field-label">Download mode</span>
           <select id="download-mode" class="select">

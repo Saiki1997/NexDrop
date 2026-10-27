@@ -406,12 +406,13 @@ function taskbar(event) {
   }
 }
 
-function notifyFinished(event) {
+function notifyFinished(event, background = false, label = progress.label) {
+  if (background && mainWindow.isFocused()) return;
   const parts = [`${event.saved || 0} saved`];
   if (event.skipped) parts.push(`${event.skipped} already saved`);
   if (event.failed) parts.push(`${event.failed} failed`);
   const title = event.stopped ? "Download paused" : event.failed ? "Download finished with errors" : "Download finished";
-  const body = `${progress.label ? `${progress.label}: ` : ""}${parts.join(", ")}.`;
+  const body = `${label ? `${label}: ` : ""}${parts.join(", ")}.`;
   if (!mainWindow.isFocused()) mainWindow.flashFrame(true);
   if (Notification.isSupported() && !mainWindow.isFocused()) {
     const note = new Notification({ title, body, icon: appIcon(), silent: false });
@@ -422,15 +423,19 @@ function notifyFinished(event) {
 
 // ─── download session ───────────────────────────────────────────────────────
 
-let current = null; // { id, child, stopTimer }
+// Slot 0 is the job shown in the window; slots 1..MAX_BACKGROUND run other queued jobs beside it (3.1).
+const MAX_BACKGROUND = 3;
+const sessions = new Map(); // slot -> { id, slot, child, stopTimer }
 let sessionCounter = 0;
+let current = null; // the window's own run (slot 0)
 
-function killSession(force) {
-  const run = current;
+function killSession(force, slot = 0) {
+  const run = sessions.get(slot);
   if (!run) return;
   clearTimeout(run.stopTimer);
   if (force) {
-    current = null;
+    sessions.delete(slot);
+    if (slot === 0) current = null;
     killTree(run.child.pid, true);
     return;
   }
@@ -441,8 +446,13 @@ function killSession(force) {
     /* pipe already closed */
   }
   run.stopTimer = setTimeout(() => {
-    if (current === run && run.child.exitCode === null) killTree(run.child.pid, true);
+    if (sessions.get(slot) === run && run.child.exitCode === null) killTree(run.child.pid, true);
   }, STOP_GRACE_MS);
+}
+
+function freeSlot() {
+  for (let slot = 1; slot <= MAX_BACKGROUND; slot += 1) if (!sessions.has(slot)) return slot;
+  return 0;
 }
 
 function accountVault() {
@@ -458,8 +468,8 @@ function accountVault() {
   );
 }
 
-function startSession(config) {
-  if (current) killSession(true);
+function startSession(config, slot = 0) {
+  if (sessions.has(slot)) killSession(true, slot);
   const script = path.join(ROOT, "desktop", "cairn_session.py");
   if (!fs.existsSync(script)) {
     sendLog("desktop/cairn_session.py is missing. Keep the desktop folder beside NexDrop.exe.", "error");
@@ -476,14 +486,30 @@ function startSession(config) {
       PYTHONIOENCODING: "utf-8",
       NEXDROP_PYTHON: PYTHON,
       NEXDROP_FLARE_MANAGED: flare.child || flare.state === "ready" ? "1" : "0",
+      NEXDROP_SLOT: String(slot),
     },
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
     detached: process.platform !== "win32",
   });
-  const run = { id, child, stopTimer: null };
-  current = run;
-  const live = () => current === run;
+  const run = { id, slot, child, stopTimer: null };
+  sessions.set(slot, run);
+  if (slot === 0) current = run;
+  const live = () => sessions.get(slot) === run;
+  // A job running beside the window's own sends a summary of its events, tagged with its slot.
+  const deliver = (event) => {
+    if (slot === 0) {
+      taskbar(event);
+      send(event);
+      return;
+    }
+    if (event.type === "files") {
+      send({ type: "job-event", slot, event: { type: "files", counts: event.counts, total: event.total, bytes: event.bytes, speed: event.speed } });
+    } else if (["run", "phase", "finished", "error", "exit"].includes(event.type) || (event.type === "log" && event.level !== "info")) {
+      send({ type: "job-event", slot, event });
+      if (event.type === "finished") notifyFinished(event, true, String((config && config.label) || "").slice(0, 80));
+    }
+  };
 
   // UTF-8 safe line splitting: a multi-byte character can straddle two chunks.
   const decoder = new StringDecoder("utf8");
@@ -498,9 +524,8 @@ function startSession(config) {
       if (!trimmed) continue;
       try {
         const event = JSON.parse(trimmed);
-        if (event.type === "log" && event.level !== "info") logFile.write(`[${event.level}] ${event.message}`);
-        taskbar(event);
-        send(event);
+        if (event.type === "log" && event.level !== "info") logFile.write(`${slot ? `[job ${slot}] ` : ""}[${event.level}] ${event.message}`);
+        deliver(event);
       } catch {
         sendLog(trimmed.slice(0, 300), "warning");
       }
@@ -514,7 +539,7 @@ function startSession(config) {
     if (!text || !live()) return;
     if (text.includes("DeprecationWarning")) return;
     logFile.write(`[stderr] ${text.slice(0, 2000)}`);
-    send({ type: "log", level: "error", message: text.slice(0, 500) });
+    deliver({ type: "log", level: "error", message: text.slice(0, 500) });
   });
   let reported = false;
   const reportExit = (code) => {
@@ -522,11 +547,12 @@ function startSession(config) {
     reported = true;
     clearTimeout(run.stopTimer);
     if (!live()) return;
-    current = null;
-    send({ type: "exit", code });
+    sessions.delete(slot);
+    if (slot === 0) current = null;
+    deliver({ type: "exit", code });
   };
   child.on("error", (error) => {
-    if (live()) sendLog(`Could not start the bundled Python (${error.message}).`, "error");
+    if (live()) deliver({ type: "log", level: "error", message: `Could not start the bundled Python (${error.message}).` });
     reportExit(1);
   });
   child.on("close", (code) => reportExit(code));
@@ -566,6 +592,21 @@ ipcMain.handle("start-pipeline", (_event, config) => {
 
 ipcMain.handle("stop-pipeline", () => {
   killSession(false);
+  return { ok: true };
+});
+
+// Jobs at once (3.1): a queued job started beside the window's own run.
+ipcMain.handle("start-job", (_event, config) => {
+  const slot = freeSlot();
+  if (!slot) return { ok: false, error: "No free job slot." };
+  startSession(config && typeof config === "object" ? config : {}, slot);
+  return { ok: true, slot };
+});
+
+ipcMain.handle("stop-job", (_event, slot) => {
+  const n = Number(slot);
+  if (!Number.isInteger(n) || n < 1 || n > MAX_BACKGROUND) return { ok: false };
+  killSession(false, n);
   return { ok: true };
 });
 
@@ -807,7 +848,7 @@ ipcMain.handle("backup-create", async () => {
 
 ipcMain.handle("backup-restore", async () => {
   if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
-  if (current) return { ok: false, error: "Pause or finish the running download before restoring." };
+  if (sessions.size) return { ok: false, error: "Pause or finish the running downloads before restoring." };
   const picked = await dialog.showOpenDialog(mainWindow, {
     title: "Restore a NexDrop backup",
     properties: ["openFile"],
@@ -1309,7 +1350,7 @@ const updater = createUpdater({
   version: app.getVersion(),
   send,
   log: (message) => sendLog(message, "info"),
-  isBusy: () => Boolean(current),
+  isBusy: () => sessions.size > 0,
   quit: () => { quitting = true; app.quit(); },
 });
 const UPDATE_EVERY_MS = 12 * 3600 * 1000;
@@ -1483,24 +1524,30 @@ if (!app.requestSingleInstanceLock()) {
 let quitWaiting = false;
 app.on("before-quit", (event) => {
   quitting = true;
-  if (current && current.child.exitCode === null && !quitWaiting) {
+  const live = [...sessions.values()].filter((run) => run.child.exitCode === null);
+  if (live.length && !quitWaiting) {
     event.preventDefault();
     quitWaiting = true;
-    const run = current;
-    killSession(false);
+    for (const run of live) killSession(false, run.slot);
+    let left = live.length;
     const done = () => {
       clearTimeout(timer);
       app.quit();
     };
     const timer = setTimeout(() => {
-      if (run.child.exitCode === null) killTree(run.child.pid, true);
+      for (const run of live) if (run.child.exitCode === null) killTree(run.child.pid, true);
       done();
     }, STOP_GRACE_MS + 500);
-    run.child.once("close", done);
+    for (const run of live) {
+      run.child.once("close", () => {
+        left -= 1;
+        if (!left) done();
+      });
+    }
     return;
   }
   clearInterval(clip.timer);
-  killSession(true);
+  for (const slot of [...sessions.keys()]) killSession(true, slot);
   stopFlare();
   stopTelegramLogin();
   logFile.close();

@@ -5,7 +5,6 @@ local test server: a file split into parts, a server that answers a part wrongly
 one stream), a part that drops half way (resumes from its own size), and splitting turned off.
 """
 
-import json
 import os
 import sys
 import tempfile
