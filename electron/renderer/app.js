@@ -99,6 +99,13 @@
     },
     scheduleStop: { el: "#schedule-stop", type: "check", def: false },
     retryLater: { el: "#retry-later", type: "int", def: 0, min: 0, max: 720 },
+    doneNotify: { el: "#done-notify", type: "check", def: true },
+    doneOpenFolder: { el: "#done-open-folder", type: "check", def: false },
+    doneVerify: { el: "#done-verify", type: "check", def: false },
+    doneManifest: { el: "#done-manifest", type: "check", def: false },
+    doneLibrary: { el: "#done-library", type: "check", def: false },
+    doneOrganize: { el: "#done-organize", type: "check", def: false },
+    doneOrganizeFolders: { el: "#done-organize-folders", type: "text", def: "{creator}/{album}", max: 200 },
     quietOn: { el: "#quiet-on", type: "check", def: false },
     quietFrom: { el: "#quiet-from", type: "time", def: "18:00" },
     quietTo: { el: "#quiet-to", type: "time", def: "23:00" },
@@ -431,6 +438,14 @@
       retryMaxDelay: prefs.retryMaxDelay,
       retryAfterCap: prefs.retryAfterCap,
       siteLimits: fmt.parseSiteLimits(prefs.siteLimits).limits,
+      after: {
+        notify: prefs.doneNotify !== false,
+        openFolder: Boolean(prefs.doneOpenFolder) && !job.watchId, // a watched link's check doesn't open windows
+        verify: Boolean(prefs.doneVerify),
+        manifest: Boolean(prefs.doneManifest),
+        library: Boolean(prefs.doneLibrary),
+        organize: prefs.doneOrganize && prefs.doneOrganizeFolders ? { folders: prefs.doneOrganizeFolders } : null,
+      },
     };
   }
 
@@ -1398,6 +1413,14 @@
 
   setInterval(scheduleTick, WATCH_TICK_MS);
 
+  $("#btn-broken-report").addEventListener("click", async () => {
+    setStatus("#broken-status", "Writing the report…", null);
+    const result = await api.brokenReport({ days: Number($("#health-days").value) || 30, links: $("#broken-links").checked });
+    if (result?.canceled) return setStatus("#broken-status", "", null);
+    if (!result?.ok) return setStatus("#broken-status", result?.error || "The report could not be written.", "bad");
+    setStatus("#broken-status", result.failed ? `Saved: ${result.failed} failed file(s) on ${result.groups} site/reason line(s). Read it before you share it.` : "Saved. There were no failed files in this period.", "ok");
+  });
+
   function setDays(days) {
     PREF_FIELDS.scheduleDays.set(days);
     savePrefsSoon();
@@ -1648,6 +1671,9 @@
       }
       case "job-event":
         bgEvent(event.slot, event.event || {});
+        break;
+      case "after":
+        log(event.level === "ok" ? "ok" : event.level === "warning" ? "warning" : "info", event.slot && event.label ? `${event.label}: ${event.message}` : event.message);
         break;
       case "app-command":
         if (event.command === "pause") stopRun();

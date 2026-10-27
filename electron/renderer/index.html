@@ -372,6 +372,16 @@
           <p class="status-line" id="rules-preview" role="status"></p>
           <small class="field-help">Rules are checked in order. A skip rule wins over the others; when any "only download" rule is on, a file must fit one of them. The first folder rule that fits is used, and the file keeps its album folders. Size is known once the server answers, so size can only skip or limit downloads.</small>
         </div>
+        <div class="field">
+          <span class="field-label">When a job finishes</span>
+          <label class="switch"><input type="checkbox" id="done-notify" checked><span class="switch-text">Show a notification<small>Only when NEXDROP is not the window in front.</small></span></label>
+          <label class="switch"><input type="checkbox" id="done-open-folder"><span class="switch-text">Open the download folder<small>When the job saved something. Not for watched-link checks.</small></span></label>
+          <label class="switch"><input type="checkbox" id="done-verify"><span class="switch-text">Verify the files<small>Checks that each saved file is there, has the size the server sent, and is not a web page saved under a media name. Sites don't publish checksums, so nothing is compared against one.</small></span></label>
+          <label class="switch"><input type="checkbox" id="done-manifest"><span class="switch-text">Save a manifest<small>A JSON file beside the downloads with each file's source link (without query strings), name, size, SHA-256, status, creator and album, and the time. No sign-ins or cookies.</small></span></label>
+          <label class="switch"><input type="checkbox" id="done-library"><span class="switch-text">Add the files to the Library, with thumbnails<small>Indexes the new files and makes thumbnails in the background, up to ten minutes per job.</small></span></label>
+          <label class="switch"><input type="checkbox" id="done-organize"><span class="switch-text">Organize the new files<small>Moves this job's files into folders by the pattern below, inside the job's download folder. Nothing is overwritten; a name clash leaves the file in place, and Library > Storage can undo it.</small></span></label>
+          <label class="field time-row" data-needs="done-organize"><span class="field-label">Folder pattern</span><input type="text" id="done-organize-folders" value="{creator}/{album}" spellcheck="false" autocomplete="off" maxlength="200"><small class="field-help">{creator} {album} {site} {type} {year} {month} {date} {title}</small></label>
+        </div>
         <label class="switch"><input type="checkbox" id="type-folders"><span class="switch-text">Sort into Images, Videos, Audio and Other folders<small>New files only. Files from earlier runs stay where they are.</small></span></label>
         <label class="switch"><input type="checkbox" id="auto-retry" checked><span class="switch-text">Retry temporary errors automatically<small>Files that fail because a server is busy or times out are tried once more, 45 seconds after the run.</small></span></label>
         <label class="field">
@@ -587,6 +597,15 @@
         </div>
         <p class="pane-intro">How downloads from each site went, from your own history on this PC. Nothing is sent anywhere.</p>
         <ul class="health-list" id="health-list"></ul>
+        <div class="field">
+          <span class="field-label">Broken-link report</span>
+          <div class="field-row">
+            <label class="check"><input type="checkbox" id="broken-links"> Include link patterns (ids replaced by {id})</label>
+            <button class="btn btn-quiet btn-small" id="btn-broken-report" type="button">Save report…</button>
+          </div>
+          <small class="field-help">Failed files of the chosen period, grouped by site and reason, as a Markdown file you can attach to a GitHub issue. No sign-ins, cookies, file names or folders, and nothing is uploaded.</small>
+          <p class="status-line" id="broken-status" role="status"></p>
+        </div>
         <div class="divider"></div>
         <p class="pane-intro">NexDrop uses its bundled download engine. Links that no site handler accepts are logged here so you can see what is missing.</p>
         <p class="status-line" id="source-status">Not checked yet.</p>

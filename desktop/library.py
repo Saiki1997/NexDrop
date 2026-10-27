@@ -82,7 +82,7 @@ CREATE INDEX IF NOT EXISTS files_history ON files (history_id);
 CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
-SKIP_SUFFIXES = (".part", ".nxmeta", ".tmp", ".crdownload", ".partial")
+SKIP_SUFFIXES = (".part", ".nxmeta", ".tmp", ".crdownload", ".partial", ".nexdrop.json")  # .nexdrop.json: job manifests
 QUICK_BLOCK = 64 * 1024
 WORK_KINDS = ("image", "video", "audio")
 SIMILAR_IMAGE = 6  # of 64 bits: re-encoded or resized copies are usually 0-4 apart
@@ -518,6 +518,10 @@ def _filters(query: dict) -> tuple[str, list]:
     if query.get("minWidth"):
         where.append("width >= ?")
         args.append(int(query["minWidth"]))
+    paths = [str(p) for p in query.get("paths") or [] if p][:5000] if isinstance(query.get("paths"), list) else []
+    if isinstance(query.get("paths"), list):  # one job's files (completion action "organize"); [] matches nothing
+        where.append(f"path IN ({','.join('?' * len(paths))})" if paths else "0")
+        args += paths
     return (" WHERE " + " AND ".join(where)) if where else "", args
 
 

@@ -127,6 +127,9 @@ class Library(unittest.TestCase):
         self.assertEqual(sizes, sorted(sizes, reverse=True))
         self.assertEqual([i["name"] for i in library.query(self.conn, {"text": "holiday"})["items"]].sort(), None)
         self.assertEqual(library.query(self.conn, {"creator": "alice"})["total"], 4)
+        one = result["items"][0]["path"]
+        self.assertEqual([i["path"] for i in library.query(self.conn, {"paths": [one]})["items"]], [one])  # one job's files
+        self.assertEqual(library.query(self.conn, {"paths": []})["total"], 0)
         grouped = library.query(self.conn, {"group": "host"})
         self.assertIn("site-a.test", [g["key"] for g in grouped["groups"]])
         facets = library.facets(self.conn)
@@ -166,7 +169,7 @@ class MovedFiles(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             (base / "d").mkdir()
-            for name in ("a.mp4.part", "a.mp4.part.seg1", "a.mp4.part.nxmeta", "b.jpg"):
+            for name in ("a.mp4.part", "a.mp4.part.seg1", "a.mp4.part.nxmeta", "NexDrop manifest job 1.nexdrop.json", "b.jpg"):
                 (base / "d" / name).write_bytes(b"x")
             conn = library.connect(base / "lib.sqlite")
             library.scan_roots(conn, [str(base / "d")])

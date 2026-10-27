@@ -1819,6 +1819,7 @@ def _finish(urls, folder, saved_urls, failed, skipped_urls, started, *, stopped,
         "bytes": FILES.bytes,
         "seconds": round(time.monotonic() - started, 1),
         "emptyReason": empty_reason,
+        "jobId": job_id or None,
     })
     global RUN_LOG
     if RUN_LOG is not None:

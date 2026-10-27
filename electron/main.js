@@ -410,7 +410,6 @@ function taskbar(event) {
   } else if (event.type === "finished") {
     mainWindow.setProgressBar(-1);
     setTrayTip("");
-    notifyFinished(event);
   }
 }
 
@@ -533,6 +532,11 @@ function startSession(config, slot = 0) {
   const live = () => sessions.get(slot) === run;
   // A job running beside the window's own sends a summary of its events, tagged with its slot.
   const deliver = (event) => {
+    if (event.type === "finished") {
+      const after = (config && config.after) || {};
+      if (after.notify !== false) notifyFinished(event, slot !== 0, slot === 0 ? progress.label : String((config && config.label) || "").slice(0, 80));
+      afterRun(after, event, slot, config).catch((error) => logFile.write(`[after] ${error.message}`));
+    }
     if (slot === 0) {
       taskbar(event);
       send(event);
@@ -542,7 +546,6 @@ function startSession(config, slot = 0) {
       send({ type: "job-event", slot, event: { type: "files", counts: event.counts, total: event.total, bytes: event.bytes, speed: event.speed } });
     } else if (["run", "phase", "finished", "error", "exit", "duplicates"].includes(event.type) || (event.type === "log" && event.level !== "info")) {
       send({ type: "job-event", slot, event });
-      if (event.type === "finished") notifyFinished(event, true, String((config && config.label) || "").slice(0, 80));
     }
   };
 
@@ -1783,6 +1786,90 @@ ipcMain.handle("library-action", async (_event, body) => {
 // so what is moved is exactly what was shown.
 const ORGANIZE_JOURNAL = path.join(APPDATA, "organize-journal.jsonl");
 let organizePlan = null;
+
+// ─── when a job finishes (3.1 completion actions, Settings > Downloads) ──────
+// Each action is off unless chosen. Nothing here deletes a file or runs a downloaded file.
+async function waitLibrary(limitMs = 600000) {
+  const until = Date.now() + limitMs;
+  while (libraryBusy && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 1000));
+  return !libraryBusy;
+}
+
+async function afterRun(after, event, slot, config) {
+  if (!event || event.stopped) return;
+  const report = (message, level = "info") => send({ type: "after", slot, level, message, label: String((config && config.label) || "") });
+  const jobReport = async (body) => {
+    const result = await runPython([path.join(ROOT, "desktop", "job_report.py"), "after", JOBS_DB],
+      { input: `${JSON.stringify({ job: event.jobId, version: app.getVersion(), ...body })}\n`, timeout: 3600000 });
+    const parsed = parseJson((result.stdout || "").trim(), null);
+    if (!parsed || !parsed.ok) report(`The finished job could not be checked: ${(parsed && parsed.error) || (result.stderr || "").slice(-200)}`, "warning");
+    return parsed && parsed.ok ? parsed : null;
+  };
+  if (after.openFolder && event.saved && event.root && fs.existsSync(event.root)) shell.openPath(event.root);
+  const libraryOn = fs.existsSync(LIBRARY_SCRIPT) && event.saved;
+  // 1. organize first, so the manifest and the Library see the files where they end up
+  const folders = after.organize ? String(after.organize.folders || "").slice(0, 200) : "";
+  if (folders && event.jobId && libraryOn && (await waitLibrary())) {
+    const files = await jobReport({});
+    libraryBusy = true;
+    try {
+      await library("sync", { jobs: JOBS_DB, roots: libraryRoots() }, 600000);
+      const paths = (files && files.paths) || [];
+      const root = runFolder((config && config.downloadsDir) || "");
+      const plan = paths.length ? await organizer("plan", { filters: { paths, missing: "" }, root, folders, roots: libraryRoots() }) : null;
+      if (plan && !plan.ok) report(`Organize: ${plan.error}`, "warning");
+      else if (plan && plan.count - plan.conflicts > 0) {
+        const label = `After ${String((config && config.label) || "a job").slice(0, 60)}`;
+        const done = await organizer("apply", { plan, jobs: JOBS_DB, journal: ORGANIZE_JOURNAL, roots: libraryRoots(), label });
+        if (done.ok) report(`Organized ${done.moved} file(s)${plan.conflicts ? `, ${plan.conflicts} left in place because of a name conflict` : ""}. Undo it in Library > Storage.`, "ok");
+        else report(`Organize: ${done.error}`, "warning");
+      }
+    } finally {
+      libraryBusy = false;
+    }
+  }
+  // 2. verify and manifest
+  if (event.jobId && (after.verify || after.manifest)) {
+    const parsed = await jobReport({ verify: Boolean(after.verify), manifest: Boolean(after.manifest) });
+    if (parsed && parsed.verify) {
+      const v = parsed.verify;
+      if (v.problems.length) report(`Checked ${v.checked} file(s): ${v.problems.length} look incomplete, for example ${v.problems[0].name} (${v.problems[0].problem}). Retry them from History.`, "warning");
+      else if (v.checked) report(`Checked ${v.checked} file(s): all complete.`, "ok");
+    }
+    if (parsed && parsed.manifest) report(`Manifest saved: ${parsed.manifest}`);
+    if (parsed && parsed.manifestError) report(parsed.manifestError, "warning");
+  }
+  // 3. the Library, with thumbnails
+  if (after.library && libraryOn && (await waitLibrary())) {
+    libraryBusy = true;
+    try {
+      await library("sync", { jobs: JOBS_DB, roots: libraryRoots() }, 600000);
+      for (let round = 0; round < 10; round += 1) { // a minute at a time, at most ten minutes
+        const work = await library("work", { seconds: 60, thumbs: THUMBS, fingerprints: true }, 150000);
+        if (!work || !work.ok || !work.left) break;
+      }
+      report("The Library is up to date with this job's files, thumbnails included.");
+    } finally {
+      libraryBusy = false;
+    }
+  }
+}
+
+// Settings > Sites: failed files of the last days as a Markdown report for a GitHub issue.
+ipcMain.handle("broken-report", async (_event, body) => {
+  const days = Math.max(1, Math.min(365, Number(body?.days) || 30));
+  const picked = await dialog.showSaveDialog(mainWindow, {
+    title: "Save broken-link report",
+    defaultPath: path.join(app.getPath("documents"), `NexDrop broken links ${new Date().toISOString().slice(0, 10)}.md`),
+    filters: [{ name: "Markdown", extensions: ["md"] }, { name: "Text", extensions: ["txt"] }],
+  });
+  if (picked.canceled || !picked.filePath) return { ok: false, canceled: true };
+  const result = await runPython([path.join(ROOT, "desktop", "job_report.py"), "broken", JOBS_DB],
+    { input: `${JSON.stringify({ days, links: Boolean(body?.links), dest: picked.filePath, version: app.getVersion() })}\n`, timeout: 120000 });
+  const parsed = parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "The report could not be written.").slice(-300) };
+  if (parsed.ok) shell.showItemInFolder(picked.filePath);
+  return parsed;
+});
 
 async function organizer(command, body, timeout = 600000) {
   const result = await runPython([path.join(ROOT, "desktop", "organizer.py"), command, LIBRARY_DB], { input: `${JSON.stringify(body)}\n`, timeout });
