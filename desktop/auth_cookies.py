@@ -149,6 +149,7 @@ def main() -> int:
     parser.add_argument("--filter", default="")
     parser.add_argument("--hosts", default="")
     parser.add_argument("--status", default="")
+    parser.add_argument("--status-stdin", action="store_true", help="read the cookies to check from stdin (they are stored encrypted)")
     parser.add_argument("--probe", default="")
     parser.add_argument("--convert", default="")
     args = parser.parse_args()
@@ -159,6 +160,9 @@ def main() -> int:
             return 1
     if args.status:
         print(json.dumps(cookie_status(_read(args.status), hosts)))
+        return 0
+    if args.status_stdin:
+        print(json.dumps(cookie_status(sys.stdin.read(MAX_FILE_BYTES), hosts)))
         return 0
     if args.probe:
         print(json.dumps(chrome_probe(args.probe)))

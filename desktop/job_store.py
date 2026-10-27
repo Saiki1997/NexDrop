@@ -39,23 +39,38 @@ CREATE INDEX IF NOT EXISTS items_job_status ON items (job_id, status);
 CREATE INDEX IF NOT EXISTS items_job_sequence ON items (job_id, sequence);
 """
 
+# 3.0: History sorts newest first and filters by status and site without reading every row.
+INDEXES = """
+CREATE INDEX IF NOT EXISTS items_updated ON items (updated_at);
+CREATE INDEX IF NOT EXISTS items_status_updated ON items (status, updated_at);
+CREATE INDEX IF NOT EXISTS items_host ON items (host);
+CREATE INDEX IF NOT EXISTS items_url ON items (url);
+"""
+COMMIT_EVERY = 1.0  # seconds; file events are committed in batches, and always at the end of a run
+
+
 
 class JobStore:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, check: bool = True) -> None:
+        """`check` runs an integrity check first (a download run does; History searches don't)."""
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        if self.path.exists() and not self._healthy():
-            broken = self.path.with_suffix(".corrupt")
-            self.path.replace(broken)
+        self.moved_aside: Path | None = None
+        if check and self.path.exists() and self._health() == "corrupt":
+            self.moved_aside = self._move_aside()
         self.conn = sqlite3.connect(self.path, timeout=10)
         self.conn.row_factory = sqlite3.Row
         # WAL keeps per-file updates cheap and lets the window read while a run writes.
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.execute("PRAGMA synchronous = NORMAL")
+        self.conn.execute("PRAGMA busy_timeout = 10000")
         self.conn.executescript(SCHEMA)
         self._add_naming_columns()
-        self.conn.execute("PRAGMA user_version = 3")
+        self.conn.executescript(INDEXES)
+        self.conn.execute("PRAGMA user_version = 4")
         self.conn.commit()
+        self._dirty = 0
+        self._last_commit = time.monotonic()
 
     # Smart naming record per file (2.5). Older databases get the columns added; rows they
     # already have keep empty values.
@@ -70,6 +85,8 @@ class JobStore:
         # 2.6 (smart naming V2): what the file is and where it came from, as JSON. Links have
         # no query strings. Used to learn from names you change in History.
         "identity": "TEXT NOT NULL DEFAULT ''",
+        # 3.0: why a file failed, as one category (error_classes.py)
+        "error_category": "TEXT NOT NULL DEFAULT ''",
     }
 
     def _add_naming_columns(self) -> None:
@@ -79,16 +96,57 @@ class JobStore:
                 self.conn.execute(f"ALTER TABLE items ADD COLUMN {name} {kind}")
 
     def close(self) -> None:
+        self.flush()
         self.conn.close()
 
-    def _healthy(self) -> bool:
+    def flush(self) -> None:
+        """Commit file events that are still waiting for their batch."""
+        if self._dirty:
+            self.conn.commit()
+            self._dirty = 0
+        self._last_commit = time.monotonic()
+
+    def _changed(self) -> None:
+        self._dirty += 1
+        if time.monotonic() - self._last_commit >= COMMIT_EVERY:
+            self.flush()
+
+    def _health(self) -> str:
+        """'ok', 'corrupt', or 'unknown' (busy or locked: another NexDrop process has it open)."""
         try:
-            connection = sqlite3.connect(self.path)
-            row = connection.execute("PRAGMA quick_check").fetchone()
-            connection.close()
+            connection = sqlite3.connect(self.path, timeout=5)
+            try:
+                row = connection.execute("PRAGMA quick_check").fetchone()
+            finally:
+                connection.close()
+        except sqlite3.OperationalError as error:
+            text = str(error).lower()
+            if "locked" in text or "busy" in text or "unable to open" in text:
+                return "unknown"  # never move a database aside just because it is in use
+            return "corrupt"
         except sqlite3.DatabaseError:
-            return False
-        return bool(row) and row[0] == "ok"
+            return "corrupt"
+        return "ok" if row and row[0] == "ok" else "corrupt"
+
+    def _healthy(self) -> bool:
+        return self._health() != "corrupt"
+
+    def _move_aside(self) -> Path | None:
+        """Keep a damaged database (and its journal files) under a new name; a fresh one is created."""
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        broken = self.path.with_name(f"{self.path.stem}.corrupt-{stamp}{self.path.suffix}")
+        try:
+            self.path.replace(broken)
+        except OSError:
+            return None  # in use: keep working with it rather than lose it
+        for extra in ("-wal", "-shm"):
+            side = self.path.with_name(self.path.name + extra)
+            if side.exists():
+                try:
+                    side.replace(broken.with_name(broken.name + extra))
+                except OSError:
+                    pass
+        return broken
 
     def start_job(self, urls: list[str], download_dir: str) -> int:
         now = time.time()
@@ -100,6 +158,7 @@ class JobStore:
         return int(cursor.lastrowid)
 
     def finish_job(self, job_id: int, status: str, reason: str = "") -> None:
+        self.flush()
         self.conn.execute(
             "UPDATE jobs SET status = ?, stop_reason = ?, updated_at = ? WHERE id = ?",
             (status, reason[:500], time.time(), job_id),
@@ -121,8 +180,9 @@ class JobStore:
         now = time.time()
         self.conn.execute(
             """
-            INSERT INTO items(job_id, url, host, sequence, filename, destination, status, bytes_read, bytes_total, retries, error, updated_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO items(job_id, url, host, sequence, filename, destination, status, bytes_read, bytes_total, retries, error, updated_at,
+                              error_category)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(job_id, url) DO UPDATE SET
                 host = CASE WHEN excluded.host != '' THEN excluded.host ELSE items.host END,
                 sequence = CASE WHEN items.sequence > 0 THEN items.sequence ELSE excluded.sequence END,
@@ -133,6 +193,7 @@ class JobStore:
                 bytes_total = CASE WHEN excluded.bytes_total > 0 THEN excluded.bytes_total ELSE items.bytes_total END,
                 retries = items.retries + CASE WHEN excluded.status = 'retrying' THEN 1 ELSE 0 END,
                 error = excluded.error,
+                error_category = excluded.error_category,
                 updated_at = excluded.updated_at
             """,
             (
@@ -148,6 +209,7 @@ class JobStore:
                 1 if status == "retrying" else 0,
                 "" if status != "failed" else str(payload.get("status") or "")[:300],
                 now,
+                "" if status != "failed" else str(payload.get("category") or "")[:40],
             ),
         )
         naming = payload.get("naming")
@@ -179,7 +241,7 @@ class JobStore:
                     url,
                 ),
             )
-        self.conn.commit()
+        self._changed()
 
     def recover(self) -> list[int]:
         rows = self.conn.execute("SELECT id FROM jobs WHERE status = 'running'").fetchall()
@@ -386,7 +448,8 @@ def read_corrections(path: Path) -> list[dict]:
 def main() -> None:
     if len(sys.argv) < 3:
         raise SystemExit("usage: job_store.py recover|search|locate <jobs.sqlite> [item id]")
-    store = JobStore(Path(sys.argv[2]))
+    # Only the start-up recovery checks integrity; History searches must stay quick.
+    store = JobStore(Path(sys.argv[2]), check=sys.argv[1] == "recover")
     if sys.argv[1] == "recover":
         print(json.dumps({"interrupted": store.recover()}))
     elif sys.argv[1] == "search":

@@ -576,6 +576,50 @@ def _install_http_guard(proxy: str, proxy_scope: str) -> None:
 
 
 SESSION_COOKIES = PORTABLE / "cookies" / "session" / "simpcity.txt"
+_PROTECTED_MARK = b"NEXDROP-DPAPI1\n"
+
+
+def _dpapi(data: bytes, protect: bool) -> bytes | None:
+    """Windows DPAPI for the current user (what Electron's safeStorage uses too). None elsewhere."""
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    class Blob(ctypes.Structure):
+        _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+    buffer = ctypes.create_string_buffer(data, len(data))
+    source = Blob(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_char)))
+    result = Blob()
+    crypt32, kernel32 = ctypes.windll.crypt32, ctypes.windll.kernel32
+    call = crypt32.CryptProtectData if protect else crypt32.CryptUnprotectData
+    ok = call(ctypes.byref(source), None, None, None, None, 0x1, ctypes.byref(result))  # 0x1: no UI
+    if not ok:
+        return None
+    try:
+        return ctypes.string_at(result.pbData, result.cbData)
+    finally:
+        kernel32.LocalFree(result.pbData)
+
+
+def write_protected(path: Path, text: str) -> None:
+    """Saved sign-in cookies are encrypted for this Windows user. (Plain text only off Windows, for tests.)"""
+    raw = text.encode("utf-8")
+    sealed = _dpapi(raw, True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + ".tmp")
+    temp.write_bytes(_PROTECTED_MARK + sealed if sealed is not None else raw)
+    os.replace(temp, path)
+
+
+def read_protected(path: Path) -> str:
+    """The text of a file written by write_protected(), or of an older plain-text file."""
+    raw = path.read_bytes()
+    if raw.startswith(_PROTECTED_MARK):
+        opened = _dpapi(raw[len(_PROTECTED_MARK):], False)
+        return opened.decode("utf-8", errors="replace") if opened is not None else ""
+    return raw.decode("utf-8", errors="replace")
 
 
 def save_site_cookies(jar, path: Path = SESSION_COOKIES) -> int:
@@ -602,15 +646,14 @@ def save_site_cookies(jar, path: Path = SESSION_COOKIES) -> int:
         rows.append("\t".join(("." + domain.lstrip("."), "TRUE", path_value, secure, str(expires), morsel.key, morsel.value)))
     if not rows:
         return 0
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("# Netscape HTTP Cookie File\n" + "\n".join(rows) + "\n", encoding="utf-8")
+    write_protected(path, "# Netscape HTTP Cookie File\n" + "\n".join(rows) + "\n")
     return len(rows)
 
 
 def saved_site_cookie_lines(taken: set[tuple[str, str]], path: Path = SESSION_COOKIES) -> list[str]:
     """Saved SimpCity cookies that the user's own cookie file does not already set."""
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = read_protected(path).splitlines()
     except OSError:
         return []
     now = time.time()
@@ -1304,6 +1347,8 @@ def _run() -> int:
                 )
             emit({"type": "done", "saved": saved, "completed": len(saved)})
     finally:
+        # The filtered cookie copies are sign-ins in plain text; they only exist during the run.
+        shutil.rmtree(PORTABLE / "cookies" / "engine", ignore_errors=True)
         FORUM_PAGE_START.reset(page_start)
         FORUM_PAGE_END.reset(page_end)
         ORDER_MODE.reset(order_token)

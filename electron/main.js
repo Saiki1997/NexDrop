@@ -199,7 +199,7 @@ function createWindow() {
   });
   mainWindow.on("focus", () => mainWindow.flashFrame(false));
   mainWindow.on("closed", () => {
-    killSession(true);
+    // A running download is stopped by before-quit, which lets it save its state first.
     mainWindow = null;
   });
 }
@@ -509,7 +509,7 @@ function startSession(config) {
   child.on("close", (code) => reportExit(code));
 
   const outgoing = { ...(config || {}) };
-  for (const key of ["auth", "apiKey", "password", "cookieFolder"]) delete outgoing[key];
+  for (const key of ["auth", "apiKey", "password", "cookieFolder", "accountCookies"]) delete outgoing[key];
   try {
     const saved = accountVault().engineAuth();
     if (Object.keys(saved).length) outgoing.auth = saved;
@@ -522,7 +522,12 @@ function startSession(config) {
   } catch {
     /* without it, Telegram links use the public preview */
   }
-  if (fs.existsSync(ACCOUNT_COOKIES)) outgoing.cookieFolder = ACCOUNT_COOKIES;
+  try {
+    const cookies = accountCookieTexts();
+    if (Object.keys(cookies).length) outgoing.accountCookies = cookies;
+  } catch (error) {
+    logFile.write(`[security] saved site cookies could not be read: ${error.message}`);
+  }
   // stdin stays open so "stop" can be sent later.
   child.stdin.on("error", () => {});
   child.stdin.write(`${JSON.stringify(outgoing)}\n`);
@@ -700,8 +705,63 @@ function accountHosts(entry, host) {
   return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(clean) ? [clean] : [];
 }
 
+// Site cookies are sign-ins, so they are stored encrypted with Windows credential protection
+// (<id>.txt.enc). 2.x kept them as plain <id>.txt; those are encrypted and removed on first use.
 function accountCookiePath(id) {
+  return path.join(ACCOUNT_COOKIES, `${id}.txt.enc`);
+}
+
+function legacyCookiePath(id) {
   return path.join(ACCOUNT_COOKIES, `${id}.txt`);
+}
+
+function writeAccountCookies(id, text) {
+  if (!safeStorage.isEncryptionAvailable()) throw new Error("Secure storage is not available on this computer. Nothing was saved.");
+  fs.mkdirSync(ACCOUNT_COOKIES, { recursive: true });
+  const dest = accountCookiePath(id);
+  const temp = `${dest}.tmp`;
+  fs.writeFileSync(temp, safeStorage.encryptString(text).toString("base64"), { mode: 0o600 });
+  fs.renameSync(temp, dest);
+  return dest;
+}
+
+function readAccountCookies(id) {
+  const legacy = legacyCookiePath(id);
+  if (fs.existsSync(legacy)) {
+    try {
+      const text = fs.readFileSync(legacy, "utf8");
+      writeAccountCookies(id, text);
+      fs.rmSync(legacy, { force: true });
+      logFile.write(`[security] encrypted the saved cookies for ${id}`);
+      return text;
+    } catch (error) {
+      logFile.write(`[security] could not encrypt the saved cookies for ${id}: ${error.message}`);
+      return fs.readFileSync(legacy, "utf8");
+    }
+  }
+  try {
+    return safeStorage.decryptString(Buffer.from(fs.readFileSync(accountCookiePath(id), "utf8"), "base64"));
+  } catch {
+    return "";
+  }
+}
+
+function removeAccountCookies(id) {
+  for (const file of [accountCookiePath(id), legacyCookiePath(id)]) fs.rmSync(file, { force: true });
+}
+
+/** Every saved site's cookies, decrypted for one run. They reach the session through its stdin only. */
+function accountCookieTexts() {
+  const out = {};
+  if (!fs.existsSync(ACCOUNT_COOKIES)) return out;
+  const ids = new Set(fs.readdirSync(ACCOUNT_COOKIES)
+    .map((name) => (name.match(/^([a-z0-9_-]+)\.txt(?:\.enc)?$/i) || [])[1])
+    .filter((id) => id && ACCOUNT_IDS.has(id)));
+  for (const id of ids) {
+    const text = readAccountCookies(id);
+    if (text && text.includes("\t")) out[id] = text;
+  }
+  return out;
 }
 
 ipcMain.handle("auth-list", () => {
@@ -729,14 +789,13 @@ ipcMain.handle("auth-save", async (_event, body) => {
       if (result.code !== 0 || !result.stdout.includes("\t")) {
         return { ok: false, error: "No cookies for this site were in that file." };
       }
-      const dest = accountCookiePath(id);
-      fs.mkdirSync(ACCOUNT_COOKIES, { recursive: true });
-      fs.writeFileSync(dest, result.stdout, { mode: 0o600 });
+      const dest = writeAccountCookies(id, result.stdout);
+      fs.rmSync(legacyCookiePath(id), { force: true });
       store.save(id, "cookies", { cookieFile: dest, host: hosts[0] });
       return { ok: true, configured: true, message: `Saved cookies for ${hosts.join(", ")} only.` };
     }
     store.save(id, method, body || {});
-    if (method === "none" && fs.existsSync(accountCookiePath(id))) fs.rmSync(accountCookiePath(id));
+    if (method === "none") removeAccountCookies(id);
     return { ok: true, configured: method !== "none" };
   } catch (error) {
     return { ok: false, error: error.message };
@@ -748,7 +807,7 @@ ipcMain.handle("auth-remove", (_event, rawId) => {
   if (!ACCOUNT_IDS.has(id)) return { ok: false, error: "Unknown account." };
   try {
     accountVault().remove(id);
-    if (fs.existsSync(accountCookiePath(id))) fs.rmSync(accountCookiePath(id));
+    removeAccountCookies(id);
     return { ok: true };
   } catch (error) {
     return { ok: false, error: error.message };
@@ -769,7 +828,9 @@ ipcMain.handle("auth-test", async (_event, rawId) => {
   if (secret.method === "cookies") {
     const entry = store.list().find((item) => item.id === id);
     const hosts = accountHosts(entry, secret.host);
-    const result = await runPython([path.join(ROOT, "desktop", "auth_cookies.py"), "--status", secret.cookieFile, "--hosts", hosts.join(",")]);
+    const text = readAccountCookies(id);
+    if (!text) return { ok: true, state: "missing", message: "The saved cookies are missing or could not be decrypted on this computer. Import them again." };
+    const result = await runPython([path.join(ROOT, "desktop", "auth_cookies.py"), "--status-stdin", "--hosts", hosts.join(",")], { input: text });
     const parsed = parseJson(result.stdout || "", null);
     if (!parsed) return { ok: false, error: "The cookie file could not be checked." };
     store.mark(id, new Date().toISOString(), parsed.state === "present" ? "" : parsed.message);
@@ -1203,8 +1264,27 @@ if (!app.requestSingleInstanceLock()) {
   });
 }
 
-app.on("before-quit", () => {
+// Quitting during a download asks the session to stop first, so it saves history and the run can
+// be resumed; after STOP_GRACE_MS it is ended anyway.
+let quitWaiting = false;
+app.on("before-quit", (event) => {
   quitting = true;
+  if (current && current.child.exitCode === null && !quitWaiting) {
+    event.preventDefault();
+    quitWaiting = true;
+    const run = current;
+    killSession(false);
+    const done = () => {
+      clearTimeout(timer);
+      app.quit();
+    };
+    const timer = setTimeout(() => {
+      if (run.child.exitCode === null) killTree(run.child.pid, true);
+      done();
+    }, STOP_GRACE_MS + 500);
+    run.child.once("close", done);
+    return;
+  }
   clearInterval(clip.timer);
   killSession(true);
   stopFlare();
