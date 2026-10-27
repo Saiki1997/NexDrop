@@ -138,3 +138,12 @@ test("diagnostics redaction removes secrets and the user name", () => {
   assert.ok(out.includes('"maxDownloads": 8'));
   assert.ok(out.includes("~\\Downloads\\x.jpg"));
 });
+
+test("duplicate links with other tracking parameters are left out (3.1)", () => {
+  assert.strictEqual(fmt.normalizeUrl("https://www.Cyberdrop.cr/a/xyz/?utm_source=x&page=2#top"), "https://cyberdrop.cr/a/xyz?page=2");
+  assert.strictEqual(fmt.normalizeUrl("https://site.test/search?s=cats"), "https://site.test/search?s=cats");
+  assert.strictEqual(fmt.normalizeUrl("https://x.com/u/status/1?s=20&t=abc"), "https://x.com/u/status/1");
+  const parsed = fmt.parseLinks("https://a.test/x?utm_source=1\nhttps://a.test/x/\nhttps://b.test/y\nhttps://b.test/y");
+  assert.deepStrictEqual(parsed.urls, ["https://a.test/x?utm_source=1", "https://b.test/y"]);
+  assert.deepStrictEqual(parsed.duplicates, ["https://a.test/x/"]);
+});

@@ -38,6 +38,7 @@ contextBridge.exposeInMainWorld("api", {
   historyReveal: (id) => ipcRenderer.invoke("history-reveal", id),
   historyExport: (query) => ipcRenderer.invoke("history-export", query),
   siteHealth: (days) => ipcRenderer.invoke("site-health", days),
+  analyzeLinks: (body) => ipcRenderer.invoke("analyze-links", body),
   diagnosticsExport: () => ipcRenderer.invoke("diagnostics-export"),
   backupCreate: () => ipcRenderer.invoke("backup-create"),
   backupRestore: () => ipcRenderer.invoke("backup-restore"),

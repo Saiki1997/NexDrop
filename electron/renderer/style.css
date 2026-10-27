@@ -203,6 +203,15 @@ svg { stroke: currentColor; stroke-width: 1.6; fill: none; stroke-linecap: round
 .bg-job .bg-state { color: var(--ash); font: 400 11.5px var(--font-mono); }
 .bg-job.failed .bg-state { color: var(--rust, #d9826b); }
 .dialog-job { width: min(560px, calc(100vw - 32px)); }
+.dialog.dialog-wide { width: min(1000px, calc(100vw - 32px)); }
+.check-wrap { max-height: min(56vh, 520px); overflow: auto; margin-bottom: 16px; border: 1px solid var(--shale); border-radius: var(--r-control); }
+.check-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.check-table th { position: sticky; top: 0; background: var(--shale); color: var(--ash); font-weight: 600; text-align: left; padding: 6px 10px; white-space: nowrap; }
+.check-table td { padding: 6px 10px; border-top: 1px solid var(--shale); vertical-align: top; }
+.check-table td:first-child { font: 400 12px var(--font-mono); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.check-table tr.dupe td { opacity: .55; }
+.check-table tr.none td:nth-child(4) { color: var(--rust); }
+.check-table .muted { color: var(--ash-dim); }
 .dialog-job .field, .dialog-job .switch { margin-bottom: 12px; }
 .dialog-job .dialog-actions + .dialog-actions { margin-top: 10px; }
 .job-folder { flex: 1; min-width: 0; font: 400 12px var(--font-mono); color: var(--ash); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -610,3 +619,4 @@ svg { stroke: currentColor; stroke-width: 1.6; fill: none; stroke-linecap: round
 .learned-list li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .learned-list .empty-note { color: var(--ash-dim); }
 .history-list .empty-note { color: var(--ash-dim); border: 1px dashed var(--shale); border-radius: var(--r-control); padding: 10px 12px; }
+.check-table td:nth-child(2), .check-table td:nth-child(3), .check-table td:nth-child(4), .check-table td:nth-child(5) { white-space: nowrap; }

@@ -16,6 +16,8 @@ file holds exactly one version of one file. Routes, all GET:
   /changed/<name>?size=N            first request drops half way with ETag "v1"; afterwards the file is
                                     version 2 (ETag "v2") and If-Range: "v1" gets a 200 with all of v2
   /changed-ignore/<name>?size=N     like /changed, but the server ignores If-Range and answers 206 with v2
+  /redirect/<name>?to=URL           302 to URL, like a link shortener
+  /page/<name>                      an HTML album page: og:title, og:site_name, author and 3 distinct file links
   /seg-wrong/<name>?size=N          like /ok, but a range starting after byte 0 is answered from byte 0
   /seg-drop/<name>?size=N           like /ok, but the first range starting after byte 0 drops half way
 
@@ -124,6 +126,15 @@ class LocalServer:
                     return await self._send(request, new, etag='"v2"', ranges=False)
                 return await self._send(request, new, etag='"v2"')
             return await self._send(request, new, etag='"v2"')  # ignores If-Range
+        if route == "redirect":  # 302 to ?to=<url>, like a link shortener
+            raise web.HTTPFound(request.query.get("to", "/"))
+        if route == "page":  # an album page with Open Graph tags and file links
+            body = ('<!doctype html><html><head><title>Ignored title</title>'
+                    '<meta property="og:title" content="Summer &amp; Sun">'
+                    '<meta property="og:site_name" content="Test Host"><meta name="author" content="Ana">'
+                    '</head><body><a href="/ok/1.jpg">1</a><img src="/ok/2.jpg?w=1"><a href="/ok/1.jpg">again</a>'
+                    '<a href="https://cdn.test/v.mp4">v</a></body></html>')
+            return web.Response(status=200, text=body, content_type="text/html")
         if route == "seg-wrong":  # plain requests work; a range that starts after byte 0 is answered from byte 0
             data = content(name, size)
             wanted = request.headers.get("Range", "")

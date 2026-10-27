@@ -25,6 +25,7 @@
 
       <div class="command-actions">
         <button class="btn btn-quiet" id="btn-import" type="button" title="Load links from a .txt file">Import</button>
+        <button class="btn btn-quiet" id="btn-check" type="button" title="See what each link is before downloading: site, type, sign-in, duplicates">Check</button>
         <button class="btn btn-primary" id="btn-start" type="button">Start</button>
         <button class="btn btn-quiet" id="btn-queue" type="button" hidden title="Download these links after the current run">Add to queue</button>
         <button class="btn btn-stop" id="btn-stop" type="button" hidden title="Stop for now. Resume continues where it left off, even after closing NEXDROP.">Pause</button>
@@ -169,6 +170,25 @@
         <button class="btn btn-quiet" value="cancel" type="submit">Cancel</button>
         <button class="btn btn-quiet" value="again" type="submit">Download everything again</button>
         <button class="btn btn-primary" value="new" type="submit" autofocus>Get new files only</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- What the links are, before downloading (3.1 URL analyzer and link preview) -->
+  <dialog class="dialog dialog-wide" id="check-dialog" aria-labelledby="check-title">
+    <form method="dialog">
+      <h2 id="check-title">Links</h2>
+      <p class="dialog-text" id="check-summary"></p>
+      <div class="check-wrap">
+        <table class="check-table">
+          <thead><tr><th>Link</th><th>Site</th><th>Type</th><th>Handler</th><th>Sign-in</th><th>Details</th></tr></thead>
+          <tbody id="check-rows"></tbody>
+        </table>
+      </div>
+      <div class="dialog-actions">
+        <button class="btn btn-quiet" id="btn-check-preview" type="button" title="Opens each link once (no download) to read its title, size and file links">Preview details</button>
+        <button class="btn btn-quiet" id="btn-check-dedupe" type="button">Remove duplicates</button>
+        <button class="btn btn-primary" value="close" type="submit">Close</button>
       </div>
     </form>
   </dialog>

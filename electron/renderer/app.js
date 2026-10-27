@@ -286,6 +286,8 @@
       $("#end-page").focus();
       return null;
     }
+    const { duplicates } = fmt.parseLinks(urlsBox.value);
+    if (duplicates.length) log("info", `${duplicates.length} duplicate ${duplicates.length === 1 ? "link was" : "links were"} left out (the same link with other tracking parameters).`);
     return {
       id: newJobId(),
       urls,
@@ -612,6 +614,95 @@
     box.hidden = bgJobs.size === 0;
   }
   $("#btn-bg-pause").addEventListener("click", () => [...bgJobs.keys()].forEach(pauseBgJob));
+
+  // ─── check links (3.1 URL analyzer, link preview, duplicate links) ────────
+  const HANDLER_TEXT = { builtin: "Supported", generic: "Supported (forum or family)", direct: "Direct file", none: "No handler" };
+  let checked = [];
+
+  function checkRow(item) {
+    const tr = document.createElement("tr");
+    tr.classList.toggle("dupe", item.duplicateOf !== null && item.duplicateOf !== undefined);
+    tr.classList.toggle("none", item.handler === "none");
+    const p = item.preview || null;
+    const details = [];
+    if (item.duplicateOf !== null && item.duplicateOf !== undefined) details.push(`Same as link ${item.duplicateOf + 1}`);
+    if (item.resolved) details.push(`Short link to ${item.resolved}`);
+    if (p) {
+      if (p.title) details.push(p.title);
+      if (p.author) details.push(`by ${p.author}`);
+      if (p.size !== null && p.size !== undefined) details.push(fmt.bytes(p.size));
+      if (p.fileLinks) details.push(`${p.fileLinks} file ${p.fileLinks === 1 ? "link" : "links"} on the page (the real count can differ)`);
+      if (p.note) details.push(p.note);
+    } else if (item.shortened) {
+      details.push("Short link: Preview follows it");
+    }
+    const cells = [
+      [item.url, item.url],
+      [item.site || item.host || "—"],
+      [item.kind === "page" ? "Page" : item.kind.charAt(0).toUpperCase() + item.kind.slice(1) + (item.media && item.kind !== item.media ? ` (${item.media})` : ""), item.pattern ? `Handler format: ${item.pattern}` : ""],
+      [HANDLER_TEXT[item.handler] || item.handler],
+      [item.signIn === "required" ? "Needed" : item.signIn === "optional" ? "Optional" : "—"],
+      [details.join(" · ") || "—"],
+    ];
+    for (const [text, title] of cells) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      if (title) td.title = title;
+      if (text === "—") td.className = "muted";
+      tr.appendChild(td);
+    }
+    return tr;
+  }
+
+  function renderChecked() {
+    const rows = $("#check-rows");
+    rows.textContent = "";
+    for (const item of checked) rows.appendChild(checkRow(item));
+    const dupes = checked.filter((i) => i.duplicateOf !== null && i.duplicateOf !== undefined).length;
+    const none = checked.filter((i) => i.handler === "none").length;
+    const signIn = checked.filter((i) => i.signIn === "required").length;
+    const parts = [`${checked.length} ${checked.length === 1 ? "link" : "links"}`];
+    if (dupes) parts.push(`${dupes} duplicate${dupes === 1 ? "" : "s"}`);
+    if (none) parts.push(`${none} without a handler (tried as plain pages or files)`);
+    if (signIn) parts.push(`${signIn} need a sign-in`);
+    $("#check-summary").textContent = `${parts.join(", ")}. Types come from each site handler's link formats; "Page" means the handler does not say.`;
+    $("#btn-check-dedupe").disabled = !dupes;
+  }
+
+  async function checkLinks(preview = false) {
+    const { urls, unsupported } = fmt.parseLinks(urlsBox.value);
+    const all = [...urls, ...unsupported];
+    // parseLinks already dropped repeats; the dialog shows them, so read the raw lines again
+    const raw = urlsBox.value.split(/\s+/).map((t) => t.trim()).filter((t) => /^(https?:\/\/|magnet:)/i.test(t));
+    const list = raw.length ? raw : all;
+    if (!list.length) {
+      urlsBox.focus();
+      flash(urlsBox);
+      return;
+    }
+    const dialog = $("#check-dialog");
+    $("#check-summary").textContent = preview ? "Opening each link once to read its details…" : "Checking…";
+    if (!dialog.open) dialog.showModal();
+    $("#btn-check-preview").disabled = true;
+    const result = await api.analyzeLinks({ urls: list, preview }).catch((error) => ({ ok: false, error: error.message }));
+    $("#btn-check-preview").disabled = false;
+    if (!result || !result.ok) {
+      $("#check-summary").textContent = (result && result.error) || "The links could not be checked.";
+      return;
+    }
+    checked = result.items || [];
+    renderChecked();
+  }
+
+  $("#btn-check").addEventListener("click", () => checkLinks(false));
+  $("#btn-check-preview").addEventListener("click", () => checkLinks(true));
+  $("#btn-check-dedupe").addEventListener("click", () => {
+    const keep = checked.filter((i) => i.duplicateOf === null || i.duplicateOf === undefined).map((i) => i.resolved || i.url);
+    urlsBox.value = keep.join("\n");
+    autoGrow();
+    log("info", `Removed ${checked.length - keep.length} duplicate ${checked.length - keep.length === 1 ? "link" : "links"}.`);
+    checkLinks(false);
+  });
 
   function renderQueue() {
     const box = $("#queue");

@@ -52,10 +52,33 @@
   }
 
   /** Split pasted text into downloadable links, rejected torrent links, and anything else. */
+  // Query parameters that only track where a click came from (3.1 duplicate link detection).
+  const TRACKING = /^(utm_[a-z]+|fbclid|gclid|dclid|msclkid|mc_cid|mc_eid|igshid|ref_src|ref_url|_ga|yclid|share_id)$/i;
+  // Share trackers that mean nothing else only on these sites ("s" is a real search on others).
+  const SITE_TRACKING = { "x.com": ["s", "t"], "twitter.com": ["s", "t"], "youtube.com": ["si", "pp", "feature"], "youtu.be": ["si", "feature"], "open.spotify.com": ["si"], "instagram.com": ["igsh", "img_index"] };
+
+  /** The same link without tracking parameters, fragment, "www." or a trailing slash. */
+  function normalizeUrl(raw) {
+    let u;
+    try {
+      u = new URL(String(raw).trim());
+    } catch {
+      return String(raw || "").trim();
+    }
+    const hostName = u.hostname.toLowerCase().replace(/^www\./, "");
+    const drop = SITE_TRACKING[hostName] || [];
+    const params = [...u.searchParams].filter(([k]) => !TRACKING.test(k) && !drop.includes(k));
+    const query = params.length ? `?${new URLSearchParams(params).toString()}` : "";
+    const fragment = u.hash.startsWith("#!") ? u.hash : "";
+    const pathName = u.pathname.replace(/\/+$/, "") || "/";
+    return `${u.protocol}//${hostName}${u.port ? `:${u.port}` : ""}${pathName}${query}${fragment}`;
+  }
+
   function parseLinks(text) {
     const urls = [];
     const unsupported = [];
     const ignored = [];
+    const duplicates = [];
     const seen = new Set();
     for (const raw of String(text || "").split(/[\r\n]+/)) {
       if (raw.trim().startsWith("#")) continue; // comment line in an imported .txt
@@ -69,16 +92,19 @@
         if (/^magnet:/i.test(line) || /^https?:\/\/\S+\.torrent(?:$|\?)/i.test(line)) {
           unsupported.push(line);
         } else if (/^https?:\/\/[^\s/]+\.[^\s]+/i.test(line)) {
-          if (!seen.has(line)) {
-            seen.add(line);
+          const key = normalizeUrl(line);
+          if (!seen.has(key)) {
+            seen.add(key);
             urls.push(line);
+          } else if (line !== urls.find((u) => normalizeUrl(u) === key)) {
+            duplicates.push(line); // same link with other tracking parameters
           }
         } else if (line.length > 1) {
           ignored.push(line);
         }
       }
     }
-    return { urls, unsupported, ignored };
+    return { urls, unsupported, ignored, duplicates };
   }
 
   function host(url) {
@@ -338,5 +364,5 @@
     return out;
   }
 
-  return { redact, cleanJob, parseJobFile, exportJob, TEMPLATE_VARS, templateProblem, renderTemplate, DOWNLOAD_MODES, modeLimits, guessMode, bytes, speed, mbps, duration, ago, parseLinks, host, finishText, compareVersions, clockMinutes, inTimeWindow, appLinkUrls, checksumFor };
+  return { normalizeUrl, redact, cleanJob, parseJobFile, exportJob, TEMPLATE_VARS, templateProblem, renderTemplate, DOWNLOAD_MODES, modeLimits, guessMode, bytes, speed, mbps, duration, ago, parseLinks, host, finishText, compareVersions, clockMinutes, inTimeWindow, appLinkUrls, checksumFor };
 });

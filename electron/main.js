@@ -1422,6 +1422,16 @@ ipcMain.handle("history-export", async (_event, body) => {
 });
 
 // 3.0: per-site results from the history database (nothing is sent anywhere).
+// 3.1 URL analyzer: what each link is (offline, from the engine's handlers), and with `preview`
+// one request per link for its title, size or the reason it can't be read.
+ipcMain.handle("analyze-links", async (_event, body) => {
+  const urls = (Array.isArray(body?.urls) ? body.urls : []).map(String).filter((u) => u.length < 4000).slice(0, 500);
+  const preview = Boolean(body?.preview);
+  const input = `${JSON.stringify({ urls, proxy: preview ? String(readSettings().prefs?.proxy || "") : "" })}\n`;
+  const result = await runPython([path.join(ROOT, "desktop", "url_analyzer.py"), preview ? "preview" : "analyze"], { input, timeout: preview ? 120000 : 30000 });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "The links could not be checked.").slice(-300), items: [] };
+});
+
 ipcMain.handle("site-health", async (_event, days) => {
   if (!fs.existsSync(JOBS_DB)) return { ok: true, sites: [] };
   const span = String(Math.max(1, Math.min(365, Number(days) || 30)));
