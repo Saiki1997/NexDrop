@@ -43,6 +43,25 @@ class Plan(unittest.TestCase):
         self.assertEqual(segments.parts_for(segments.MIN_SIZE, 8), segments.MIN_SIZE // segments.MIN_PART)
 
 
+class Discard(unittest.TestCase):
+    def test_part_files_are_deleted_by_name_without_listing_the_folder(self):
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            partial = Path(tmp) / "a.mp4.part"
+            partial.write_bytes(b"x")
+            parts = [segments.seg_file(partial, i) for i in (1, 2, 3)]
+            for path in parts:
+                path.write_bytes(b"y")
+            other = Path(tmp) / "b.mp4.part.seg1"
+            other.write_bytes(b"z")
+            with mock.patch.object(Path, "glob", side_effect=AssertionError("folder listed")):
+                segments.discard(partial)
+            self.assertFalse(any(path.exists() for path in parts))
+            self.assertTrue(partial.exists())
+            self.assertTrue(other.exists())
+
+
 class Eligible(unittest.TestCase):
     def setUp(self):
         segments._no_split.clear()
