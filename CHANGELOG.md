@@ -1,3 +1,47 @@
+# NEXDROP 3.0.0
+
+## Downloads you can trust
+- **A resumed file is never stitched from two different files.** When a download stops half way, NEXDROP remembers which file it was (its size, ETag and Last-Modified, in a small `.part.nxmeta` file beside the `.part`). Resuming asks the server for "the rest of that same file". If the server sends a different file, the wrong part, or the whole file again, the partial file is thrown away and the download starts over.
+- **Incomplete files no longer count as saved.** A file must have exactly the size the server announced. Before, a download that ended early, or a web page sent instead of an image or video, could be saved as if it were complete. Direct downloads (links no site handler knows) are checked the same way.
+- **Busy servers are retried during the run.** 429 "too many requests" and 5xx "server busy" answers are retried after the time the server asks for (at most 60 s), otherwise after 2, 4, 8 ... up to 20 s. A deleted file (404) is not retried.
+- **A site that keeps failing is paused, not the whole run.** After 6 server errors in a row from one site, that site is paused for 1 minute (then 2, 4 ... up to 10), its files fail quickly as "Site paused", and the other sites keep downloading. The retry pass at the end picks them up.
+- **A server that asked to slow down gets its connections back** after two quiet minutes, one at a time.
+- **Expired links are refreshed.** Bunkr, GoFile, Kemono and other links that expire are asked for a fresh link from the page they came from in the retry pass, and the file is matched up again.
+
+## Smart Naming 3.0
+- **Filename templates** (Settings → Downloads): for example `{creator}-{title}-{number}` or `{date} {title}`. Variables: title, original, album, thread, post, creator, date, site, type, number. A variable the site does not provide is left out; if none of the name variables are known, the automatic name is used. A live example shows the result.
+- **Number digits:** 001, 0001 or 00001.
+- Jobs started with 2.5 keep their names when you resume them.
+
+## Duplicates
+- A newly saved file with exactly the same content as one you already have is reported in the run log, with both paths. **Both files are kept. NEXDROP never deletes a file.**
+
+## Job manager
+- Click a job in the queue to rename it, move it to the top or bottom, **hold** it, duplicate or remove it, or give it **its own folder, download mode and speed cap**.
+- **Queue it:** a paused run can wait in the queue while the next job starts. It continues where it stopped when its turn comes.
+- **Export** the queue to a file and **Import** it again. Import also reads plain link lists: `.txt`, `.csv`, `.m3u` and JSON.
+
+## Speed
+- **Download modes** (Settings → Speed): Auto, Balanced, Maximum speed, Low resource or Custom.
+- The engine starts about 4 seconds faster, and every file is read once for all three checksums instead of three times. On a local test server: 100 small files 9.0 s → 4.1 s, eight 50 MB files 9.4 s → 3.9 s, 1000 small files 34 s → 25 s (single runs on Linux; Windows numbers will differ).
+
+## History and sites
+- History filters by age and file type, shows why a file failed, and finds **saved files that are no longer on disk**. **Export CSV** saves every matching row.
+- **Site health** (Settings → Sites): how downloads from each site went over the last day, week or month, and the main reasons for failures. Worked out from your own history; nothing is sent anywhere.
+- The file list shows the failure category ("Link expired", "Server busy", "Deleted" ...) with advice on what to do.
+
+## Backup and support (Settings → App)
+- **Back up / Restore** your settings, queue, watched threads, history and learned names. Sign-ins, cookies and API keys are never in a backup. Restoring keeps your current files as `.before-restore` copies.
+- **Save diagnostics** writes a text report for bug reports with tokens, passwords, cookies, e-mail addresses and your user name removed.
+
+## Security and safety
+- Saved site cookies are encrypted for your Windows user (Electron safe storage, DPAPI for engine session files). Older plain files are encrypted the first time they are read. Cookie copies made for a run are removed when the run ends, including after a crash.
+- Quitting NEXDROP pauses a running download properly instead of killing it.
+- A locked history database is no longer mistaken for a damaged one; a damaged one is moved aside with its journal, never deleted.
+
+## Upgrading
+Unzip 3.0.0 over your 2.5.0 folder, or into a new folder and copy `engine\appdata` across. Settings, queue, history and sign-ins carry over. The bundled engine configuration is replaced by the new version automatically (your settings are in the app, not in that file).
+
 # NEXDROP 2.5.0
 
 ## Smart file names

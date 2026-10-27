@@ -100,7 +100,7 @@ manifest = root.parent / "NexDrop-windows-x64-MANIFEST.txt"
 manifest.write_text(
     "NexDrop Windows x64 portable folder\n"
     f"electron {os.environ.get('ELECTRON_VERSION', '$VER')}\n"
-    "interface NEXDROP 2.1\n"
+    "interface NEXDROP 3.0\n"
     "engine cyberdrop-dl 10.10.0 patched\n"
     f"files {len(lines)}\n",
     encoding="utf-8",

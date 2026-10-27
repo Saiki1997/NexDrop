@@ -74,3 +74,67 @@ test("checksumFor reads SHA256SUMS.txt", () => {
   assert.strictEqual(fmt.checksumFor(text, "NexDrop-windows-x64.zip"), hash);
   assert.strictEqual(fmt.checksumFor(text, "other.zip"), "");
 });
+
+test("download modes resolve to fixed limits, custom keeps the user's numbers", () => {
+  assert.deepStrictEqual(fmt.modeLimits("balanced"), { maxDownloads: 8, perHost: 4, serverSlots: 2 });
+  assert.deepStrictEqual(fmt.modeLimits("low", { maxDownloads: 30 }), { maxDownloads: 3, perHost: 2, serverSlots: 1 });
+  assert.deepStrictEqual(fmt.modeLimits("custom", { maxDownloads: 40, perHost: "5", serverSlots: 0 }), { maxDownloads: 32, perHost: 5, serverSlots: 1 });
+  assert.deepStrictEqual(fmt.modeLimits("nonsense", {}), { maxDownloads: 16, perHost: 6, serverSlots: 3 });
+  assert.strictEqual(fmt.guessMode({ maxDownloads: 16, perHost: 6, serverSlots: 3 }), "auto");
+  assert.strictEqual(fmt.guessMode({}), "auto");
+  assert.strictEqual(fmt.guessMode({ maxDownloads: 4, perHost: 6 }), "custom");
+});
+
+test("filename templates match the engine's rules", () => {
+  const v = { title: "Summer Shoot", original: "IMG_1", thread: "Lala Thread", creator: "lala", date: "2026-10-27", site: "bunkr", type: "image" };
+  assert.strictEqual(fmt.renderTemplate("{creator}-{title}-{number}", v, "007"), "lala-Summer Shoot-007");
+  assert.strictEqual(fmt.renderTemplate("{thread}-{post}-{number}", v, "007"), "Lala Thread-007");
+  assert.strictEqual(fmt.renderTemplate("[{site}] {title}", v, ""), "[bunkr] Summer Shoot");
+  assert.strictEqual(fmt.renderTemplate("{album}-{number}", v, "007"), "");
+  assert.strictEqual(fmt.renderTemplate("{title}-{number}.{ext}", v, "0001"), "Summer Shoot-0001");
+  assert.strictEqual(fmt.templateProblem("{creator}-{title}-{number}"), "");
+  assert.match(fmt.templateProblem("{artist}-{title}"), /unknown variable \{artist\}/);
+  assert.match(fmt.templateProblem("{date}-{number}"), /no name variable/);
+  assert.match(fmt.templateProblem("{title}/{number}"), /Windows/);
+});
+
+test("job files: exports round-trip, link lists become one job, unknown folders are dropped", () => {
+  const job = { id: "j1", label: "Lala", urls: ["https://simpcity.cr/threads/a.1/"], unsupported: [], startPage: 2, endPage: 1,
+    redownload: false, folder: "D:\\Media\\Lala", mode: "low", speedMB: 5, hold: true, resumed: true, doneUrls: ["x"] };
+  const exported = fmt.exportJob(job);
+  assert.strictEqual(exported.id, undefined);
+  assert.strictEqual(exported.doneUrls, undefined);
+  const text = JSON.stringify({ format: "nexdrop-jobs", version: 1, jobs: [exported, { urls: [] }] });
+  const back = fmt.parseJobFile("jobs.json", text, ["d:/media/lala/"]);
+  assert.strictEqual(back.kind, "jobs");
+  assert.strictEqual(back.jobs.length, 1);
+  assert.strictEqual(back.dropped, 1);
+  assert.deepStrictEqual(back.jobs[0], { urls: ["https://simpcity.cr/threads/a.1/"], unsupported: [], label: "Lala", startPage: 2,
+    endPage: null, redownload: false, folder: "D:\\Media\\Lala", mode: "low", speedMB: 5, hold: true });
+  const elsewhere = fmt.parseJobFile("jobs.json", text, ["C:/Downloads"]);
+  assert.strictEqual(elsewhere.jobs[0].folder, undefined);
+  assert.strictEqual(elsewhere.dropped, 2);
+  const m3u = fmt.parseJobFile("list.m3u", "#EXTM3U\n#EXTINF:-1,One\nhttps://a.com/1.mp4\nhttps://a.com/2.mp4\n", []);
+  assert.deepStrictEqual(m3u.jobs[0].urls, ["https://a.com/1.mp4", "https://a.com/2.mp4"]);
+  const csv = fmt.parseJobFile("l.csv", "name,url\none,https://b.com/x\ntwo,\"https://b.com/y\"\n", []);
+  assert.deepStrictEqual(csv.jobs[0].urls, ["https://b.com/x", "https://b.com/y"]);
+  assert.deepStrictEqual(fmt.parseJobFile("l.json", '[{"url":"https://c.com/z"}]', []).jobs[0].urls, ["https://c.com/z"]);
+  assert.strictEqual(fmt.parseJobFile("bad.json", "{nope", []).jobs.length, 0);
+});
+
+test("diagnostics redaction removes secrets and the user name", () => {
+  const raw = [
+    "GET https://cdn.bunkr.ru/a.mp4?token=abc123&expires=999&n=1 -> 403",
+    ".simpcity.cr\tTRUE\t/\tTRUE\t1900000000\txf_user\t12345%2Csecretvalue",
+    "Cookie: xf_user=12345; xf_session=zzz",
+    '{"api_key": "pk_live_1", "maxDownloads": 8}',
+    "proxy http://bob:hunter2@127.0.0.1:8080",
+    "mail me at saiki@example.com",
+    "Saved to C:\\Users\\Saiki\\Downloads\\x.jpg",
+  ].join("\n");
+  const out = fmt.redact(raw, "C:\\Users\\Saiki");
+  for (const secret of ["abc123", "secretvalue", "zzz", "pk_live_1", "hunter2", "saiki@example.com", "Saiki\\"]) assert.ok(!out.includes(secret), secret);
+  assert.ok(out.includes("n=1"));
+  assert.ok(out.includes('"maxDownloads": 8'));
+  assert.ok(out.includes("~\\Downloads\\x.jpg"));
+});

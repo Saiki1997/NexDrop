@@ -97,6 +97,29 @@ function downloadsDir() {
   return dir;
 }
 
+// Folders chosen for single jobs (3.0 job manager). Only these and the main download folder
+// can be a run's destination or be opened from the app.
+const JOB_DIRS_MAX = 50;
+
+function jobDirs() {
+  const saved = readSettings().job_dirs;
+  return Array.isArray(saved) ? saved.filter((dir) => typeof dir === "string" && dir).slice(0, JOB_DIRS_MAX) : [];
+}
+
+function samePath(a, b) {
+  const x = path.resolve(a);
+  const y = path.resolve(b);
+  return process.platform === "win32" ? x.toLowerCase() === y.toLowerCase() : x === y;
+}
+
+function runFolder(requested) {
+  const main = downloadsDir();
+  if (!requested || typeof requested !== "string") return main;
+  if (samePath(requested, main) || jobDirs().some((dir) => samePath(dir, requested))) return requested;
+  sendLog("That job's folder was not chosen on this PC, so it downloads to the main download folder.", "warning");
+  return main;
+}
+
 function existingFile(target) {
   try {
     return target && typeof target === "string" && fs.statSync(target).isFile() ? target : "";
@@ -199,7 +222,7 @@ function createWindow() {
   });
   mainWindow.on("focus", () => mainWindow.flashFrame(false));
   mainWindow.on("closed", () => {
-    killSession(true);
+    // A running download is stopped by before-quit, which lets it save its state first.
     mainWindow = null;
   });
 }
@@ -509,7 +532,8 @@ function startSession(config) {
   child.on("close", (code) => reportExit(code));
 
   const outgoing = { ...(config || {}) };
-  for (const key of ["auth", "apiKey", "password", "cookieFolder"]) delete outgoing[key];
+  outgoing.downloadsDir = runFolder(outgoing.downloadsDir);
+  for (const key of ["auth", "apiKey", "password", "cookieFolder", "accountCookies"]) delete outgoing[key];
   try {
     const saved = accountVault().engineAuth();
     if (Object.keys(saved).length) outgoing.auth = saved;
@@ -522,7 +546,12 @@ function startSession(config) {
   } catch {
     /* without it, Telegram links use the public preview */
   }
-  if (fs.existsSync(ACCOUNT_COOKIES)) outgoing.cookieFolder = ACCOUNT_COOKIES;
+  try {
+    const cookies = accountCookieTexts();
+    if (Object.keys(cookies).length) outgoing.accountCookies = cookies;
+  } catch (error) {
+    logFile.write(`[security] saved site cookies could not be read: ${error.message}`);
+  }
   // stdin stays open so "stop" can be sent later.
   child.stdin.on("error", () => {});
   child.stdin.write(`${JSON.stringify(outgoing)}\n`);
@@ -541,7 +570,7 @@ ipcMain.handle("stop-pipeline", () => {
 });
 
 function allowedRoots() {
-  const roots = [ROOT, downloadsDir()];
+  const roots = [ROOT, downloadsDir(), ...jobDirs()];
   return roots.map((dir) => path.resolve(dir));
 }
 
@@ -654,6 +683,161 @@ ipcMain.handle("pick-download-dir", async () => {
   return { ok: true, canceled: false, path: result.filePaths[0] };
 });
 
+ipcMain.handle("pick-job-dir", async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false, canceled: true, path: "" };
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Choose a folder for this job",
+    defaultPath: downloadsDir(),
+    properties: ["openDirectory", "createDirectory"],
+  });
+  if (result.canceled || !result.filePaths.length) return { ok: false, canceled: true, path: "" };
+  const chosen = result.filePaths[0];
+  const dirs = [chosen, ...jobDirs().filter((dir) => !samePath(dir, chosen))].slice(0, JOB_DIRS_MAX);
+  writeSettings({ job_dirs: dirs });
+  return { ok: true, canceled: false, path: chosen };
+});
+
+// Jobs to and from a file. Parsing and checking happen in the window (format.js parseJobFile).
+ipcMain.handle("jobs-export", async (_event, jobs) => {
+  if (!mainWindow || mainWindow.isDestroyed() || !Array.isArray(jobs)) return { ok: false };
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: "Export jobs",
+    defaultPath: path.join(app.getPath("documents"), "nexdrop-jobs.json"),
+    filters: [{ name: "NexDrop jobs", extensions: ["json"] }],
+  });
+  if (result.canceled || !result.filePath) return { ok: false, canceled: true };
+  const body = { format: "nexdrop-jobs", version: 1, exported: new Date().toISOString(), jobs: jobs.slice(0, 500) };
+  fs.writeFileSync(result.filePath, JSON.stringify(body, null, 2));
+  return { ok: true, path: result.filePath, count: body.jobs.length };
+});
+
+ipcMain.handle("jobs-import", async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Import jobs or links",
+    properties: ["openFile"],
+    filters: [{ name: "Jobs or link lists", extensions: ["json", "txt", "csv", "m3u", "m3u8"] }],
+  });
+  if (result.canceled || !result.filePaths.length) return { ok: false, canceled: true };
+  const file = result.filePaths[0];
+  const size = fs.statSync(file).size;
+  if (size > 20 * 1024 * 1024) return { ok: false, error: "That file is larger than 20 MB." };
+  return { ok: true, name: path.basename(file), text: fs.readFileSync(file, "utf8"), knownDirs: [downloadsDir(), ...jobDirs()] };
+});
+
+// ─── diagnostics, backup and restore (3.0) ──────────────────────────────────
+
+function savedSignIns() {
+  try {
+    return accountVault().list().filter((item) => item.configured).length;
+  } catch {
+    return "?";
+  }
+}
+
+function tailOf(file, lines) {
+  try {
+    const text = fs.readFileSync(file, "utf8");
+    return text.split(/\r?\n/).slice(-lines).join("\n");
+  } catch {
+    return "(not found)";
+  }
+}
+
+function newestFile(dir, pattern) {
+  try {
+    return fs.readdirSync(dir).filter((name) => pattern.test(name))
+      .map((name) => ({ file: path.join(dir, name), at: fs.statSync(path.join(dir, name)).mtimeMs }))
+      .sort((a, b) => b.at - a.at)[0]?.file || "";
+  } catch {
+    return "";
+  }
+}
+
+// A plain-text report to attach to a bug report. It never includes links you queued, sign-ins or
+// cookies, and everything goes through fmt.redact. The user picks where it is saved and reads it first.
+ipcMain.handle("diagnostics-export", async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+  const picked = await dialog.showSaveDialog(mainWindow, {
+    title: "Save diagnostics report",
+    defaultPath: path.join(app.getPath("documents"), `nexdrop-diagnostics-${stamp}.txt`),
+    filters: [{ name: "Text", extensions: ["txt"] }],
+  });
+  if (picked.canceled || !picked.filePath) return { ok: false, canceled: true };
+  const settings = readSettings();
+  const prefs = { ...(settings.prefs || {}) };
+  if (prefs.proxy) prefs.proxy = "(set)";
+  const health = fs.existsSync(JOBS_DB)
+    ? parseJson((await runPython([path.join(ROOT, "desktop", "job_store.py"), "health", JOBS_DB, "7"], { timeout: 30000 })).stdout.trim(), {})
+    : {};
+  const runLog = newestFile(path.join(LOG_DIR, "runs"), /\.log$/i);
+  const sections = [
+    ["NexDrop diagnostics", [
+      `version ${app.getVersion()}, Electron ${process.versions.electron}, ${os.type()} ${os.release()} ${process.arch}`,
+      `memory ${Math.round(os.totalmem() / 1073741824)} GB, ${os.cpus().length} CPU threads`,
+      `python ${fs.existsSync(PYTHON) ? "bundled" : PYTHON}, FlareSolverr ${FLARE_BIN ? "bundled" : "missing"}`,
+      `queue ${Array.isArray(settings.queue) ? settings.queue.length : 0} job(s), watched ${Array.isArray(settings.watches) ? settings.watches.length : 0}, saved sign-ins ${savedSignIns()}`,
+      "Links in the queue, sign-ins and cookies are not included. Tokens, passwords, e-mail addresses and your user name are removed.",
+    ].join("\n")],
+    ["Settings", JSON.stringify(prefs, null, 2)],
+    ["Sites, last 7 days", (health.sites || []).map((s) => `${s.host}: ${s.saved} saved, ${s.failed} failed${s.reasons?.length ? ` (${s.reasons.map((r) => `${r.label} ${r.count}`).join(", ")})` : ""}`).join("\n") || "(no history)"],
+    [`Latest run log (${runLog ? path.basename(runLog) : "none"})`, runLog ? tailOf(runLog, 400) : "(none)"],
+    ["App log", tailOf(LOG_FILE, 200)],
+    ["FlareSolverr log", tailOf(path.join(LOG_DIR, "flaresolverr.log"), 60)],
+  ];
+  const body = sections.map(([title, text]) => `===== ${title} =====\n${text}\n`).join("\n");
+  fs.writeFileSync(picked.filePath, fmt.redact(body, os.homedir()));
+  shell.showItemInFolder(picked.filePath);
+  return { ok: true, path: picked.filePath };
+});
+
+ipcMain.handle("backup-create", async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
+  const stamp = new Date().toISOString().slice(0, 10);
+  const picked = await dialog.showSaveDialog(mainWindow, {
+    title: "Back up NexDrop",
+    defaultPath: path.join(app.getPath("documents"), `nexdrop-backup-${stamp}.zip`),
+    filters: [{ name: "NexDrop backup", extensions: ["zip"] }],
+  });
+  if (picked.canceled || !picked.filePath) return { ok: false, canceled: true };
+  const result = await runPython([path.join(ROOT, "desktop", "backup.py"), "create", APPDATA, picked.filePath], { timeout: 600000 });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "Backup failed.").slice(0, 300) };
+});
+
+ipcMain.handle("backup-restore", async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
+  if (current) return { ok: false, error: "Pause or finish the running download before restoring." };
+  const picked = await dialog.showOpenDialog(mainWindow, {
+    title: "Restore a NexDrop backup",
+    properties: ["openFile"],
+    filters: [{ name: "NexDrop backup", extensions: ["zip"] }],
+  });
+  if (picked.canceled || !picked.filePaths.length) return { ok: false, canceled: true };
+  const source = picked.filePaths[0];
+  const info = parseJson((await runPython([path.join(ROOT, "desktop", "backup.py"), "inspect", source], { timeout: 60000 })).stdout.trim(), null);
+  if (!info || !info.ok) return { ok: false, error: info?.error || "That file could not be read." };
+  const answer = await dialog.showMessageBox(mainWindow, {
+    type: "question",
+    buttons: ["Restore and restart", "Cancel"],
+    defaultId: 1,
+    cancelId: 1,
+    title: "Restore backup",
+    message: `Restore the backup from ${info.created || "an unknown date"}?`,
+    detail: `It replaces: ${info.files.map((f) => f.name).join(", ")}.\nYour current copies are kept beside them as ".before-restore" files, so nothing is lost. Sign-ins are not part of a backup and stay as they are. NexDrop restarts afterwards.`,
+  });
+  if (answer.response !== 0) return { ok: false, canceled: true };
+  const result = parseJson((await runPython([path.join(ROOT, "desktop", "backup.py"), "restore", APPDATA, source], { timeout: 600000 })).stdout.trim(), null);
+  if (!result || !result.ok) return { ok: false, error: result?.error || "Restore failed." };
+  logFile.write(`[info] Restored backup ${path.basename(source)}: ${result.restored.join(", ")}`);
+  setTimeout(() => {
+    quitting = true;
+    app.relaunch();
+    app.exit(0);
+  }, 800);
+  return result;
+});
+
 function readRuns() {
   const data = parseJson((() => {
     try {
@@ -700,8 +884,63 @@ function accountHosts(entry, host) {
   return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(clean) ? [clean] : [];
 }
 
+// Site cookies are sign-ins, so they are stored encrypted with Windows credential protection
+// (<id>.txt.enc). 2.x kept them as plain <id>.txt; those are encrypted and removed on first use.
 function accountCookiePath(id) {
+  return path.join(ACCOUNT_COOKIES, `${id}.txt.enc`);
+}
+
+function legacyCookiePath(id) {
   return path.join(ACCOUNT_COOKIES, `${id}.txt`);
+}
+
+function writeAccountCookies(id, text) {
+  if (!safeStorage.isEncryptionAvailable()) throw new Error("Secure storage is not available on this computer. Nothing was saved.");
+  fs.mkdirSync(ACCOUNT_COOKIES, { recursive: true });
+  const dest = accountCookiePath(id);
+  const temp = `${dest}.tmp`;
+  fs.writeFileSync(temp, safeStorage.encryptString(text).toString("base64"), { mode: 0o600 });
+  fs.renameSync(temp, dest);
+  return dest;
+}
+
+function readAccountCookies(id) {
+  const legacy = legacyCookiePath(id);
+  if (fs.existsSync(legacy)) {
+    try {
+      const text = fs.readFileSync(legacy, "utf8");
+      writeAccountCookies(id, text);
+      fs.rmSync(legacy, { force: true });
+      logFile.write(`[security] encrypted the saved cookies for ${id}`);
+      return text;
+    } catch (error) {
+      logFile.write(`[security] could not encrypt the saved cookies for ${id}: ${error.message}`);
+      return fs.readFileSync(legacy, "utf8");
+    }
+  }
+  try {
+    return safeStorage.decryptString(Buffer.from(fs.readFileSync(accountCookiePath(id), "utf8"), "base64"));
+  } catch {
+    return "";
+  }
+}
+
+function removeAccountCookies(id) {
+  for (const file of [accountCookiePath(id), legacyCookiePath(id)]) fs.rmSync(file, { force: true });
+}
+
+/** Every saved site's cookies, decrypted for one run. They reach the session through its stdin only. */
+function accountCookieTexts() {
+  const out = {};
+  if (!fs.existsSync(ACCOUNT_COOKIES)) return out;
+  const ids = new Set(fs.readdirSync(ACCOUNT_COOKIES)
+    .map((name) => (name.match(/^([a-z0-9_-]+)\.txt(?:\.enc)?$/i) || [])[1])
+    .filter((id) => id && ACCOUNT_IDS.has(id)));
+  for (const id of ids) {
+    const text = readAccountCookies(id);
+    if (text && text.includes("\t")) out[id] = text;
+  }
+  return out;
 }
 
 ipcMain.handle("auth-list", () => {
@@ -729,14 +968,13 @@ ipcMain.handle("auth-save", async (_event, body) => {
       if (result.code !== 0 || !result.stdout.includes("\t")) {
         return { ok: false, error: "No cookies for this site were in that file." };
       }
-      const dest = accountCookiePath(id);
-      fs.mkdirSync(ACCOUNT_COOKIES, { recursive: true });
-      fs.writeFileSync(dest, result.stdout, { mode: 0o600 });
+      const dest = writeAccountCookies(id, result.stdout);
+      fs.rmSync(legacyCookiePath(id), { force: true });
       store.save(id, "cookies", { cookieFile: dest, host: hosts[0] });
       return { ok: true, configured: true, message: `Saved cookies for ${hosts.join(", ")} only.` };
     }
     store.save(id, method, body || {});
-    if (method === "none" && fs.existsSync(accountCookiePath(id))) fs.rmSync(accountCookiePath(id));
+    if (method === "none") removeAccountCookies(id);
     return { ok: true, configured: method !== "none" };
   } catch (error) {
     return { ok: false, error: error.message };
@@ -748,7 +986,7 @@ ipcMain.handle("auth-remove", (_event, rawId) => {
   if (!ACCOUNT_IDS.has(id)) return { ok: false, error: "Unknown account." };
   try {
     accountVault().remove(id);
-    if (fs.existsSync(accountCookiePath(id))) fs.rmSync(accountCookiePath(id));
+    removeAccountCookies(id);
     return { ok: true };
   } catch (error) {
     return { ok: false, error: error.message };
@@ -769,7 +1007,9 @@ ipcMain.handle("auth-test", async (_event, rawId) => {
   if (secret.method === "cookies") {
     const entry = store.list().find((item) => item.id === id);
     const hosts = accountHosts(entry, secret.host);
-    const result = await runPython([path.join(ROOT, "desktop", "auth_cookies.py"), "--status", secret.cookieFile, "--hosts", hosts.join(",")]);
+    const text = readAccountCookies(id);
+    if (!text) return { ok: true, state: "missing", message: "The saved cookies are missing or could not be decrypted on this computer. Import them again." };
+    const result = await runPython([path.join(ROOT, "desktop", "auth_cookies.py"), "--status-stdin", "--hosts", hosts.join(",")], { input: text });
     const parsed = parseJson(result.stdout || "", null);
     if (!parsed) return { ok: false, error: "The cookie file could not be checked." };
     store.mark(id, new Date().toISOString(), parsed.state === "present" ? "" : parsed.message);
@@ -1108,9 +1348,44 @@ const JOBS_DB = path.join(APPDATA, "jobs.sqlite");
 
 ipcMain.handle("history-search", async (_event, body) => {
   if (!fs.existsSync(JOBS_DB)) return { ok: true, items: [], total: 0 };
-  const query = { text: String(body?.text || "").slice(0, 200), host: String(body?.host || "").slice(0, 200), status: String(body?.status || "completed"), limit: Math.max(1, Math.min(500, Number(body?.limit) || 200)) };
+  const query = { ...historyQuery(body), limit: Math.max(1, Math.min(500, Number(body?.limit) || 200)) };
   const result = await runPython([path.join(ROOT, "desktop", "job_store.py"), "search", JOBS_DB], { input: `${JSON.stringify(query)}\n`, timeout: 30000 });
   return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "History search failed.").slice(0, 300), items: [] };
+});
+
+function historyQuery(body) {
+  return {
+    text: String(body?.text || "").slice(0, 200),
+    host: String(body?.host || "").slice(0, 200),
+    status: String(body?.status || "completed"),
+    days: Math.max(0, Math.min(3650, Number(body?.days) || 0)),
+    type: String(body?.type || "").slice(0, 20),
+  };
+}
+
+// 3.0: the History list as CSV, with the same filters.
+ipcMain.handle("history-export", async (_event, body) => {
+  if (!fs.existsSync(JOBS_DB)) return { ok: false, error: "There is no history yet." };
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
+  const stamp = new Date().toISOString().slice(0, 10);
+  const picked = await dialog.showSaveDialog(mainWindow, {
+    title: "Export history",
+    defaultPath: path.join(app.getPath("documents"), `nexdrop-history-${stamp}.csv`),
+    filters: [{ name: "CSV", extensions: ["csv"] }],
+  });
+  if (picked.canceled || !picked.filePath) return { ok: false, canceled: true };
+  const dest = picked.filePath.toLowerCase().endsWith(".csv") ? picked.filePath : `${picked.filePath}.csv`;
+  const input = `${JSON.stringify({ query: historyQuery(body), dest })}\n`;
+  const result = await runPython([path.join(ROOT, "desktop", "job_store.py"), "export", JOBS_DB], { input, timeout: 120000 });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "Export failed.").slice(0, 300) };
+});
+
+// 3.0: per-site results from the history database (nothing is sent anywhere).
+ipcMain.handle("site-health", async (_event, days) => {
+  if (!fs.existsSync(JOBS_DB)) return { ok: true, sites: [] };
+  const span = String(Math.max(1, Math.min(365, Number(days) || 30)));
+  const result = await runPython([path.join(ROOT, "desktop", "job_store.py"), "health", JOBS_DB, span], { timeout: 30000 });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "Site health could not be read.").slice(0, 300), sites: [] };
 });
 
 // Smart naming V2: renaming a file from History. The window passes the item id and the new
@@ -1203,8 +1478,27 @@ if (!app.requestSingleInstanceLock()) {
   });
 }
 
-app.on("before-quit", () => {
+// Quitting during a download asks the session to stop first, so it saves history and the run can
+// be resumed; after STOP_GRACE_MS it is ended anyway.
+let quitWaiting = false;
+app.on("before-quit", (event) => {
   quitting = true;
+  if (current && current.child.exitCode === null && !quitWaiting) {
+    event.preventDefault();
+    quitWaiting = true;
+    const run = current;
+    killSession(false);
+    const done = () => {
+      clearTimeout(timer);
+      app.quit();
+    };
+    const timer = setTimeout(() => {
+      if (run.child.exitCode === null) killTree(run.child.pid, true);
+      done();
+    }, STOP_GRACE_MS + 500);
+    run.child.once("close", done);
+    return;
+  }
   clearInterval(clip.timer);
   killSession(true);
   stopFlare();

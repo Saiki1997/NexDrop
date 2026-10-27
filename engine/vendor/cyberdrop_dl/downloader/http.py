@@ -83,6 +83,28 @@ def should_retry_download(error: DownloadError, attempts_used: int, attempt_limi
     return attempts_used < attempt_limit
 
 
+RETRY_BASE_DELAY: float = 2.0
+RETRY_MAX_DELAY: float = 20.0
+RETRY_AFTER_CAP: float = 60.0
+
+
+def retry_delay(error: BaseException, attempts_used: int) -> float:
+    """NEXDROP patch: wait before a retry instead of asking again at once.
+
+    The server's Retry-After wins (capped, so one file does not hold a download slot for long);
+    otherwise 2 s, 4 s, 8 s ... up to 20 s, with jitter so parallel files don't retry in lockstep.
+    A resumed download that made progress (status 999) retries after a short pause."""
+    import random
+
+    retry_after = getattr(error, "retry_after", None)
+    if isinstance(retry_after, (int, float)) and retry_after >= 0:
+        return min(float(retry_after), RETRY_AFTER_CAP)
+    if getattr(error, "status", None) == 999:
+        return 1.0
+    delay = min(RETRY_BASE_DELAY * 2 ** max(0, attempts_used - 1), RETRY_MAX_DELAY)
+    return delay * random.uniform(0.75, 1.25)
+
+
 @dataclasses.dataclass(slots=True)
 class Capacity:
     limit: int | None = None
@@ -180,12 +202,15 @@ class Downloader:
                     raise
 
                 logger.error(f"{self.log_prefix} failed: {media_item.url} with error: {e!s}")
+                delay = retry_delay(e, media_item.attempts)
                 logger.info(
-                    "Retrying %s: %s, attempt: %s",
+                    "Retrying %s: %s, attempt: %s (in %.1f s)",
                     self.log_prefix.lower(),
                     media_item.url,
                     media_item.attempts + 1,
+                    delay,
                 )
+                await asyncio.sleep(delay)
 
     async def _check_skip_by_config(self, media_item: MediaItem) -> None:
         if not _is_allowed_filetype(media_item, self.config):

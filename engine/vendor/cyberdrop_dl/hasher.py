@@ -63,6 +63,21 @@ def _compute_hash(file: Path, algorithm: HashAlgo | HashAlgoLiteral, shutdown: t
     return hasher.hexdigest()
 
 
+def _compute_hashes(file: Path, algorithms: Iterable[HashAlgo], shutdown: threading.Event | None = None) -> dict[HashAlgo, str]:
+    """NEXDROP patch: every requested hash from one read of the file (was one full read per algorithm)."""
+    hashers = {HashAlgo(algo): _HASHERS[HashAlgo(algo)]() for algo in algorithms}
+    with file.open("rb") as fp:
+        buffer = bytearray(_CHUNK_SIZE)
+        mem_view = memoryview(buffer)
+        while size := fp.readinto(buffer):
+            if shutdown and shutdown.is_set():
+                raise RuntimeError("Hasher shutting down")
+            chunk = mem_view[:size]
+            for hasher in hashers.values():
+                hasher.update(chunk)
+    return {algo: hasher.hexdigest() for algo, hasher in hashers.items()}
+
+
 async def hash_directory(hasher: Hasher) -> HashingStats:
     if not await aio.is_dir(hasher.path):
         raise NotADirectoryError(None, hasher.path)
@@ -150,59 +165,49 @@ class Hasher:
 
         async with self._sem:
             with self.tui.new_file(file):
-                async with asyncio.TaskGroup() as tg:
-                    logger.info("Computing hashes of '%s'", file)
-                    task_map = {
-                        algo: tg.create_task(
-                            self._update_db_and_retrive_hash(
-                                file,
-                                original_filename,
-                                referer,
-                                algo.value,
-                            )
-                        )
-                        for algo in self.hashes
-                    }
-
-            hashes = {algo: result for algo, task in task_map.items() if (result := task.result()) is not None}
+                logger.info("Computing hashes of '%s'", file)
+                hashes = await self._update_db_and_retrive_hashes(file, original_filename, referer)
             logger.debug("Hashes of '%s'\n%s", file, hashes)
 
         return hashes.get(HashAlgo.XXH128)
 
-    async def _update_db_and_retrive_hash(
+    async def _update_db_and_retrive_hashes(
         self,
         file: Path,
         original_filename: str | None,
         referer: AbsoluteHttpURL | None,
-        hash_type: HashAlgoLiteral,
-    ) -> str | None:
-        """Generates hash of a file."""
-
-        hash_value = await self.database.hash.get_file_hash_exists(file, hash_type)
-        try:
-            if not hash_value:
-                hash_value = await self.hash_file(file, hash_type)
-                await self.database.hash.insert_or_update_hash_db(
-                    hash_value,
-                    hash_type,
-                    file,
-                    original_filename,
-                    referer,
+    ) -> dict[HashAlgo, str]:
+        """Hashes already in the database are reused; the missing ones come from one read of the file."""
+        found: dict[HashAlgo, str] = {}
+        for algo in self.hashes:
+            try:
+                if known := await self.database.hash.get_file_hash_exists(file, algo.value):
+                    found[algo] = known
+            except Exception:
+                logger.exception("Error reading the %s hash of '%s'", algo.value, file)
+        missing = [algo for algo in self.hashes if algo not in found]
+        computed: dict[HashAlgo, str] = {}
+        if missing:
+            try:
+                computed = await asyncio.get_running_loop().run_in_executor(
+                    self._pool, _compute_hashes, self._cwd / file, missing, self._shutdown
                 )
-                self.tui.add_completed(hash_type)
+            except Exception:
+                logger.exception("Error computing hashes of '%s'", file)
+        for algo in self.hashes:
+            value = computed.get(algo) or found.get(algo)
+            if value is None:
+                continue
+            try:
+                await self.database.hash.insert_or_update_hash_db(value, algo.value, file, original_filename, referer)
+            except Exception:
+                logger.exception("Error saving the %s hash of '%s'", algo.value, file)
+                continue
+            if algo in computed:
+                self.tui.add_completed(algo.value)
             else:
                 self.tui.stats.prev_hashed += 1
-                await self.database.hash.insert_or_update_hash_db(
-                    hash_value,
-                    hash_type,
-                    file,
-                    original_filename,
-                    referer,
-                )
-        except Exception:
-            logger.exception("Error computing %s hash of '%s'", hash_type, file)
-        else:
-            return hash_value
+        return {**found, **computed}
 
     async def save_hash_data(self, media_item: MediaItem, hash_value: str | None) -> None:
         if not hash_value:

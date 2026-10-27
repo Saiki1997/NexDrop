@@ -192,6 +192,16 @@ svg { stroke: currentColor; stroke-width: 1.6; fill: none; stroke-linecap: round
 .queue-remove { width: 20px; height: 20px; border-radius: 4px; color: var(--ash); display: inline-flex; align-items: center; justify-content: center; }
 .queue-remove:hover { background: var(--shale-2); color: var(--bone); }
 .queue-remove svg { width: 12px; height: 12px; }
+.queue-open { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; text-align: left; }
+.queue-open:hover { color: var(--bone); text-decoration: underline; text-underline-offset: 3px; }
+.queue-list li.held { opacity: .6; box-shadow: none; }
+.queue-list li.held .queue-open::before { content: "Held · "; color: var(--ash); }
+.queue-list li.parked .queue-open::before { content: "Paused · "; color: var(--ash); }
+.queue-tag { font-size: 11px; color: var(--ash); white-space: nowrap; }
+.dialog-job { width: min(560px, calc(100vw - 32px)); }
+.dialog-job .field, .dialog-job .switch { margin-bottom: 12px; }
+.dialog-job .dialog-actions + .dialog-actions { margin-top: 10px; }
+.job-folder { flex: 1; min-width: 0; font: 400 12px var(--font-mono); color: var(--ash); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ─── phases: a real 4-step sequence ─── */
 .phases {
@@ -468,6 +478,8 @@ svg { stroke: currentColor; stroke-width: 1.6; fill: none; stroke-linecap: round
 .field .select { max-width: none; padding-right: 30px; }
 .field input:focus, .field .select:focus { outline: none; border-color: var(--copper); }
 .field input[readonly] { color: var(--ash); font: 400 12.5px var(--font-mono); }
+.field input:disabled { opacity: .5; cursor: not-allowed; }
+.field input[aria-invalid="true"] { border-color: var(--rust, #c0563f); }
 .field-row { display: flex; gap: 8px; align-items: center; }
 .field-row input { flex: 1; }
 .field-row.actions { flex-wrap: wrap; }
@@ -566,6 +578,20 @@ svg { stroke: currentColor; stroke-width: 1.6; fill: none; stroke-linecap: round
 .history-search { flex: 1; height: 36px; padding: 0 10px; background-color: var(--basalt); border: 1px solid var(--shale); border-radius: var(--r-control); }
 .history-search:focus { outline: none; border-color: var(--copper); }
 .pane[data-pane="history"] .select { height: 36px; max-width: 130px; }
+.history-filters { margin-top: 8px; }
+.history-filters .select { flex: 1; }
+.history-info small.problem { color: var(--rust, #c0563f); }
+.health-title { flex: 1; margin: 0; }
+.health-list { list-style: none; display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.health-list li { display: grid; grid-template-columns: 10px 1fr auto; gap: 4px 10px; align-items: center; padding: 8px 12px; border: 1px solid var(--shale); border-radius: var(--r-control); background: var(--slate); }
+.health-list li.empty-note { display: block; color: var(--ash-dim); border-style: dashed; background: none; }
+.health-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ash-dim); }
+.health-dot.working { background: #6fae7c; }
+.health-dot.unstable { background: #c9a85a; }
+.health-dot.failing { background: var(--rust, #c0563f); }
+.health-host { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.health-rate { font: 400 12px var(--font-mono); color: var(--ash); }
+.health-meta { grid-column: 2 / 4; color: var(--ash-dim); font-size: 12px; }
 .history-list { list-style: none; display: flex; flex-direction: column; gap: 6px; }
 .history-item {
   display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 6px; align-items: center;

@@ -40,6 +40,7 @@ _DESKTOP_DIR = os.path.dirname(os.path.abspath(__file__))
 if os.path.normcase(_DESKTOP_DIR) not in {os.path.normcase(os.path.abspath(e)) for e in sys.path if e}:
     sys.path.insert(0, _DESKTOP_DIR)
 from auth_cookies import convert_any  # noqa: E402
+import error_classes  # noqa: E402
 from job_store import JobStore  # noqa: E402
 from scrape_status import classify_scrape_message  # noqa: E402
 import telegram_account  # noqa: E402
@@ -150,7 +151,7 @@ def open_run_log(config: dict, urls: list[str]) -> None:
     except OSError:
         RUN_LOG = None
         return
-    secret = {"auth", "telegram", "urls", "unsupported", "cookieFiles", "cookies", "cookieFolder"}
+    secret = {"auth", "telegram", "urls", "unsupported", "cookieFiles", "cookies", "cookieFolder", "accountCookies"}
     safe = {k: v for k, v in config.items() if k not in secret}
     write_run_log(f"NEXDROP run {datetime.now().isoformat(timespec='seconds')}")
     write_run_log(f"Python {sys.version.split()[0]} on {sys.platform}; folder {ROOT}")
@@ -197,6 +198,10 @@ class FileTable:
     def update(self, url: str, **fields) -> None:
         if not url:
             return
+        if fields.get("category"):
+            # what went wrong and what to do, for the file list (error_classes.py)
+            info = error_classes.describe(fields["category"])
+            fields["label"], fields["action"] = info["label"], info["action"]
         changed = None
         with self.lock:
             row = self.rows.get(url)
@@ -383,6 +388,16 @@ def unique_path(folder: Path, name: str) -> Path:
     raise ValueError("Too many files with the same name")
 
 
+_WEB_PAGE_STARTS = (b"<!doctype html", b"<html", b"<head")
+
+
+def looks_like_web_page(head: bytes, suffix: str) -> bool:
+    """An image, video or audio file whose first bytes are an HTML page (login or error page)."""
+    if suffix.lower() not in _IMAGE | _VIDEO | _AUDIO:
+        return False
+    return head[:512].lstrip(b"\xef\xbb\xbf \t\r\n").lower().startswith(_WEB_PAGE_STARTS)
+
+
 def _pick_name(original: str, final: str, disposition: str | None) -> str:
     """Prefer the server's file name, then whichever URL has a file extension."""
     if disposition:
@@ -449,6 +464,10 @@ def _numbering(config: dict) -> str:
     if config.get("sequencePrefix") is False:
         return "off"  # "Numbered filenames" was off before 2.5
     return "suffix"
+
+
+DOWNLOAD_MODE_LABELS = {"auto": "Auto", "balanced": "Balanced", "max": "Maximum speed", "low": "Low resource",
+                        "custom": "Custom"}
 
 
 def _choice(value: object, allowed: tuple[str, ...], default: str) -> str:
@@ -571,12 +590,17 @@ def http_save(url: str, folder: Path) -> dict:
         FILES.update(url, name=target.name, sequence=number or None, state="active", total=total, read=0)
         try:
             with partial.open("wb") as handle:
+                first = True
                 while True:
                     if STOP.is_set():
                         raise ValueError("Stopped")
                     chunk = response.read(256 * 1024)
                     if not chunk:
                         break
+                    if first:
+                        first = False
+                        if looks_like_web_page(chunk, target.suffix):
+                            raise ValueError("Got a web page instead of the file")
                     read += len(chunk)
                     if read > MAX_BYTES:
                         raise ValueError("File exceeds the 80 MB transfer limit")
@@ -584,6 +608,11 @@ def http_save(url: str, folder: Path) -> dict:
                     FILES.add_bytes(len(chunk))
                     elapsed = max(time.monotonic() - started, 1e-3)
                     FILES.update(url, read=read, speed=int(read / elapsed))
+            # urllib returns a short body without an error when the connection drops early.
+            if total is not None and read != total:
+                raise ValueError(f"Incomplete transfer: got {read:,} of {total:,} bytes")
+            if read == 0:
+                raise ValueError("Incomplete transfer: the file is empty")
             os.replace(partial, target)
         except BaseException:
             partial.unlink(missing_ok=True)
@@ -600,14 +629,22 @@ def http_save(url: str, folder: Path) -> dict:
 
 # ─── cookies ─────────────────────────────────────────────────────────────────
 
-def prepare_cookies(account_folder: str, fallback_files: list[str]) -> str | None:
+def prepare_cookies(account_folder: str, fallback_files: list[str], account_texts: dict | None = None) -> str | None:
     """Build this run's cookie folder: per-site account cookies plus any fallback files.
 
-    A fresh folder each run, so a changed or removed cookie file never lingers.
+    A fresh folder each run, so a changed or removed cookie file never lingers. Saved site
+    cookies arrive decrypted through stdin (`account_texts`) and only exist on disk during the
+    run: clear_run_cookies() removes the folder when the run ends.
     """
-    shutil.rmtree(RUN_COOKIES, ignore_errors=True)
+    clear_run_cookies()
     RUN_COOKIES.mkdir(parents=True, exist_ok=True)
     written = 0
+    for name, text in sorted((account_texts or {}).items()):
+        text = convert_any(str(text or ""))
+        if text.count("\n") >= 1 and "\t" in text:
+            safe = re.sub(r"[^A-Za-z0-9_-]", "_", str(name))[:40]
+            (RUN_COOKIES / f"account-{safe}.txt").write_text(text, encoding="utf-8")
+            written += 1
     sources: list[Path] = []
     if account_folder:
         folder = Path(account_folder)
@@ -631,6 +668,12 @@ def prepare_cookies(account_folder: str, fallback_files: list[str]) -> str | Non
     if written:
         return str(RUN_COOKIES)
     return None
+
+
+def clear_run_cookies() -> None:
+    """Cookie copies are sign-ins in plain text; none stays on disk after a run."""
+    for folder in (RUN_COOKIES, APPDATA / "cookies" / "engine"):
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 def note_source(url: str, message: str, category: str) -> None:
@@ -738,6 +781,9 @@ def ensure_flaresolverr(config: dict) -> str | None:
             # Antivirus quarantine or a blocked exe must not stop downloads that don't need it.
             log("warning", f"FlareSolverr could not start ({error.strerror or error}). Continuing without it.")
             return None
+        finally:
+            if handle is not subprocess.DEVNULL:
+                handle.close()  # the child has its own copy
         FLARE_OWNED = True
         proc = FLARE
     if _wait_for_flare(base, proc):
@@ -1017,12 +1063,15 @@ def _job_status(saved: int, failed: int, skipped: int, stopped: bool) -> str:
     return "completed_with_errors" if failed else "completed"
 
 
-TRANSIENT = ("503", "502", "500", "504", "429", "timeout", "Timeout", "ClientConnectorError", "ServerDisconnected", "Connection reset")
 RETRY_WAIT = int(os.environ.get("NEXDROP_RETRY_WAIT", "45"))  # seconds before the automatic retry pass
+# The source registry keeps its own, older category names.
+REGISTRY_CATEGORY = {"not_found": "unavailable", "auth_required": "access_denied", "expired_url": "access_denied",
+                     "timeout": "timeout", "unreachable": "timeout"}
 
 
-def is_transient(reason: str) -> bool:
-    return any(part in reason for part in TRANSIENT)
+def is_transient(reason: str, url: str = "") -> bool:
+    """Worth one more try in this run: busy, rate-limited, dropped, incomplete, or an expired link."""
+    return error_classes.is_retryable(error_classes.classify(reason, url))
 
 
 def retry_pass(failed: list[str], referers: dict[str, str], payload: dict, engine_pass, direct_fetch, direct: set[str]) -> None:
@@ -1032,13 +1081,17 @@ def retry_pass(failed: list[str], referers: dict[str, str], payload: dict, engin
     thread) so it requests the file with the right headers; files already
     saved are skipped from history.
     """
-    retry_files = [url for url in dict.fromkeys(failed) if is_transient(FILES.reason(url))]
+    retry_files = [url for url in dict.fromkeys(failed) if is_transient(FILES.reason(url), url)]
     if not retry_files:
         return
     targets = list(dict.fromkeys(referers.get(url) or url for url in retry_files))
+    expired = [url for url in retry_files if error_classes.classify(FILES.reason(url), url) == "expired_url"]
     for url in retry_files:
         FILES.update(url, state="retrying", reason=f"retrying in {RETRY_WAIT} s")
     log("info", f"{len(retry_files)} file(s) failed with a temporary error. Trying them again in {RETRY_WAIT} s.")
+    if expired:
+        log("info", f"{len(expired)} of them had an expired download link. Their pages are read again for fresh links.")
+    saved_before = {url for url, row in FILES.rows.items() if row["state"] == "done"}
     if STOP.wait(RETRY_WAIT):
         for url in retry_files:
             FILES.update(url, state="failed", reason="stopped before the retry")
@@ -1053,14 +1106,42 @@ def retry_pass(failed: list[str], referers: dict[str, str], payload: dict, engin
     for url in retry_files:
         if url in direct and not STOP.is_set():
             direct_fetch(url)
+    refreshed = _match_refreshed_links(retry_files, saved_before)
     for url in retry_files:
-        if FILES.state(url) not in FINAL_STATES:
+        if url in refreshed:
+            # The file has its own new row; this one only says where it went.
+            FILES.update(url, state="skipped", speed=0, reason=f"saved from a fresh link as {refreshed[url].get('name') or 'a new row'}")
+        elif FILES.state(url) not in FINAL_STATES:
             FILES.update(url, state="failed", reason="still failing after a retry")
             failed.append(url)
         elif FILES.state(url) == "failed":
             failed.append(url)
-    recovered = sum(1 for url in retry_files if FILES.state(url) == "done")
+    recovered = sum(1 for url in retry_files if FILES.state(url) == "done") + len(refreshed)
     log("ok" if recovered else "warning", f"Retry saved {recovered} of {len(retry_files)} file(s).")
+
+
+def _match_refreshed_links(retry_files: list[str], saved_before: set[str]) -> dict[str, dict]:
+    """Failed rows whose file was saved during the retry pass under a fresh link.
+
+    An expired CDN link comes back from its page with a new token or on another server, so the
+    saved row has a different link. The file is the same when the link's file name is the same
+    (at least 6 characters, unique among the new rows)."""
+    with FILES.lock:
+        fresh = [dict(row) for url, row in FILES.rows.items() if row["state"] == "done" and url not in saved_before]
+    by_name: dict[str, list[dict]] = {}
+    for row in fresh:
+        key = unquote(urlparse(row["url"]).path.rsplit("/", 1)[-1]).lower()
+        if len(key) >= 6:
+            by_name.setdefault(key, []).append(row)
+    found = {}
+    for url in retry_files:
+        if FILES.state(url) == "done":
+            continue
+        key = unquote(urlparse(url).path.rsplit("/", 1)[-1]).lower()
+        matches = by_name.get(key) or []
+        if len(key) >= 6 and len(matches) == 1:
+            found[url] = matches[0]
+    return found
 
 
 _ENGINE_DB = None  # read-only connection, opened once per run (a big chat checks every message)
@@ -1085,6 +1166,16 @@ def engine_has_telegram(link: str) -> bool:
         return row is not None
     except Exception:  # noqa: BLE001 - history is a convenience
         return False
+
+
+def _close_engine_db() -> None:
+    global _ENGINE_DB
+    if _ENGINE_DB is not None:
+        try:
+            _ENGINE_DB.close()
+        except Exception:  # noqa: BLE001
+            pass
+        _ENGINE_DB = None
 
 
 class _TelegramHooks:
@@ -1199,6 +1290,7 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
                 "sequence": row.get("sequence") or 0, "name": row.get("name") or "",
                 "bytes_read": row.get("read") or 0, "bytes_total": row.get("total") or 0,
                 "status": row.get("reason") or "", "destination": row.get("path") or "",
+                "category": row.get("category") or "",
                 "naming": NAMING_ROWS.get(row["url"]),
             })
         except Exception:  # noqa: BLE001
@@ -1211,7 +1303,8 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
     fallback = [str(c) for c in (config.get("cookieFiles") or []) if c]
     if config.get("cookies"):
         fallback.append(str(config["cookies"]))
-    cookie_folder = prepare_cookies(str(config.get("cookieFolder") or ""), fallback)
+    account_texts = config.get("accountCookies") if isinstance(config.get("accountCookies"), dict) else {}
+    cookie_folder = prepare_cookies(str(config.get("cookieFolder") or ""), fallback, account_texts)
     if STOP.is_set():
         return _finish(urls, folder, [], rejected, [], started, stopped=True, store=store, job_id=job_id)
 
@@ -1263,6 +1356,8 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         # Smart naming (2.5). Missing settings take the defaults from the naming spec.
         "smartNames": True if config.get("smartNames") is None else bool(config.get("smartNames")),
         "nameStrategy": _choice(config.get("nameStrategy"), ("auto", "original", "media", "post", "album"), "auto"),
+        "nameTemplate": str(config.get("nameTemplate") or "")[:150],
+        "numberWidth": _int(config.get("numberWidth"), 3, 3, 5),
         "folderNaming": _choice(config.get("folderNaming"), ("auto", "album", "post", "original"), "auto"),
         "siteInFolder": bool(config.get("siteInFolder")),
         "replaceGenericFolders": bool(config.get("replaceGenericFolders")),
@@ -1280,6 +1375,10 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         "namingCorrections": str(CORRECTIONS) if config.get("learnNames") is not False else "",
         "embeddedTitles": bool(config.get("embeddedTitles")),
     }
+    if order_mode != "source":
+        mode = _choice(config.get("downloadMode"), tuple(DOWNLOAD_MODE_LABELS), "custom")
+        log("info", f"Download mode: {DOWNLOAD_MODE_LABELS[mode]}, {payload['maxDownloads']} at once, "
+                    f"{payload['perHost']} per site, {payload['serverSlots']} per server.")
     maintain_engine_db()  # tidy up after an earlier crash or forced stop
     env = os.environ.copy()
     env.update({
@@ -1299,6 +1398,7 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
     saved_urls: list[str] = []
     failed: list[str] = list(rejected)
     skipped_urls: list[str] = []
+    duplicates: list[tuple[str, str]] = []  # (new file, the earlier file with the same content)
     unsupported: list[str] = []
     scrape_notes: list[str] = []
     referers: dict[str, str] = {}
@@ -1395,15 +1495,14 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
             elif kind == "failed":
                 url = str(event.get("url") or "")
                 reason = str(event.get("reason") or "failed")
+                category = error_classes.classify(reason, url)
                 if url and url not in failed:
                     failed.append(url)
                     if event.get("referer"):
                         referers[url] = str(event["referer"])
-                    lowered = reason.lower()
-                    category = "unavailable" if "404" in reason else "access_denied" if "403" in reason else "timeout" if "timeout" in lowered else "other"
-                    note_source(url, reason, category)
+                    note_source(url, reason, REGISTRY_CATEGORY.get(category, "other"))
                     hints.failed(url, reason)
-                FILES.update(url, state="failed", reason=reason, speed=0)
+                FILES.update(url, state="failed", reason=reason, speed=0, category=category)
             elif kind == "skipped":
                 url = str(event.get("url") or "")
                 if url and FILES.state(url) != "done":
@@ -1411,6 +1510,13 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
                     if reason.startswith(("already", "same hash")):
                         skipped_urls.append(url)  # only real duplicates go into history
                     FILES.update(url, state="skipped", reason=reason, speed=0)
+            elif kind == "duplicate":
+                # same bytes as a file saved earlier; both are kept, the user decides
+                url = str(event.get("url") or "")
+                other = str(event.get("of") or "")
+                if url and other:
+                    duplicates.append((str(event.get("path") or ""), other))
+                    FILES.update(url, reason=f"same content as {Path(other).name}")
             elif kind == "retry":
                 url = str(event.get("url") or "")
                 if url and FILES.state(url) not in FINAL_STATES:
@@ -1492,7 +1598,8 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
             saved_urls.append(url)
         except Exception as error:  # noqa: BLE001
             failed.append(url)
-            FILES.update(url, state="failed", reason=str(error)[:200], speed=0)
+            reason = str(error)[:200]
+            FILES.update(url, state="failed", reason=reason, speed=0, category=error_classes.classify(reason, url))
 
     if unsupported and not STOP.is_set():
         emit({"type": "phase", "stage": "finalize", "message": f"Fetching {len(unsupported)} direct file(s)"})
@@ -1519,6 +1626,11 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
 
     for text in hints.summary():
         log("warning", text)
+    if duplicates:
+        log("info", f"{len(duplicates)} saved file(s) have the same content as files you already had. "
+                    "Both copies were kept; nothing was deleted.")
+        for path, other in duplicates[:20]:
+            log("info", f"  {path}  =  {other}")
     with FILES.lock:
         needs_account = sum(1 for row in FILES.rows.values() if "sign in to Telegram" in (row.get("reason") or ""))
     if needs_account:
@@ -1563,6 +1675,8 @@ def _finish(urls, folder, saved_urls, failed, skipped_urls, started, *, stopped,
         except Exception:  # noqa: BLE001
             pass
     _stop_flare()
+    clear_run_cookies()
+    _close_engine_db()
     maintain_engine_db()
     FINISHED.set()
     emit({
@@ -1606,6 +1720,7 @@ if __name__ == "__main__":
         raise
     except BaseException as exc:  # noqa: BLE001
         _stop_flare()
+        clear_run_cookies()
         emit({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
         emit({"type": "finished", "saved": 0, "failed": 0, "skipped": 0, "failedUrls": [], "root": "",
               "stopped": False, "bytes": 0, "seconds": 0, "emptyReason": ""})

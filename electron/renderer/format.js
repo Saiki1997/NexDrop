@@ -172,5 +172,169 @@
     return "";
   }
 
-  return { bytes, speed, mbps, duration, ago, parseLinks, host, finishText, compareVersions, clockMinutes, inTimeWindow, appLinkUrls, checksumFor };
+  /* Download modes: how many files at once, per site and per server. "custom" keeps the user's own numbers. */
+  const DOWNLOAD_MODES = {
+    auto: { maxDownloads: 16, perHost: 6, serverSlots: 3 },
+    balanced: { maxDownloads: 8, perHost: 4, serverSlots: 2 },
+    max: { maxDownloads: 24, perHost: 10, serverSlots: 4 },
+    low: { maxDownloads: 3, perHost: 2, serverSlots: 1 },
+  };
+
+  /** The limits a run uses for `mode`; custom (or an unknown mode) uses the numbers in `custom`. */
+  function modeLimits(mode, custom) {
+    const preset = DOWNLOAD_MODES[mode];
+    if (preset) return { ...preset };
+    const pick = (value, def, max) => {
+      const n = parseInt(value, 10);
+      return Number.isFinite(n) ? Math.max(1, Math.min(max, n)) : def;
+    };
+    const own = custom || {};
+    return { maxDownloads: pick(own.maxDownloads, 16, 32), perHost: pick(own.perHost, 6, 16), serverSlots: pick(own.serverSlots, 3, 6) };
+  }
+
+  /** The mode for settings saved before 3.0: the old defaults are Auto, anything changed is Custom. */
+  function guessMode(prefs) {
+    const p = prefs || {};
+    const same = ["maxDownloads", "perHost", "serverSlots"].every((k) => p[k] === undefined || p[k] === DOWNLOAD_MODES.auto[k]);
+    return same ? "auto" : "custom";
+  }
+
+  /* Filename templates (Smart Naming 3.0). Mirrors smart_naming.py so Settings can show an example. */
+  const TEMPLATE_VARS = ["title", "original", "album", "thread", "post", "creator", "date", "site", "type", "number", "ext"];
+  const NAME_VARS = ["title", "original", "album", "thread", "post", "creator"];
+  const TOKEN = /\{([a-z]+)\}/g;
+
+  /** Why a template can't be used, or "" when it can (or is empty). */
+  function templateProblem(template) {
+    const text = String(template || "").trim().replace(/\.\{ext\}$/i, "");
+    if (!text) return "";
+    if (text.length > 150) return "longer than 150 characters";
+    const names = [...text.matchAll(TOKEN)].map((m) => m[1]);
+    const unknown = names.find((n) => !TEMPLATE_VARS.includes(n));
+    if (unknown) return `unknown variable {${unknown}}`;
+    if (/[{}]/.test(text.replace(TOKEN, ""))) return "a { or } that is not part of a variable";
+    if (/[<>:"/\\|?*]/.test(text)) return 'a character Windows does not allow in filenames (< > : " / \\ | ? *)';
+    if (!names.some((n) => NAME_VARS.includes(n))) return "no name variable ({title}, {original}, {album}, {thread}, {post} or {creator})";
+    return "";
+  }
+
+  /** The filename stem for `values`; "" when every name variable is empty (the automatic name is used). */
+  function renderTemplate(template, values, number) {
+    const text = String(template || "").trim().replace(/\.\{ext\}$/i, "");
+    const edge = " -_.,";
+    const pieces = [];
+    let pos = 0;
+    let named = false;
+    for (const match of text.matchAll(TOKEN)) {
+      const literal = text.slice(pos, match.index);
+      const key = match[1];
+      const value = key === "number" ? number || "" : key === "ext" ? "" : (values || {})[key] || "";
+      if (value && NAME_VARS.includes(key)) named = true;
+      if (value) pieces.push(literal, value);
+      else if (!pieces.length && [...literal].some((c) => !edge.includes(c))) pieces.push(literal);
+      pos = match.index + match[0].length;
+    }
+    if (!named) return "";
+    pieces.push(text.slice(pos));
+    let stem = pieces.join("").replace(/([ \-_.,])\1+/g, "$1");
+    while (stem && edge.includes(stem[0])) stem = stem.slice(1);
+    while (stem && edge.includes(stem[stem.length - 1])) stem = stem.slice(0, -1);
+    return stem;
+  }
+
+  /* Jobs (3.0 job manager): what is kept in an export, and reading an export or a link list back. */
+  const JOB_FIELDS = ["label", "urls", "unsupported", "startPage", "endPage", "redownload", "folder", "mode", "speedMB", "hold", "named"];
+  const MAX_JOBS = 500;
+  const MAX_JOB_URLS = 20000;
+
+  function sameFolder(a, b) {
+    const norm = (p) => String(p || "").replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
+    return Boolean(a) && norm(a) === norm(b);
+  }
+
+  /** A queued job as it is saved and exported: only known fields, checked. Returns null when it has no links. */
+  function cleanJob(raw, knownDirs) {
+    if (!raw || typeof raw !== "object") return null;
+    const links = parseLinks([...(Array.isArray(raw.urls) ? raw.urls : []), ...(Array.isArray(raw.unsupported) ? raw.unsupported : [])].map(String).join("\n"));
+    const urls = links.urls.slice(0, MAX_JOB_URLS);
+    if (!urls.length && !links.unsupported.length) return null;
+    const int = (v, lo, hi) => {
+      const n = parseInt(v, 10);
+      return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : null;
+    };
+    const job = { urls, unsupported: links.unsupported.slice(0, 1000) };
+    if (typeof raw.label === "string" && raw.label.trim()) job.label = raw.label.trim().slice(0, 120);
+    job.startPage = int(raw.startPage, 1, 100000) || 1;
+    job.endPage = int(raw.endPage, 1, 100000);
+    if (job.endPage && job.endPage < job.startPage) job.endPage = null;
+    job.redownload = Boolean(raw.redownload);
+    if (typeof raw.folder === "string" && raw.folder && (!knownDirs || knownDirs.some((d) => sameFolder(d, raw.folder)))) job.folder = raw.folder;
+    if (DOWNLOAD_MODES[raw.mode]) job.mode = raw.mode;
+    const speed = int(raw.speedMB, 0, 1000);
+    if (speed !== null && raw.speedMB !== "" && raw.speedMB !== null) job.speedMB = speed;
+    if (raw.hold) job.hold = true;
+    if (raw.named) job.named = true;
+    return job;
+  }
+
+  /** Jobs from an imported file: a NexDrop jobs export, a JSON list of links, or any text with links in it
+   * (.txt, .csv, .m3u). `dropped` counts jobs without links and folders not chosen on this PC. */
+  function parseJobFile(name, text, knownDirs) {
+    const body = String(text || "").replace(/^\uFEFF/, "");
+    let data = null;
+    if (/\.json$/i.test(name || "") || /^\s*[[{]/.test(body)) {
+      try {
+        data = JSON.parse(body);
+      } catch {
+        data = null;
+      }
+    }
+    const jobs = [];
+    let dropped = 0;
+    if (data && typeof data === "object" && !Array.isArray(data) && Array.isArray(data.jobs)) {
+      for (const raw of data.jobs.slice(0, MAX_JOBS)) {
+        const job = cleanJob(raw, knownDirs);
+        if (!job) dropped += 1;
+        else {
+          if (raw && raw.folder && !job.folder) dropped += 1;
+          jobs.push(job);
+        }
+      }
+      return { jobs, dropped, kind: "jobs" };
+    }
+    let lines = [];
+    if (Array.isArray(data)) lines = data.map((item) => (item && typeof item === "object" ? item.url : item)).filter((v) => typeof v === "string");
+    else lines = body.match(/https?:\/\/[^\s"'<>,;]+/gi) || [];
+    const job = cleanJob({ urls: lines });
+    if (job) jobs.push(job);
+    return { jobs, dropped, kind: "links" };
+  }
+
+  /** The fields of a job worth keeping in an export. */
+  function exportJob(job) {
+    const out = {};
+    for (const key of JOB_FIELDS) if (job[key] !== undefined && job[key] !== null && job[key] !== "") out[key] = job[key];
+    return out;
+  }
+
+  /** Text safe to share in a diagnostics report: no tokens, passwords, cookies, e-mail addresses or user name. */
+  function redact(text, home) {
+    let out = String(text || "");
+    // cookie files: drop every cookie line, keep the comments
+    out = out.replace(/^[^\s#][^\t\n]*\t(TRUE|FALSE)\t[^\t\n]*\t(TRUE|FALSE)\t\d+\t[^\t\n]*\t[^\n]*$/gim, "[cookie removed]");
+    out = out.replace(/\b(authorization|cookie|set-cookie|x-api-key)\s*[:=]\s*[^\n]+/gi, "$1: [removed]");
+    out = out.replace(/([?&;\s"'](?:[a-z0-9_-]*(?:token|sig|signature|secret|password|passwd|pass|auth|session|sess|key|hash|code|cookie|xf_user|expires?)[a-z0-9_-]*))=([^&\s"'#]+)/gi, "$1=[removed]");
+    out = out.replace(/("(?:[a-z0-9_]*(?:token|secret|password|api_key|apikey|cookie|session)[a-z0-9_]*)"\s*:\s*)"[^"]*"/gi, '$1"[removed]"');
+    out = out.replace(/(https?:\/\/)[^/\s:@]+:[^/\s@]+@/gi, "$1[removed]@");
+    out = out.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]");
+    if (home) {
+      const escaped = String(home).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      out = out.replace(new RegExp(escaped, "gi"), "~");
+      const json = JSON.stringify(String(home)).slice(1, -1).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      out = out.replace(new RegExp(json, "gi"), "~");
+    }
+    return out;
+  }
+
+  return { redact, cleanJob, parseJobFile, exportJob, TEMPLATE_VARS, templateProblem, renderTemplate, DOWNLOAD_MODES, modeLimits, guessMode, bytes, speed, mbps, duration, ago, parseLinks, host, finishText, compareVersions, clockMinutes, inTimeWindow, appLinkUrls, checksumFor };
 });

@@ -45,6 +45,8 @@ class NamingSettings:
     keep_meaningful: bool = True  # Preserve Meaningful Original Filenames
     max_len: int = 120  # Maximum Filename Length, without the extension
     group_titles: bool = False  # Folder for each title: "Leaked set pics-193.jpg" in "Leaked set pics/"
+    template: str = ""  # Filename template (3.0), "" for the automatic name
+    width: int = 3  # digits in the sequence number (3.0)
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> NamingSettings:
@@ -63,6 +65,10 @@ class NamingSettings:
         except (TypeError, ValueError):
             max_len = 120
         numbering = pick("numbering", NUMBERING, "suffix")
+        try:
+            width = int(payload.get("numberWidth") or 3)
+        except (TypeError, ValueError):
+            width = 3
         if payload.get("numbering") is None and payload.get("sequencePrefix") is False:
             numbering = "off"  # "Numbered filenames" was turned off before 2.5
         return cls(
@@ -75,13 +81,21 @@ class NamingSettings:
             keep_meaningful=flag("keepMeaningfulNames", True),
             max_len=max(20, min(200, max_len)),
             group_titles=flag("titleFolders", True),
+            template=clean_template(payload.get("nameTemplate")),
+            width=width if width in (3, 4, 5) else 3,
         )
 
     def fingerprint(self) -> str:
         """Names kept from an earlier run are only reused while the settings that made them match."""
-        return ".".join(
+        base = ".".join(
             str(v) for v in (int(self.smart), self.strategy, self.numbering, int(self.keep_meaningful), self.max_len)
         )
+        # 2.5 fingerprints stay valid while the 3.0 settings are at their defaults
+        if self.width != 3:
+            base += f".w{self.width}"
+        if self.template:
+            base += ".t" + "".join(f"{ord(c):x}" for c in self.template)[:64]
+        return base
 
     def describe(self) -> str:
         names = f"smart names ({self.strategy})" if self.smart else "original names"
@@ -89,10 +103,103 @@ class NamingSettings:
         folders = {"auto": "content-title folders", "album": "album folders", "post": "post/thread folders",
                    "original": "original folders"}[self.folders]
         site = ", site name in folders" if self.site_in_folder else ""
-        return f"{names}, {number}, {folders}{site}"
+        template = f", template {self.template}" if self.template else ""
+        return f"{names}, {number}, {folders}{site}{template}"
 
 
 SETTINGS: ContextVar[NamingSettings] = ContextVar("NEXDROP_NAMING", default=NamingSettings())
+
+
+# ─── filename templates (3.0) ────────────────────────────────────────────────
+
+TEMPLATE_VARS = ("title", "original", "album", "thread", "post", "creator", "date", "site", "type", "number", "ext")
+_TEMPLATE_TOKEN = re.compile(r"\{([a-z]+)\}")
+_TEMPLATE_EDGE = " -_.,"
+_NAME_VARS = frozenset({"title", "original", "album", "thread", "post", "creator"})
+
+
+def template_problem(template: str) -> str:
+    """Why a filename template can't be used, or "" when it can."""
+    text = (template or "").strip()
+    if not text:
+        return ""
+    if len(text) > 150:
+        return "longer than 150 characters"
+    unknown = [name for name in _TEMPLATE_TOKEN.findall(text) if name not in TEMPLATE_VARS]
+    if unknown:
+        return f"unknown variable {{{unknown[0]}}}"
+    if re.search(r"[{}]", _TEMPLATE_TOKEN.sub("", text)):
+        return "a { or } that is not part of a variable"
+    if re.search(r'[<>:"/\\|?*]', text):
+        return 'a character Windows does not allow in filenames (< > : " / \\ | ? *)'
+    if not set(_TEMPLATE_TOKEN.findall(text)) & _NAME_VARS:
+        return "no name variable ({title}, {original}, {album}, {thread}, {post} or {creator})"
+    return ""
+
+
+def clean_template(value: object) -> str:
+    """The template from the app's settings, or "" (automatic names) when it can't be used."""
+    text = " ".join(str(value or "").split())
+    if text.lower().endswith(".{ext}"):
+        text = text[: -len(".{ext}")]  # the extension is always added
+    return "" if template_problem(text) else text
+
+
+def render_template(template: str, values: dict[str, str], number: str, title_room: int) -> str:
+    """The filename stem from a template. Empty variables drop out with the separator in front of them;
+    {title} is shortened so the whole stem fits `title_room` plus the fixed parts."""
+
+    def part(name: str) -> str:
+        return number if name == "number" else "" if name == "ext" else values.get(name, "")
+
+    pieces: list[str] = []
+    pos = 0
+    named = False
+    for match in _TEMPLATE_TOKEN.finditer(template):
+        literal = template[pos : match.start()]
+        value = part(match.group(1))
+        named = named or bool(value and match.group(1) in _NAME_VARS)
+        if value:
+            pieces.append(literal)
+            pieces.append("\x00" if match.group(1) == "title" else value)
+        elif pieces or not literal.strip(_TEMPLATE_EDGE):
+            pass  # drop "-" in front of an empty variable
+        else:
+            pieces.append(literal)
+        pos = match.end()
+    if not named:
+        return ""  # every name in the template is unknown for this file: the automatic name is used
+    pieces.append(template[pos:])
+    stem = "".join(pieces)
+    if "\x00" in stem:
+        fixed = len(stem) - stem.count("\x00")
+        stem = stem.replace("\x00", _fit(values.get("title", ""), "", max(8, title_room - fixed)))
+    stem = re.sub(r"([ \-_.,])\1+", r"\1", stem)
+    return stem.strip(_TEMPLATE_EDGE)
+
+
+def _site_label(page_url: object) -> str:
+    host = (urlsplit(str(page_url or "")).hostname or "").removeprefix("www.")
+    labels = [label for label in host.split(".") if label]
+    return labels[-2] if len(labels) >= 2 else (labels[0] if labels else "")
+
+
+def template_values(title: str, stem: str, ext: str, naming: dict[str, str], page_url: object,
+                    date: str) -> dict[str, str]:
+    def clean(value: str | None, post_text: bool = False) -> str:
+        return clean_title(value, 80, post_text=post_text) if value else ""
+
+    return {
+        "title": title,
+        "original": stem,
+        "album": clean(naming.get("album")),
+        "thread": clean(naming.get("thread")),
+        "post": clean(naming.get("post_title")) or clean(naming.get("caption"), True),
+        "creator": clean(naming.get("profile")),
+        "date": date,
+        "site": _site_label(naming.get("post_url") or page_url),
+        "type": media_type(ext),
+    }
 
 
 # ─── what a name is worth ────────────────────────────────────────────────────
@@ -1001,8 +1108,11 @@ def name_file(
     sanitize: Any,
     *,
     thumbnail: bool = False,
+    date: str = "",
 ) -> Decision:
-    """The saved filename for one file, numbered in source order for this job."""
+    """The saved filename for one file, numbered in source order for this job.
+
+    `date` is the upload date ("2026-10-27") for a filename template's {date}, or ""."""
     settings = SETTINGS.get()
     number = source_order.assign(str(url))
     row = source_order.stored(str(url))
@@ -1023,13 +1133,26 @@ def name_file(
     else:
         title, source, confidence, reason = stem, "original filename", meaningfulness(stem), "smart names are off"
     mode = settings.numbering
-    tail = f"-{number:03d}" if mode == "suffix" else f"{number:03d}_" if mode == "prefix" else ""
+    digits = source_order.padded(number)
     limit = settings.max_len
     # Windows paths: keep the whole path under 240 characters when the folder allows it
     room = 240 - len(str(folder)) - len(extension) - 1
     if room < limit:
         limit = max(16, room)
-    title = _fit(windows_safe(sanitize(title + extension).removesuffix(extension) or stem, stem or "file"), tail, limit)
+    title = windows_safe(sanitize(title + extension).removesuffix(extension) or stem, stem or "file")
+    shaped = ""
+    if settings.template:
+        values = template_values(title, stem, extension, naming, page_url, date)
+        shaped = render_template(settings.template, values, digits if number else "", limit - len(digits) - 1)
+        shaped = windows_safe(sanitize(shaped + extension).removesuffix(extension), "") if shaped else ""
+        if shaped and "{number}" in settings.template:
+            mode = "off"  # the template placed the number itself
+    tail = f"-{digits}" if mode == "suffix" else f"{digits}_" if mode == "prefix" else ""
+    if shaped:
+        title = _fit(shaped, tail, limit)
+        reason = f"{reason}; template {settings.template}" if reason else f"template {settings.template}"
+    else:
+        title = _fit(title, tail, limit)
     name = source_order.format_number(number, title + extension, mode, extension)
     name = windows_safe(name, f"file{extension}")
     if settings.smart and source == "original filename" and confidence < 0.5:
@@ -1085,7 +1208,8 @@ def embedded_name(url: str, path: Path, settings: NamingSettings) -> tuple[str, 
     extension = path.suffix
     room = 240 - len(str(path.parent)) - len(extension) - 1
     mode = settings.numbering
-    tail = f"-{number:03d}" if mode == "suffix" else f"{number:03d}_" if mode == "prefix" else ""
+    digits = source_order.padded(number)
+    tail = f"-{digits}" if mode == "suffix" else f"{digits}_" if mode == "prefix" else ""
     title = _fit(windows_safe(title), tail, max(16, min(settings.max_len, room)))
     name = windows_safe(source_order.format_number(number, title + extension, mode, extension), path.name)
     return name, where

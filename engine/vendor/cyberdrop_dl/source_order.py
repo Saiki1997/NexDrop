@@ -15,6 +15,8 @@ POST_FOLDERS: ContextVar[bool] = ContextVar("POST_FOLDERS", default=True)
 # NEXDROP patch (smart naming): where the source-order number goes. "suffix" is "name-001.ext",
 # "prefix" the older "001_name.ext". SEQUENCE_PREFIX=False still turns numbering off.
 NUMBER_MODE: ContextVar[str] = ContextVar("NUMBER_MODE", default="prefix")
+# NEXDROP 3.0: digits in the sequence number (3 is "001", 4 "0001", 5 "00001"). Bigger numbers still grow.
+NUMBER_WIDTH: ContextVar[int] = ContextVar("NUMBER_WIDTH", default=3)
 _SENSITIVE = ("password", "token", "auth", "cookie", "session", "sig", "key", "secret")
 _sequences: dict[str, int] = {}
 _next = 1
@@ -98,10 +100,14 @@ def assign(url: str) -> int:
     return _sequences[key]
 
 
+def padded(number: int) -> str:
+    return str(number).zfill(NUMBER_WIDTH.get())
+
+
 def prefix_name(number: int, name: str) -> str:
-    if re.match(r"^\d{3}_", name) or re.match(r"^\d{3} - ", name):
+    if re.match(r"^\d{3,}_", name) or re.match(r"^\d{3,} - ", name):
         return name
-    return f"{number:03d}_{name}"
+    return f"{padded(number)}_{name}"
 
 
 _COMPOUND_EXTS = (".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".tar.lz", ".tar.z")
@@ -124,9 +130,9 @@ def split_name(name: str, ext: str | None = None) -> tuple[str, str]:
 def suffix_name(number: int, name: str, ext: str | None = None) -> str:
     """"name-001.ext". The number is right before the extension and grows past 999."""
     stem, extension = split_name(name, ext)
-    if stem.endswith(f"-{number:03d}"):
+    if stem.endswith(f"-{padded(number)}"):
         return name
-    return f"{stem}-{number:03d}{extension}"
+    return f"{stem}-{padded(number)}{extension}"
 
 
 def format_number(number: int, name: str, mode: str | None = None, ext: str | None = None) -> str:
@@ -171,7 +177,7 @@ def album_filename(album: str, folder: str, url: str, ext: str, preferred: int |
             number = max(used | {0}) + 1
         numbers[key] = number
     name = " ".join(album.split())[:_ALBUM_NAME_MAX].strip() or "Album"
-    return f"{name} {number:03d}{ext}"
+    return f"{name} {padded(number)}{ext}"
 
 
 def order_urls(html: str, urls: list[str]) -> list[str]:

@@ -53,10 +53,13 @@
     explainNames: { el: "#explain-names", type: "check", def: false },
     titleFolders: { el: "#title-folders", type: "check", def: true },
     maxNameLength: { el: "#max-name-length", type: "int", def: 120, min: 20, max: 200 },
+    numberWidth: { el: "#number-width", type: "int", def: 3, min: 3, max: 5 },
+    nameTemplate: { el: "#name-template", type: "text", def: "", max: 150 },
     postFolders: { el: "#post-folders", type: "check", def: true },
     deepScrape: { el: "#deep-scrape", type: "check", def: false },
     flareSolver: { el: "#flare", type: "check", def: true },
     threadDepth: { el: "#thread-depth", type: "int", def: 0, min: 0, max: 3 },
+    downloadMode: { el: "#download-mode", type: "text", def: "auto", max: 20 },
     maxDownloads: { el: "#max-downloads", type: "int", def: 16, min: 1, max: 32 },
     perHost: { el: "#per-host", type: "int", def: 6, min: 1, max: 16 },
     serverSlots: { el: "#server-slots", type: "int", def: 3, min: 1, max: 6 },
@@ -98,7 +101,8 @@
     if (spec.type === "check") return el.checked;
     if (spec.type === "text") return String(el.value || "").trim().slice(0, spec.max);
     if (spec.type === "time") return fmt.clockMinutes(el.value) === null ? spec.def : el.value;
-    const n = parseInt(el.value, 10);
+    // a limit field locked by a download mode keeps the user's own number for Custom
+    const n = parseInt(el.disabled && el.dataset.custom !== undefined ? el.dataset.custom : el.value, 10);
     return Number.isFinite(n) ? Math.max(spec.min, Math.min(spec.max, n)) : spec.def;
   }
 
@@ -125,6 +129,45 @@
       if ((before.updateCheck !== false) !== prefs.updateCheck) api.updateAuto(prefs.updateCheck);
       showSchedule();
     }, 300);
+  }
+
+  // Settings > Downloads: an example filename for the template, or why it can't be used.
+  function showTemplateExample() {
+    const input = $("#name-template");
+    const out = $("#name-template-example");
+    const template = input.value.trim();
+    const problem = fmt.templateProblem(template);
+    input.setAttribute("aria-invalid", String(Boolean(problem)));
+    if (problem) {
+      out.textContent = `Not used: ${problem}.`;
+      return;
+    }
+    const width = parseInt($("#number-width").value, 10) || 3;
+    const number = $("#numbering").value === "off" ? "" : "7".padStart(width, "0");
+    const sample = { title: "Summer Beach Collection", original: "IMG_4021", album: "Beach 2026", thread: "Lala Kudo",
+      post: "Summer Beach Collection", creator: "lalakudo", date: "2026-10-27", site: "bunkr", type: "image" };
+    let stem = template ? fmt.renderTemplate(template, sample, number) : "";
+    const placed = template.includes("{number}");
+    if (!stem) stem = sample.title;
+    if (number && !(template && placed)) stem = $("#numbering").value === "prefix" ? `${number}_${stem}` : `${stem}-${number}`;
+    out.textContent = `Example: ${stem}.jpg`;
+  }
+
+  // The three limit fields show the mode's numbers and can be edited only in Custom.
+  function showDownloadMode() {
+    const mode = $("#download-mode").value;
+    const custom = mode === "custom" || !fmt.DOWNLOAD_MODES[mode];
+    const limits = custom ? null : fmt.modeLimits(mode);
+    for (const [key, id] of [["maxDownloads", "#max-downloads"], ["perHost", "#per-host"], ["serverSlots", "#server-slots"]]) {
+      const input = $(id);
+      if (!custom) {
+        if (input.disabled === false) input.dataset.custom = input.value;  // keep the user's own numbers
+        input.value = limits[key];
+      } else if (input.disabled && input.dataset.custom) {
+        input.value = input.dataset.custom;
+      }
+      input.disabled = !custom;
+    }
   }
 
   function setOrder(mode) {
@@ -163,7 +206,31 @@
     return added.length;
   }
 
-  $("#btn-import").addEventListener("click", () => $("#import-file").click());
+  // Import: a NexDrop jobs export goes into the queue; a link list (.txt, .csv, .m3u, JSON) fills the links box.
+  $("#btn-import").addEventListener("click", async () => {
+    if (!api.jobsImport) return $("#import-file").click();
+    const file = await api.jobsImport();
+    if (!file || !file.ok) {
+      if (file && file.error) log("warning", file.error);
+      return;
+    }
+    const { jobs, dropped, kind } = fmt.parseJobFile(file.name, file.text, file.knownDirs || []);
+    if (!jobs.length) return log("warning", `${file.name} has no links.`);
+    if (kind === "links") {
+      const added = addLinks(jobs[0].urls.concat(jobs[0].unsupported).join("\n"), false);
+      return log(added ? "info" : "warning", added ? `Added ${added} links from ${file.name}.` : `Every link in ${file.name} is already in the box.`);
+    }
+    let added = 0;
+    for (const job of jobs) {
+      if (queue.some((q) => q.urls.join("\n") === job.urls.join("\n"))) continue;
+      queue.push({ ...job, id: newJobId(), label: job.label || jobLabel(job.urls) });
+      added += 1;
+    }
+    saveQueue();
+    const note = dropped ? ` ${dropped} job folder(s) or empty job(s) were left out (a folder must be chosen on this PC).` : "";
+    const how = run.running ? "They start after the current run." : "Press Start with an empty links box to begin.";
+    log("info", `Imported ${added} job(s) from ${file.name}${added < jobs.length ? `; ${jobs.length - added} were already queued` : ""}. ${how}${note}`);
+  });
   $("#import-file").addEventListener("change", async (event) => {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -218,7 +285,7 @@
       return null;
     }
     return {
-      id: `j${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      id: newJobId(),
       urls,
       unsupported,
       label: jobLabel(urls),
@@ -273,12 +340,19 @@
       log("phase", job.watchId ? `Checking watched thread: ${job.label}` : `Starting: ${job.label}`);
     }
     const quiet = quietActive();
-    const speedMB = quiet ? (prefs.speedLimitMB ? Math.min(prefs.speedLimitMB, prefs.quietSpeedMB) : prefs.quietSpeedMB) : prefs.speedLimitMB;
+    // A job's own speed cap and download mode win over Settings (3.0 job manager).
+    const capMB = Number.isFinite(job.speedMB) ? job.speedMB : prefs.speedLimitMB;
+    const speedMB = quiet ? (capMB ? Math.min(capMB, prefs.quietSpeedMB) : prefs.quietSpeedMB) : capMB;
     if (quiet) log("info", `Quiet hours (${prefs.quietFrom}–${prefs.quietTo}): this run is capped at ${speedMB} MB/s.`);
+    const mode = job.mode || prefs.downloadMode;
+    if (job.folder || job.mode || Number.isFinite(job.speedMB)) {
+      const own = [job.folder && `folder ${job.folder}`, job.mode && `${job.mode} mode`, Number.isFinite(job.speedMB) && (job.speedMB ? `${job.speedMB} MB/s cap` : "no speed cap")];
+      log("info", `This job's own settings: ${own.filter(Boolean).join(", ")}.`);
+    }
     api.startPipeline({
       urls: job.urls,
       unsupported: job.unsupported || [],
-      downloadsDir,
+      downloadsDir: job.folder || downloadsDir,
       redownload: Boolean(job.redownload),
       startPage: job.startPage || 1,
       endPage: job.endPage || null,
@@ -297,13 +371,14 @@
       explainNames: prefs.explainNames,
       titleFolders: prefs.titleFolders,
       maxNameLength: prefs.maxNameLength,
+      numberWidth: prefs.numberWidth,
+      nameTemplate: fmt.templateProblem(prefs.nameTemplate) ? "" : prefs.nameTemplate,
       postFolders: prefs.postFolders,
       deepScrape: prefs.deepScrape,
       flareSolver: prefs.flareSolver,
       threadDepth: prefs.threadDepth,
-      maxDownloads: prefs.maxDownloads,
-      perHost: prefs.perHost,
-      serverSlots: prefs.serverSlots,
+      downloadMode: mode,
+      ...fmt.modeLimits(mode, prefs),
       tiktokAudio: prefs.tiktokAudio,
       attempts: prefs.attempts,
       autoRetry: prefs.autoRetry,
@@ -362,14 +437,16 @@
     }
   }
 
-  // force: the user pressed Start, so the download hours don't apply.
+  // force: the user pressed Start, so the download hours don't apply. Held jobs are passed over.
   function startNextInQueue(force = false) {
     if (run.running || !queue.length) return;
-    if (!$("#resume").hidden) return; // a paused run waits for Resume or Discard first
+    if (!$("#resume").hidden) return; // a paused run waits for Resume, Queue it or Discard first
     if (!force && !scheduleAllows()) return;
-    const next = queue.shift();
+    const index = queue.findIndex((q) => !q.hold);
+    if (index < 0) return;
+    const [next] = queue.splice(index, 1);
     saveQueue();
-    runJob(next);
+    runJob(next.parked ? { ...next, resumed: true } : next);
   }
 
   function renderQueue() {
@@ -378,9 +455,22 @@
     list.textContent = "";
     for (const item of queue) {
       const li = document.createElement("li");
-      const name = document.createElement("span");
+      li.classList.toggle("held", Boolean(item.hold));
+      li.classList.toggle("parked", Boolean(item.parked) && !item.hold);
+      const name = document.createElement("button");
+      name.type = "button";
+      name.className = "queue-open";
       name.textContent = item.label;
-      name.title = item.urls.join("\n");
+      const own = [item.folder && `Folder: ${item.folder}`, item.mode && `Mode: ${item.mode}`, Number.isFinite(item.speedMB) && `Speed cap: ${item.speedMB || "none"} MB/s`];
+      name.title = [...item.urls.slice(0, 20), ...own.filter(Boolean), "Click to rename, reorder, hold or change this job's folder and speed."].join("\n");
+      name.addEventListener("click", () => editJob(item.id));
+      li.appendChild(name);
+      if (item.folder || item.mode || Number.isFinite(item.speedMB)) {
+        const tag = document.createElement("span");
+        tag.className = "queue-tag";
+        tag.textContent = "custom";
+        li.appendChild(tag);
+      }
       const remove = document.createElement("button");
       remove.type = "button";
       remove.className = "queue-remove";
@@ -390,13 +480,88 @@
         queue = queue.filter((q) => q.id !== item.id);
         saveQueue();
       });
-      li.append(name, remove);
+      li.appendChild(remove);
       list.appendChild(li);
     }
-    $("#queue-count").textContent = queue.length === 1 ? "1 link waiting" : `${queue.length} waiting`;
+    const held = queue.filter((q) => q.hold).length;
+    const waiting = queue.length === 1 ? "1 link waiting" : `${queue.length} waiting`;
+    $("#queue-count").textContent = held ? `${waiting}, ${held} held` : waiting;
     box.hidden = !queue.length;
     $("#btn-queue").hidden = !run.running;
   }
+
+  function newJobId() {
+    return `j${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  }
+
+  // ─── one job: name, order, hold, folder, mode, speed cap ───────────────────
+  let editing = null;
+
+  function editJob(id) {
+    const item = queue.find((q) => q.id === id);
+    if (!item) return;
+    editing = { id, folder: item.folder || "" };
+    $("#job-links").textContent = item.urls.length === 1 ? item.urls[0] : `${item.urls.length} links, starting with ${item.urls[0]}`;
+    $("#job-name").value = item.label;
+    $("#job-mode").value = item.mode || "";
+    $("#job-speed").value = Number.isFinite(item.speedMB) ? item.speedMB : "";
+    $("#job-hold").checked = Boolean(item.hold);
+    showJobFolder();
+    $("#job-dialog").showModal();
+  }
+
+  function showJobFolder() {
+    $("#job-folder").textContent = editing.folder || `Main folder (${downloadsDir})`;
+    $("#job-folder").title = editing.folder || downloadsDir;
+    $("#btn-job-folder-main").hidden = !editing.folder;
+  }
+
+  $("#btn-job-folder").addEventListener("click", async () => {
+    const picked = await api.pickJobDir();
+    if (picked && picked.ok && editing) {
+      editing.folder = picked.path;
+      showJobFolder();
+    }
+  });
+  $("#btn-job-folder-main").addEventListener("click", () => {
+    if (!editing) return;
+    editing.folder = "";
+    showJobFolder();
+  });
+
+  $("#job-dialog").addEventListener("close", () => {
+    const action = $("#job-dialog").returnValue;
+    const state = editing;
+    editing = null;
+    const index = state ? queue.findIndex((q) => q.id === state.id) : -1;
+    if (index < 0 || action === "cancel" || !action) return;
+    const item = queue[index];
+    // Every action except Remove keeps what was typed in the dialog.
+    const name = $("#job-name").value.trim().slice(0, 120);
+    if (name && name !== item.label) {
+      item.label = name;
+      item.named = true;
+    }
+    item.mode = $("#job-mode").value || undefined;
+    const speed = parseInt($("#job-speed").value, 10);
+    item.speedMB = Number.isFinite(speed) ? Math.max(0, Math.min(1000, speed)) : undefined;
+    item.hold = $("#job-hold").checked || undefined;
+    item.folder = state.folder || undefined;
+    if (action === "remove") queue.splice(index, 1);
+    else if (action === "top") queue.unshift(...queue.splice(index, 1));
+    else if (action === "bottom") queue.push(...queue.splice(index, 1));
+    else if (action === "copy") {
+      const copy = { ...item, id: newJobId(), label: `${item.label} (copy)`, named: true, parked: undefined, doneUrls: undefined };
+      queue.splice(index + 1, 0, copy);
+    }
+    saveQueue();
+  });
+
+  $("#btn-queue-export").addEventListener("click", async () => {
+    if (!queue.length) return;
+    const result = await api.jobsExport(queue.map(fmt.exportJob));
+    if (result && result.ok) log("info", `Exported ${result.count} job(s) to ${result.path}. Progress and paused state are not part of the file.`);
+  });
 
   $("#btn-queue").addEventListener("click", () => addToQueue());
   $("#btn-queue-clear").addEventListener("click", () => {
@@ -423,6 +588,18 @@
     if (!pausedJob || run.running) return;
     // History skips finished files; half-downloaded files continue where they stopped.
     runJob({ ...pausedJob, resumed: true });
+  });
+  // "Queue it": the paused job waits at the end of the queue (resumes where it stopped) and the next job starts.
+  $("#btn-park").addEventListener("click", () => {
+    if (!pausedJob || run.running) return;
+    const parked = { ...pausedJob, parked: true, resumed: undefined };
+    hideResume();
+    api.saveGuiSetting({ active_run: null });
+    queue = queue.filter((q) => q.id !== parked.id);
+    queue.push(parked);
+    saveQueue();
+    log("info", `${parked.label} is paused in the queue. It continues where it stopped when its turn comes.`);
+    if (queue.some((q) => q.id !== parked.id && !q.hold)) startNextInQueue(true);
   });
   $("#btn-discard").addEventListener("click", () => {
     hideResume();
@@ -923,10 +1100,12 @@
     setText(p.host, row.host || "");
 
     let detail = "";
-    if (row.state === "failed" || row.state === "skipped" || row.state === "cancelled") detail = row.reason || "";
+    if (row.state === "failed" && row.label) detail = row.label === "Failed" ? row.reason || "" : `${row.label}: ${row.reason || ""}`;
+    else if (row.state === "failed" || row.state === "skipped" || row.state === "cancelled") detail = row.reason || "";
     else if (row.state === "active" && total && row.speed > 0) detail = `${fmt.duration((total - read) / row.speed)} left`;
     else if (row.state === "retrying") detail = "Retrying";
     setText(p.detail, detail);
+    p.detail.title = row.state === "failed" && row.action ? row.action : "";
 
     let size = "";
     if (moving) size = total ? `${fmt.bytes(read)} / ${fmt.bytes(total)}` : read ? fmt.bytes(read) : "Starting…";
@@ -1204,6 +1383,7 @@
     $$(".sheet .pane").forEach((p) => { p.hidden = p.dataset.pane !== name; });
     if (name === "accounts") loadAccounts();
     if (name === "history") searchHistory();
+    if (name === "sources") showHealth();
   }
   $("#btn-settings").addEventListener("click", () => openSheet());
   $("#btn-settings-close").addEventListener("click", closeSheet);
@@ -1219,6 +1399,9 @@
       openSheet();
     }
   });
+  $("#download-mode").addEventListener("change", showDownloadMode);
+  $("#name-template").addEventListener("input", showTemplateExample);
+  for (const id of ["#number-width", "#numbering"]) $(id).addEventListener("change", showTemplateExample);
   sheet.addEventListener("change", savePrefsSoon);
   $("#order-seg").addEventListener("click", (event) => {
     const button = event.target.closest("[data-order]");
@@ -1595,15 +1778,20 @@
     historyTimer = setTimeout(searchHistory, 250);
   }
 
-  async function searchHistory() {
-    const seq = ++historySeq;
-    setStatus("#history-status-line", "Searching…", null);
-    const result = await api.historySearch({
+  function historyQuery() {
+    return {
       text: $("#history-text").value,
       host: $("#history-host").value,
       status: $("#history-status").value,
-      limit: 200,
-    }).catch(() => null);
+      days: Number($("#history-days").value) || 0,
+      type: $("#history-type").value,
+    };
+  }
+
+  async function searchHistory() {
+    const seq = ++historySeq;
+    setStatus("#history-status-line", "Searching…", null);
+    const result = await api.historySearch({ ...historyQuery(), limit: 200 }).catch(() => null);
     if (seq !== historySeq) return; // a newer search is on its way
     if (!result || result.ok === false) {
       setStatus("#history-status-line", result?.error || "The history could not be read.", "bad");
@@ -1622,7 +1810,8 @@
     }
     const total = Number(result.total) || 0;
     const shown = (result.items || []).length;
-    setStatus("#history-status-line", total ? (total > shown ? `${total.toLocaleString()} files, newest ${shown} shown.` : `${total.toLocaleString()} ${total === 1 ? "file" : "files"}.`) : "Nothing found.", null);
+    const count = total ? (total > shown ? `${total.toLocaleString()} files, newest ${shown} shown.` : `${total.toLocaleString()} ${total === 1 ? "file" : "files"}.`) : "Nothing found.";
+    setStatus("#history-status-line", result.note ? `${count} ${result.note}` : count, null);
     renderHistory(result.items || []);
   }
 
@@ -1646,8 +1835,10 @@
       name.title = item.url;
       const meta = document.createElement("small");
       const when = new Date(Number(item.at) * 1000);
-      meta.textContent = [item.host, item.bytes ? fmt.bytes(item.bytes) : "", Number.isFinite(when.getTime()) ? when.toLocaleString() : "", item.status !== "completed" ? item.status : ""].filter(Boolean).join(" · ");
-      meta.title = item.source ? `From ${item.source}` : "";
+      const result = item.missing ? "file missing" : item.status === "failed" ? item.label || "failed" : item.status !== "completed" ? item.status : "";
+      meta.textContent = [item.host, item.bytes ? fmt.bytes(item.bytes) : "", Number.isFinite(when.getTime()) ? when.toLocaleString() : "", result].filter(Boolean).join(" · ");
+      meta.title = [item.source ? `From ${item.source}` : "", item.error || "", item.missing ? "The file is no longer where it was saved (moved, renamed or deleted)." : ""].filter(Boolean).join("\n");
+      if (item.missing || item.status === "failed") meta.classList.add("problem");
       info.append(name, meta);
       const show = document.createElement("button");
       show.type = "button";
@@ -1753,6 +1944,76 @@
   $("#history-text").addEventListener("input", searchHistorySoon);
   $("#history-host").addEventListener("change", searchHistory);
   $("#history-status").addEventListener("change", searchHistory);
+  $("#history-days").addEventListener("change", searchHistory);
+  $("#history-type").addEventListener("change", searchHistory);
+  $("#btn-history-export").addEventListener("click", async () => {
+    setStatus("#history-status-line", "Exporting…", null);
+    const result = await api.historyExport(historyQuery()).catch(() => null);
+    if (result?.canceled) return setStatus("#history-status-line", "", null);
+    if (result?.ok) setStatus("#history-status-line", `Saved ${result.count.toLocaleString()} rows to ${result.path}.`, "ok");
+    else setStatus("#history-status-line", result?.error || "Export failed.", "bad");
+  });
+
+  // ─── backup, restore and diagnostics (Settings > App) ─────────────────────
+  $("#btn-backup").addEventListener("click", async () => {
+    setStatus("#backup-status", "Backing up…", null);
+    const result = await api.backupCreate().catch(() => null);
+    if (result?.canceled) return setStatus("#backup-status", "", null);
+    if (result?.ok) setStatus("#backup-status", `Saved ${result.files.length} item(s) to ${result.path}.`, "ok");
+    else setStatus("#backup-status", result?.error || "Backup failed.", "bad");
+  });
+  $("#btn-restore").addEventListener("click", async () => {
+    const result = await api.backupRestore().catch(() => null);
+    if (result?.canceled) return;
+    if (result?.ok) setStatus("#backup-status", "Restored. NexDrop is restarting…", "ok");
+    else setStatus("#backup-status", result?.error || "Restore failed.", "bad");
+  });
+  $("#btn-diagnostics").addEventListener("click", async () => {
+    const result = await api.diagnosticsExport().catch(() => null);
+    if (result?.canceled) return;
+    if (result?.ok) setStatus("#backup-status", `Diagnostics saved to ${result.path}. Read it before you share it.`, "ok");
+    else setStatus("#backup-status", result?.error || "Diagnostics could not be saved.", "bad");
+  });
+
+  // ─── site health (Settings > Sites) ───────────────────────────────────────
+  const HEALTH_WORDS = { working: "Working", unstable: "Unstable", failing: "Failing", unknown: "No results yet" };
+
+  async function showHealth() {
+    const list = $("#health-list");
+    const result = await api.siteHealth(Number($("#health-days").value) || 30).catch(() => null);
+    list.textContent = "";
+    const sites = (result && result.sites) || [];
+    if (!sites.length) {
+      const li = document.createElement("li");
+      li.className = "empty-note";
+      li.textContent = result && result.ok === false ? result.error : "Sites appear here after a run.";
+      list.appendChild(li);
+      return;
+    }
+    for (const site of sites) {
+      const li = document.createElement("li");
+      const dot = document.createElement("span");
+      dot.className = `health-dot ${site.state}`;
+      dot.title = HEALTH_WORDS[site.state] || "";
+      const host = document.createElement("span");
+      host.className = "health-host";
+      host.textContent = site.host;
+      const rate = document.createElement("span");
+      rate.className = "health-rate";
+      rate.textContent = site.rate === null ? "–" : `${Math.round(site.rate * 100)}% saved`;
+      const meta = document.createElement("small");
+      meta.className = "health-meta";
+      const parts = [`${HEALTH_WORDS[site.state]}: ${site.saved.toLocaleString()} saved, ${site.failed.toLocaleString()} failed`];
+      if (site.bytes) parts.push(fmt.bytes(site.bytes));
+      if (site.lastSaved) parts.push(`last saved ${fmt.ago(new Date(site.lastSaved * 1000).toISOString())}`);
+      if (site.reasons.length) parts.push(`mostly ${site.reasons.map((r) => `${r.label.toLowerCase()} (${r.count})`).join(", ")}`);
+      meta.textContent = parts.join(" · ");
+      if (site.reasons.length) meta.title = site.reasons[0].action;
+      li.append(dot, host, rate, meta);
+      list.appendChild(li);
+    }
+  }
+  $("#health-days").addEventListener("change", showHealth);
 
   // ─── helpers ──────────────────────────────────────────────────────────────
   function flash(el) {
@@ -1781,7 +2042,12 @@
     if (prefs.numbering === undefined && prefs.sequencePrefix === false) prefs.numbering = "off";
     // Test build 2: linked files are kept apart by host again unless asked otherwise.
     if (prefs.namingVersion !== 2) prefs.replaceGenericFolders = false;
+    // 3.0: download modes. Settings left at the old defaults become Auto; changed ones stay as Custom.
+    if (!prefs.downloadMode) prefs.downloadMode = fmt.guessMode(prefs);
     for (const [key, spec] of Object.entries(PREF_FIELDS)) writeField(spec, prefs[key]);
+    for (const id of ["#max-downloads", "#per-host", "#server-slots"]) $(id).dataset.custom = $(id).value;
+    showDownloadMode();
+    showTemplateExample();
     prefs = collectPrefs();
     showSchedule();
     $("#app-version").textContent = `NEXDROP ${defaults.version || ""}`.trim();

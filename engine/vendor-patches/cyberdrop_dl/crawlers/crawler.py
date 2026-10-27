@@ -599,6 +599,7 @@ class Crawler(HTTPMixin, HLSMixin, ABC):
                 download_folder,
                 lambda name: sanitize_filename(name, "-"),
                 thumbnail=frag == "thumbnail",
+                date=_upload_date(uploaded_at or scrape_item.uploaded_at),
             )
             number, chosen = decision.number, decision.filename
             if decision.group and not (scrape_item.retry_info and USE_RETRY_PATH.get()):
@@ -1360,6 +1361,18 @@ def _prepare_download_path(item: ScrapeItem, domain: str) -> Path:
     # different collections kept apart.
     levels = smart_naming.pick_levels(item.folder_levels(), naming.folders, naming.replace_generic)
     return item.download_folder / smart_naming.REGISTRY.resolve(item.download_folder, levels)
+
+
+def _upload_date(stamp: int | None) -> str:
+    """"2026-10-27" (UTC) for a filename template's {date}, or ""."""
+    if not stamp:
+        return ""
+    import datetime
+
+    try:
+        return datetime.datetime.fromtimestamp(int(stamp), tz=datetime.UTC).strftime("%Y-%m-%d")
+    except (OverflowError, OSError, TypeError, ValueError):
+        return ""
 
 
 def _log_order(  # noqa: PLR0913

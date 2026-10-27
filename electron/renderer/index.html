@@ -72,11 +72,13 @@
     <div class="notice" id="resume" role="status" hidden>
       <span class="notice-text" id="resume-text"></span>
       <button class="btn btn-primary btn-small" id="btn-resume" type="button">Resume</button>
+      <button class="btn btn-quiet btn-small" id="btn-park" type="button" title="Keep it paused in the queue and start the next job">Queue it</button>
       <button class="btn btn-quiet btn-small" id="btn-discard" type="button">Discard</button>
     </div>
     <div class="queue" id="queue" hidden>
       <span class="queue-title">Up next <span id="queue-count"></span></span>
       <ol class="queue-list" id="queue-list"></ol>
+      <button class="btn btn-quiet btn-small" id="btn-queue-export" type="button" title="Save these jobs to a file">Export</button>
       <button class="btn btn-quiet btn-small" id="btn-queue-clear" type="button">Clear</button>
     </div>
 
@@ -166,6 +168,38 @@
     </form>
   </dialog>
 
+  <!-- One queued job -->
+  <dialog class="dialog dialog-job" id="job-dialog" aria-labelledby="job-title">
+    <form method="dialog">
+      <h2 id="job-title">Job</h2>
+      <p class="dialog-text" id="job-links"></p>
+      <label class="field"><span class="field-label">Name</span><input type="text" id="job-name" maxlength="120" spellcheck="false" autocomplete="off"></label>
+      <div class="field">
+        <span class="field-label">Download folder</span>
+        <div class="field-row">
+          <span class="job-folder" id="job-folder"></span>
+          <button class="btn btn-quiet btn-small" id="btn-job-folder" type="button">Choose…</button>
+          <button class="btn btn-quiet btn-small" id="btn-job-folder-main" type="button">Main folder</button>
+        </div>
+      </div>
+      <div class="field-grid">
+        <label class="field"><span class="field-label">Download mode</span><select id="job-mode" class="select"><option value="">As in Settings</option><option value="auto">Auto</option><option value="balanced">Balanced</option><option value="max">Maximum speed</option><option value="low">Low resource</option></select></label>
+        <label class="field"><span class="field-label">Speed cap, MB/s</span><input type="number" id="job-speed" min="0" max="1000" placeholder="As in Settings"><small class="field-help">0 means no cap.</small></label>
+      </div>
+      <label class="switch"><input type="checkbox" id="job-hold"><span class="switch-text">Hold<small>Stays in the queue but doesn't start until you release it.</small></span></label>
+      <div class="dialog-actions">
+        <button class="btn btn-quiet btn-small" value="top" type="submit">Move to top</button>
+        <button class="btn btn-quiet btn-small" value="bottom" type="submit">Move to bottom</button>
+        <button class="btn btn-quiet btn-small" value="copy" type="submit">Duplicate</button>
+        <button class="btn btn-quiet btn-small" value="remove" type="submit">Remove</button>
+      </div>
+      <div class="dialog-actions">
+        <button class="btn btn-quiet" value="cancel" type="submit">Cancel</button>
+        <button class="btn btn-primary" value="save" type="submit">Save</button>
+      </div>
+    </form>
+  </dialog>
+
   <!-- Settings -->
   <div class="sheet-scrim" id="sheet-scrim" hidden></div>
   <aside class="sheet" id="settings" aria-labelledby="settings-title" aria-hidden="true" inert>
@@ -202,7 +236,14 @@
           <label class="field"><span class="field-label">Sequence numbering</span><select id="numbering" class="select"><option value="suffix">Suffix: filename-001.jpg</option><option value="prefix">Prefix: 001_filename.jpg</option><option value="off">Disabled</option></select><small class="field-help">Numbers follow the page order across the whole job, even when files finish out of order.</small></label>
           <label class="field"><span class="field-label">Folder naming</span><select id="folder-naming" class="select"><option value="auto">Automatic content title</option><option value="album">Album/collection title</option><option value="post">Post/thread title</option><option value="original">Original folder structure</option></select></label>
           <label class="field"><span class="field-label">Maximum filename length</span><input type="number" id="max-name-length" min="20" max="200" value="120"><small class="field-help">Characters, without the extension.</small></label>
+          <label class="field"><span class="field-label">Number digits</span><select id="number-width" class="select"><option value="3">001</option><option value="4">0001</option><option value="5">00001</option></select></label>
         </div>
+        <label class="field">
+          <span class="field-label">Filename template</span>
+          <input type="text" id="name-template" placeholder="Empty: automatic names. Example: {creator}-{title}-{number}" spellcheck="false" autocomplete="off" maxlength="150">
+          <small class="field-help">Variables: {title} {original} {album} {thread} {post} {creator} {date} {site} {type} {number}. The extension is added for you. A variable the site doesn't provide is left out; when none of the name variables are known, the automatic name is used. Without {number}, Sequence numbering applies.</small>
+          <small class="field-help" id="name-template-example" role="status"></small>
+        </label>
         <label class="switch"><input type="checkbox" id="site-in-folder"><span class="switch-text">Include website name in folder<small>"allecakes (Bunkr)" instead of "allecakes". Off: two different collections with the same title get "allecakes" and "allecakes (2)".</small></span></label>
         <label class="switch" data-needs="smart-names"><input type="checkbox" id="title-folders" checked><span class="switch-text">Folder for each title<small>Renamed files go into a folder named after their title: "Leaked set pics-193.jpg" is saved in "Leaked set pics". Files that keep their own name stay in the thread's or album's folder.</small></span></label>
         <label class="switch"><input type="checkbox" id="replace-generic"><span class="switch-text">Replace generic folder names<small>Folders named only "Untitled", "Videos" or "Photos" are left out, so the files go into the folder above them.</small></span></label>
@@ -248,6 +289,17 @@
       </section>
 
       <section class="pane" data-pane="network" hidden>
+        <label class="field">
+          <span class="field-label">Download mode</span>
+          <select id="download-mode" class="select">
+            <option value="auto">Auto (recommended): 16 at once, 6 per site</option>
+            <option value="balanced">Balanced: 8 at once, 4 per site</option>
+            <option value="max">Maximum speed: 24 at once, 10 per site</option>
+            <option value="low">Low resource: 3 at once, 2 per site</option>
+            <option value="custom">Custom: use the numbers below</option>
+          </select>
+          <small class="field-help">In every mode NexDrop slows down a site that answers "too many requests" and pauses one that keeps failing, while other sites keep going. Maximum speed is more likely to be refused by strict hosts.</small>
+        </label>
         <div class="field-grid">
           <label class="field"><span class="field-label">Downloads at once</span><input type="number" id="max-downloads" min="1" max="32" value="16"><small class="field-help">Up to 32. Page order always uses 1.</small></label>
           <label class="field"><span class="field-label">Per site</span><input type="number" id="per-host" min="1" max="16" value="6"><small class="field-help">Up to 16. Lower it if a site starts refusing (429 errors).</small></label>
@@ -359,14 +411,43 @@
             <option value="completed">Saved</option>
             <option value="failed">Failed</option>
             <option value="skipped">Skipped</option>
+            <option value="missing">Saved, file missing</option>
             <option value="all">Everything</option>
           </select>
+        </div>
+        <div class="field-row history-filters">
+          <select class="select" id="history-days" aria-label="When">
+            <option value="0">Any time</option>
+            <option value="1">Last 24 hours</option>
+            <option value="7">Last 7 days</option>
+            <option value="30">Last 30 days</option>
+          </select>
+          <select class="select" id="history-type" aria-label="File type">
+            <option value="">All types</option>
+            <option value="image">Images</option>
+            <option value="video">Videos</option>
+            <option value="audio">Audio</option>
+            <option value="archive">Archives</option>
+            <option value="other">Other files</option>
+          </select>
+          <button class="btn btn-quiet" id="btn-history-export" type="button" title="Save every file matching these filters as a CSV file">Export CSV</button>
         </div>
         <p class="status-line" id="history-status-line" role="status"></p>
         <ul class="history-list" id="history-list"></ul>
       </section>
 
       <section class="pane" data-pane="sources" hidden>
+        <div class="field-row">
+          <span class="field-label health-title">Site health</span>
+          <select class="select" id="health-days" aria-label="Period">
+            <option value="1">Last 24 hours</option>
+            <option value="7">Last 7 days</option>
+            <option value="30" selected>Last 30 days</option>
+          </select>
+        </div>
+        <p class="pane-intro">How downloads from each site went, from your own history on this PC. Nothing is sent anywhere.</p>
+        <ul class="health-list" id="health-list"></ul>
+        <div class="divider"></div>
         <p class="pane-intro">NexDrop uses its bundled download engine. Links that no site handler accepts are logged here so you can see what is missing.</p>
         <p class="status-line" id="source-status">Not checked yet.</p>
         <div class="field-row actions">
@@ -395,6 +476,15 @@
         <div class="divider"></div>
         <label class="switch"><input type="checkbox" id="link-handler"><span class="switch-text">Open links sent from the browser<small>Lets the NEXDROP browser extension (in the browser-extension folder) send pages and links here with right-click &gt; Download with NEXDROP. Registers nexdrop:// links for this folder.</small></span></label>
         <p class="field-help">To add the extension: open chrome://extensions or edge://extensions, turn on Developer mode, choose Load unpacked and pick the browser-extension folder next to NexDrop.exe.</p>
+        <div class="divider"></div>
+        <span class="field-label">Backup and support</span>
+        <div class="field-row actions">
+          <button class="btn btn-quiet" id="btn-backup" type="button">Back up…</button>
+          <button class="btn btn-quiet" id="btn-restore" type="button">Restore…</button>
+          <button class="btn btn-quiet" id="btn-diagnostics" type="button">Save diagnostics…</button>
+        </div>
+        <p class="field-help">A backup holds your settings, queue, watched threads, history and learned names, never sign-ins or cookies. Restoring keeps your current files as ".before-restore" copies. Diagnostics is a text file for bug reports with tokens, passwords, e-mail addresses and your user name removed; read it before you share it.</p>
+        <p class="status-line" id="backup-status" role="status"></p>
       </section>
     </div>
   </aside>

@@ -610,4 +610,29 @@ async def check_http_status(response: AbstractResponse[Any]) -> None:
 
     await _check_json(response)
     await ddos_guard.check_resp(response)
-    raise DownloadError(response.status)
+    # NEXDROP patch: busy and rate-limit answers can be retried, after the server's Retry-After.
+    # Before, every HTTP error was final inside the run and only the after-run retry pass tried again.
+    error = DownloadError(response.status, retry=response.status in RETRYABLE_STATUS)
+    error.retry_after = retry_after_seconds(response.headers.get("Retry-After"))
+    raise error
+
+
+RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524})
+
+
+def retry_after_seconds(value: str | None) -> float | None:
+    """NEXDROP patch: a Retry-After header as seconds (a number or an HTTP date), else None."""
+    if not value:
+        return None
+    value = value.strip()
+    if value.isdigit():
+        return float(value)
+    import email.utils
+
+    try:
+        when = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    return max(0.0, when.timestamp() - time.time())

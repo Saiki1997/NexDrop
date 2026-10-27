@@ -1,4 +1,4 @@
-# NEXDROP-CONFIG 1
+# NEXDROP-CONFIG 2
 # Download, filters, crawlers, subfolders, and sort rules from the supplied Cyberdrop config.
 auth:
   gofile:
@@ -142,7 +142,7 @@ hashing:
   - md5
   - sha256
   dedupe:
-    enabled: true
+    enabled: false
     use_trash_bin: true
   mode: in_place
 ignore_hashes: false
@@ -189,7 +189,6 @@ network:
   proxy: null
   rate_limit: 25.0
   read_timeout: 300.0
-  ssl_context: truststore+certifi
   tls:
     ca_certs: []
     min_version: '1.2'
