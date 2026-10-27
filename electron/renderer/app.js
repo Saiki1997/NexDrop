@@ -53,6 +53,8 @@
     explainNames: { el: "#explain-names", type: "check", def: false },
     titleFolders: { el: "#title-folders", type: "check", def: true },
     maxNameLength: { el: "#max-name-length", type: "int", def: 120, min: 20, max: 200 },
+    numberWidth: { el: "#number-width", type: "int", def: 3, min: 3, max: 5 },
+    nameTemplate: { el: "#name-template", type: "text", def: "", max: 150 },
     postFolders: { el: "#post-folders", type: "check", def: true },
     deepScrape: { el: "#deep-scrape", type: "check", def: false },
     flareSolver: { el: "#flare", type: "check", def: true },
@@ -127,6 +129,28 @@
       if ((before.updateCheck !== false) !== prefs.updateCheck) api.updateAuto(prefs.updateCheck);
       showSchedule();
     }, 300);
+  }
+
+  // Settings > Downloads: an example filename for the template, or why it can't be used.
+  function showTemplateExample() {
+    const input = $("#name-template");
+    const out = $("#name-template-example");
+    const template = input.value.trim();
+    const problem = fmt.templateProblem(template);
+    input.setAttribute("aria-invalid", String(Boolean(problem)));
+    if (problem) {
+      out.textContent = `Not used: ${problem}.`;
+      return;
+    }
+    const width = parseInt($("#number-width").value, 10) || 3;
+    const number = $("#numbering").value === "off" ? "" : "7".padStart(width, "0");
+    const sample = { title: "Summer Beach Collection", original: "IMG_4021", album: "Beach 2026", thread: "Lala Kudo",
+      post: "Summer Beach Collection", creator: "lalakudo", date: "2026-10-27", site: "bunkr", type: "image" };
+    let stem = template ? fmt.renderTemplate(template, sample, number) : "";
+    const placed = template.includes("{number}");
+    if (!stem) stem = sample.title;
+    if (number && !(template && placed)) stem = $("#numbering").value === "prefix" ? `${number}_${stem}` : `${stem}-${number}`;
+    out.textContent = `Example: ${stem}.jpg`;
   }
 
   // The three limit fields show the mode's numbers and can be edited only in Custom.
@@ -316,6 +340,8 @@
       explainNames: prefs.explainNames,
       titleFolders: prefs.titleFolders,
       maxNameLength: prefs.maxNameLength,
+      numberWidth: prefs.numberWidth,
+      nameTemplate: fmt.templateProblem(prefs.nameTemplate) ? "" : prefs.nameTemplate,
       postFolders: prefs.postFolders,
       deepScrape: prefs.deepScrape,
       flareSolver: prefs.flareSolver,
@@ -1238,6 +1264,8 @@
     }
   });
   $("#download-mode").addEventListener("change", showDownloadMode);
+  $("#name-template").addEventListener("input", showTemplateExample);
+  for (const id of ["#number-width", "#numbering"]) $(id).addEventListener("change", showTemplateExample);
   sheet.addEventListener("change", savePrefsSoon);
   $("#order-seg").addEventListener("click", (event) => {
     const button = event.target.closest("[data-order]");
@@ -1805,6 +1833,7 @@
     for (const [key, spec] of Object.entries(PREF_FIELDS)) writeField(spec, prefs[key]);
     for (const id of ["#max-downloads", "#per-host", "#server-slots"]) $(id).dataset.custom = $(id).value;
     showDownloadMode();
+    showTemplateExample();
     prefs = collectPrefs();
     showSchedule();
     $("#app-version").textContent = `NEXDROP ${defaults.version || ""}`.trim();

@@ -1352,6 +1352,8 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         # Smart naming (2.5). Missing settings take the defaults from the naming spec.
         "smartNames": True if config.get("smartNames") is None else bool(config.get("smartNames")),
         "nameStrategy": _choice(config.get("nameStrategy"), ("auto", "original", "media", "post", "album"), "auto"),
+        "nameTemplate": str(config.get("nameTemplate") or "")[:150],
+        "numberWidth": _int(config.get("numberWidth"), 3, 3, 5),
         "folderNaming": _choice(config.get("folderNaming"), ("auto", "album", "post", "original"), "auto"),
         "siteInFolder": bool(config.get("siteInFolder")),
         "replaceGenericFolders": bool(config.get("replaceGenericFolders")),

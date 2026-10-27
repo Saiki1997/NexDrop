@@ -469,6 +469,7 @@ svg { stroke: currentColor; stroke-width: 1.6; fill: none; stroke-linecap: round
 .field input:focus, .field .select:focus { outline: none; border-color: var(--copper); }
 .field input[readonly] { color: var(--ash); font: 400 12.5px var(--font-mono); }
 .field input:disabled { opacity: .5; cursor: not-allowed; }
+.field input[aria-invalid="true"] { border-color: var(--rust, #c0563f); }
 .field-row { display: flex; gap: 8px; align-items: center; }
 .field-row input { flex: 1; }
 .field-row.actions { flex-wrap: wrap; }

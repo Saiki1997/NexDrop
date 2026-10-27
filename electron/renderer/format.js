@@ -199,5 +199,48 @@
     return same ? "auto" : "custom";
   }
 
-  return { DOWNLOAD_MODES, modeLimits, guessMode, bytes, speed, mbps, duration, ago, parseLinks, host, finishText, compareVersions, clockMinutes, inTimeWindow, appLinkUrls, checksumFor };
+  /* Filename templates (Smart Naming 3.0). Mirrors smart_naming.py so Settings can show an example. */
+  const TEMPLATE_VARS = ["title", "original", "album", "thread", "post", "creator", "date", "site", "type", "number", "ext"];
+  const NAME_VARS = ["title", "original", "album", "thread", "post", "creator"];
+  const TOKEN = /\{([a-z]+)\}/g;
+
+  /** Why a template can't be used, or "" when it can (or is empty). */
+  function templateProblem(template) {
+    const text = String(template || "").trim().replace(/\.\{ext\}$/i, "");
+    if (!text) return "";
+    if (text.length > 150) return "longer than 150 characters";
+    const names = [...text.matchAll(TOKEN)].map((m) => m[1]);
+    const unknown = names.find((n) => !TEMPLATE_VARS.includes(n));
+    if (unknown) return `unknown variable {${unknown}}`;
+    if (/[{}]/.test(text.replace(TOKEN, ""))) return "a { or } that is not part of a variable";
+    if (/[<>:"/\\|?*]/.test(text)) return 'a character Windows does not allow in filenames (< > : " / \\ | ? *)';
+    if (!names.some((n) => NAME_VARS.includes(n))) return "no name variable ({title}, {original}, {album}, {thread}, {post} or {creator})";
+    return "";
+  }
+
+  /** The filename stem for `values`; "" when every name variable is empty (the automatic name is used). */
+  function renderTemplate(template, values, number) {
+    const text = String(template || "").trim().replace(/\.\{ext\}$/i, "");
+    const edge = " -_.,";
+    const pieces = [];
+    let pos = 0;
+    let named = false;
+    for (const match of text.matchAll(TOKEN)) {
+      const literal = text.slice(pos, match.index);
+      const key = match[1];
+      const value = key === "number" ? number || "" : key === "ext" ? "" : (values || {})[key] || "";
+      if (value && NAME_VARS.includes(key)) named = true;
+      if (value) pieces.push(literal, value);
+      else if (!pieces.length && [...literal].some((c) => !edge.includes(c))) pieces.push(literal);
+      pos = match.index + match[0].length;
+    }
+    if (!named) return "";
+    pieces.push(text.slice(pos));
+    let stem = pieces.join("").replace(/([ \-_.,])\1+/g, "$1");
+    while (stem && edge.includes(stem[0])) stem = stem.slice(1);
+    while (stem && edge.includes(stem[stem.length - 1])) stem = stem.slice(0, -1);
+    return stem;
+  }
+
+  return { TEMPLATE_VARS, templateProblem, renderTemplate, DOWNLOAD_MODES, modeLimits, guessMode, bytes, speed, mbps, duration, ago, parseLinks, host, finishText, compareVersions, clockMinutes, inTimeWindow, appLinkUrls, checksumFor };
 });

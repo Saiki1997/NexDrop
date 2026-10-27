@@ -202,7 +202,14 @@
           <label class="field"><span class="field-label">Sequence numbering</span><select id="numbering" class="select"><option value="suffix">Suffix: filename-001.jpg</option><option value="prefix">Prefix: 001_filename.jpg</option><option value="off">Disabled</option></select><small class="field-help">Numbers follow the page order across the whole job, even when files finish out of order.</small></label>
           <label class="field"><span class="field-label">Folder naming</span><select id="folder-naming" class="select"><option value="auto">Automatic content title</option><option value="album">Album/collection title</option><option value="post">Post/thread title</option><option value="original">Original folder structure</option></select></label>
           <label class="field"><span class="field-label">Maximum filename length</span><input type="number" id="max-name-length" min="20" max="200" value="120"><small class="field-help">Characters, without the extension.</small></label>
+          <label class="field"><span class="field-label">Number digits</span><select id="number-width" class="select"><option value="3">001</option><option value="4">0001</option><option value="5">00001</option></select></label>
         </div>
+        <label class="field">
+          <span class="field-label">Filename template</span>
+          <input type="text" id="name-template" placeholder="Empty: automatic names. Example: {creator}-{title}-{number}" spellcheck="false" autocomplete="off" maxlength="150">
+          <small class="field-help">Variables: {title} {original} {album} {thread} {post} {creator} {date} {site} {type} {number}. The extension is added for you. A variable the site doesn't provide is left out; when none of the name variables are known, the automatic name is used. Without {number}, Sequence numbering applies.</small>
+          <small class="field-help" id="name-template-example" role="status"></small>
+        </label>
         <label class="switch"><input type="checkbox" id="site-in-folder"><span class="switch-text">Include website name in folder<small>"allecakes (Bunkr)" instead of "allecakes". Off: two different collections with the same title get "allecakes" and "allecakes (2)".</small></span></label>
         <label class="switch" data-needs="smart-names"><input type="checkbox" id="title-folders" checked><span class="switch-text">Folder for each title<small>Renamed files go into a folder named after their title: "Leaked set pics-193.jpg" is saved in "Leaked set pics". Files that keep their own name stay in the thread's or album's folder.</small></span></label>
         <label class="switch"><input type="checkbox" id="replace-generic"><span class="switch-text">Replace generic folder names<small>Folders named only "Untitled", "Videos" or "Photos" are left out, so the files go into the folder above them.</small></span></label>

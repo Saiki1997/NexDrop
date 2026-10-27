@@ -143,3 +143,14 @@ Smart naming V2 (2.5.0):
 - `cyberdrop_dl/models/__init__.py`: no `time.sleep(2)` after a deprecated-option warning. With the bundled config's old
   `ssl_context` line this cost 4 s on every engine start (the config is now version 2 without it, and the bridge replaces an
   older installed copy).
+
+3.0 (Smart Naming 3.0):
+- `cyberdrop_dl/smart_naming.py`: optional filename templates (`nameTemplate`, for example `{creator}-{title}-{number}`).
+  Variables: title (the name smart naming chose), original, album, thread, post, creator (profile name), date (upload
+  date, UTC), site, type, number, ext. A variable the crawl did not provide drops out with the separator in front of it;
+  when every name variable is empty the automatic name is used. Only `{title}` is shortened to fit the length limit.
+  A template with an unknown variable, a stray brace or a character Windows refuses is ignored and the run log says why.
+  `numberWidth` sets 3, 4 or 5 digits. The fingerprint that decides whether a resumed job keeps its names only changes when
+  these settings are not at their defaults, so 2.5 jobs resume with the same names.
+- `cyberdrop_dl/source_order.py`: `NUMBER_WIDTH` and `padded()`; prefix, suffix and album numbering use them.
+- `cyberdrop_dl/crawlers/crawler.py`: passes the file's upload date to `name_file` for `{date}`.

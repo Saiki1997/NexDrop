@@ -84,3 +84,16 @@ test("download modes resolve to fixed limits, custom keeps the user's numbers", 
   assert.strictEqual(fmt.guessMode({}), "auto");
   assert.strictEqual(fmt.guessMode({ maxDownloads: 4, perHost: 6 }), "custom");
 });
+
+test("filename templates match the engine's rules", () => {
+  const v = { title: "Summer Shoot", original: "IMG_1", thread: "Lala Thread", creator: "lala", date: "2026-10-27", site: "bunkr", type: "image" };
+  assert.strictEqual(fmt.renderTemplate("{creator}-{title}-{number}", v, "007"), "lala-Summer Shoot-007");
+  assert.strictEqual(fmt.renderTemplate("{thread}-{post}-{number}", v, "007"), "Lala Thread-007");
+  assert.strictEqual(fmt.renderTemplate("[{site}] {title}", v, ""), "[bunkr] Summer Shoot");
+  assert.strictEqual(fmt.renderTemplate("{album}-{number}", v, "007"), "");
+  assert.strictEqual(fmt.renderTemplate("{title}-{number}.{ext}", v, "0001"), "Summer Shoot-0001");
+  assert.strictEqual(fmt.templateProblem("{creator}-{title}-{number}"), "");
+  assert.match(fmt.templateProblem("{artist}-{title}"), /unknown variable \{artist\}/);
+  assert.match(fmt.templateProblem("{date}-{number}"), /no name variable/);
+  assert.match(fmt.templateProblem("{title}/{number}"), /Windows/);
+});

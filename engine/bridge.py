@@ -1395,6 +1395,11 @@ def _run() -> int:
     from cyberdrop_dl.smart_naming import CORRECTIONS, REGISTRY, REPORT, SETTINGS as NAMING, NamingSettings
 
     naming = NamingSettings.from_payload(payload)
+    from cyberdrop_dl.smart_naming import template_problem
+
+    problem = template_problem(str(payload.get("nameTemplate") or "").strip().removesuffix(".{ext}"))
+    if problem:
+        emit({"type": "log", "level": "warning", "message": f"The filename template is not used: {problem}."})
     fields["max_children"] = MaxChildren()
     try:
         from cyberdrop_dl.config.settings import SubFolders, _SubFoldersInclude
@@ -1419,7 +1424,7 @@ def _run() -> int:
         emit({"type": "error", "message": "Last page cannot be lower than the start page"})
         return 2
     from cyberdrop_dl.crawlers._forum import FORUM_PAGE_END, FORUM_PAGE_START
-    from cyberdrop_dl.source_order import ALBUM_NAMES, NUMBER_MODE, ORDER_MODE, POST_FOLDERS, SEQUENCE_PREFIX, reset as reset_order
+    from cyberdrop_dl.source_order import ALBUM_NAMES, NUMBER_MODE, NUMBER_WIDTH, ORDER_MODE, POST_FOLDERS, SEQUENCE_PREFIX, reset as reset_order
 
     reset_order(str(payload.get("orderManifest") or ""), str(payload.get("jobKey") or "") or None)
     REGISTRY.load(str(payload.get("folderRegistry") or "") or None, destination)
@@ -1428,6 +1433,7 @@ def _run() -> int:
     order_token = ORDER_MODE.set(order_mode)
     naming_token = NAMING.set(naming)
     number_token = NUMBER_MODE.set(naming.numbering)
+    width_token = NUMBER_WIDTH.set(naming.width)
     prefix_token = SEQUENCE_PREFIX.set(prefix_on)
     album_token = ALBUM_NAMES.set(album_names_on)
     post_token = POST_FOLDERS.set(post_folders_on)
@@ -1483,6 +1489,7 @@ def _run() -> int:
         ORDER_MODE.reset(order_token)
         NAMING.reset(naming_token)
         NUMBER_MODE.reset(number_token)
+        NUMBER_WIDTH.reset(width_token)
         SEQUENCE_PREFIX.reset(prefix_token)
         ALBUM_NAMES.reset(album_token)
         POST_FOLDERS.reset(post_token)
