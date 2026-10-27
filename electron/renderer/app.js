@@ -1100,10 +1100,12 @@
     setText(p.host, row.host || "");
 
     let detail = "";
-    if (row.state === "failed" || row.state === "skipped" || row.state === "cancelled") detail = row.reason || "";
+    if (row.state === "failed" && row.label) detail = row.label === "Failed" ? row.reason || "" : `${row.label}: ${row.reason || ""}`;
+    else if (row.state === "failed" || row.state === "skipped" || row.state === "cancelled") detail = row.reason || "";
     else if (row.state === "active" && total && row.speed > 0) detail = `${fmt.duration((total - read) / row.speed)} left`;
     else if (row.state === "retrying") detail = "Retrying";
     setText(p.detail, detail);
+    p.detail.title = row.state === "failed" && row.action ? row.action : "";
 
     let size = "";
     if (moving) size = total ? `${fmt.bytes(read)} / ${fmt.bytes(total)}` : read ? fmt.bytes(read) : "Starting…";

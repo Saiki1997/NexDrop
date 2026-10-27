@@ -198,6 +198,10 @@ class FileTable:
     def update(self, url: str, **fields) -> None:
         if not url:
             return
+        if fields.get("category"):
+            # what went wrong and what to do, for the file list (error_classes.py)
+            info = error_classes.describe(fields["category"])
+            fields["label"], fields["action"] = info["label"], info["action"]
         changed = None
         with self.lock:
             row = self.rows.get(url)
