@@ -314,7 +314,7 @@ svg { stroke: currentColor; stroke-width: 1.6; fill: none; stroke-linecap: round
   position: relative;
   height: var(--row-h);
   display: grid;
-  grid-template-columns: 46px minmax(0, 1fr) 150px 74px 28px;
+  grid-template-columns: var(--col-seq, 46px) minmax(0, 1fr) var(--col-stats, 150px) var(--col-state, 74px) 28px;
   align-items: center;
   column-gap: 14px;
   padding: 0 12px 0 10px;
@@ -546,7 +546,7 @@ svg { stroke: currentColor; stroke-width: 1.6; fill: none; stroke-linecap: round
   .workspace { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) 190px; }
   .run-options { padding-left: 20px; flex-wrap: wrap; row-gap: 8px; }
   .tally-stats { gap: 16px; }
-  .row { grid-template-columns: 40px minmax(0, 1fr) 128px 60px 28px; column-gap: 10px; }
+  .row, .list-head { column-gap: 10px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -800,3 +800,25 @@ svg { stroke: currentColor; stroke-width: 1.6; fill: none; stroke-linecap: round
 .reset-one:hover { color: var(--bone); border-color: var(--copper); }
 .has-reset { position: relative; padding-right: 56px; }
 .pane-reset { display: flex; justify-content: flex-end; padding-top: 10px; border-top: 1px solid var(--shale); margin-top: 6px; }
+
+/* ─── file list header: sort, resize, columns (3.1) ─── */
+.list-search { width: 160px; height: 30px; padding: 0 9px; border: 1px solid var(--shale); border-radius: 6px; background: var(--basalt); color: var(--bone); font: inherit; font-size: 12.5px; }
+.list-head { position: relative; display: grid; grid-template-columns: var(--col-seq, 46px) minmax(0, 1fr) var(--col-stats, 150px) var(--col-state, 74px) 28px; column-gap: 14px; align-items: center; padding: 0 12px 0 10px; height: 26px; border-bottom: 1px solid #24272b; font-size: 11.5px; color: var(--ash-dim); }
+.list-head .col { position: relative; text-align: left; font: inherit; color: inherit; white-space: nowrap; overflow: visible; height: 100%; }
+.list-head .col:hover, .list-head .col[aria-sort] { color: var(--bone); }
+.list-head .col[aria-sort="ascending"]::after { content: " ↑"; }
+.list-head .col[aria-sort="descending"]::after { content: " ↓"; }
+.list-head .col-seq, .list-head .col-stats, .list-head .col-state { text-align: right; }
+.list-head .col-seq:empty { visibility: hidden; }
+.col-grip { position: absolute; left: -9px; top: 3px; bottom: 3px; width: 6px; cursor: col-resize; border-left: 1px solid var(--shale); }
+.col-grip:hover, .col-grip.is-drag { border-left-color: var(--copper); }
+.col-menu svg { width: 14px; height: 14px; }
+.col-pop { position: absolute; right: 8px; top: 26px; z-index: 20; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; background: var(--slate-2); border: 1px solid var(--shale-2); border-radius: var(--r-control); box-shadow: 0 8px 24px rgba(0,0,0,.4); font-size: 12.5px; color: var(--bone); }
+.col-pop label { display: flex; gap: 6px; align-items: center; }
+.workspace.no-seq .row-seq, .workspace.no-seq .list-head .col-seq { visibility: hidden; }
+.workspace.no-site .row-sub .host, .workspace.no-size .row-size, .workspace.no-speed .row-speed { display: none; }
+.workspace.no-speed .row[data-state="active"] .detail { display: none; }
+.row-sub .dest, .row-sub .retries { color: var(--ash-dim); overflow: hidden; text-overflow: ellipsis; }
+.row-sub .retries { flex: none; }
+.row-sub .dest:empty, .row-sub .retries:empty { display: none; }
+.workspace:not(.show-dest) .row-sub .dest, .workspace:not(.show-retries) .row-sub .retries { display: none; }

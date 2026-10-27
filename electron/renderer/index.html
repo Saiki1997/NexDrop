@@ -126,6 +126,25 @@
           </select>
           <button class="btn btn-quiet btn-small" id="btn-watch" type="button" hidden title="Check this link for new files every few hours while NEXDROP is open">Watch for new files</button>
           <button class="btn btn-quiet btn-small" id="btn-retry-failed" type="button" hidden>Retry unfinished</button>
+          <input type="search" id="list-search" class="list-search" placeholder="Find a file" spellcheck="false" autocomplete="off" aria-label="Find a file in this run">
+        </div>
+        <div class="list-head" id="list-head" role="row">
+          <button type="button" class="col col-seq" data-sort="page" title="Page order">#</button>
+          <button type="button" class="col col-name" data-sort="name">File</button>
+          <button type="button" class="col col-stats" data-sort="size">Size · Speed<span class="col-grip" data-grip="stats" aria-hidden="true"></span></button>
+          <button type="button" class="col col-state" data-sort="state">Status<span class="col-grip" data-grip="state" aria-hidden="true"></span></button>
+          <button type="button" class="col col-menu" id="btn-columns" title="Columns" aria-label="Choose columns" aria-haspopup="true">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h12M4 10h12M4 14h12"/></svg>
+          </button>
+          <div class="col-pop" id="col-pop" hidden>
+            <label><input type="checkbox" data-col="seq"> Number</label>
+            <label><input type="checkbox" data-col="site"> Site</label>
+            <label><input type="checkbox" data-col="size"> Size</label>
+            <label><input type="checkbox" data-col="speed"> Speed and time left</label>
+            <label><input type="checkbox" data-col="dest"> Saved to</label>
+            <label><input type="checkbox" data-col="retries"> Retries</label>
+            <button type="button" class="btn btn-quiet btn-small" id="btn-columns-reset">Default columns and widths</button>
+          </div>
         </div>
 
         <div class="list" id="list" tabindex="0" aria-label="Files in this run">

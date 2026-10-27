@@ -165,6 +165,17 @@ function appIcon() {
   return undefined;
 }
 
+function onSomeDisplay(bounds) {
+  try {
+    const { screen } = require("electron");
+    // at least a 120 x 60 corner of the title bar area must be on a display's work area
+    return screen.getAllDisplays().some(({ workArea: w }) => bounds.x + bounds.width - 120 > w.x && bounds.x + 120 < w.x + w.width
+      && bounds.y >= w.y - 10 && bounds.y + 60 < w.y + w.height);
+  } catch {
+    return false;
+  }
+}
+
 function createWindow() {
   const saved = readSettings().window || {};
   const options = {
@@ -186,7 +197,9 @@ function createWindow() {
       spellcheck: false,
     },
   };
-  if (Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+  // The saved place is used only when it is still on a connected monitor (multi-monitor setups
+  // change); otherwise Windows centres the window on the main display.
+  if (Number.isFinite(saved.x) && Number.isFinite(saved.y) && onSomeDisplay({ x: saved.x, y: saved.y, width: options.width, height: options.height })) {
     options.x = saved.x;
     options.y = saved.y;
   }
@@ -638,6 +651,30 @@ function isInside(target, dir) {
   const b = process.platform === "win32" ? dir.toLowerCase() : dir;
   return a === b || a.startsWith(b.endsWith(path.sep) ? b : b + path.sep);
 }
+
+// Right-click on a file in the list (3.1). Files are opened only inside the download folders, and
+// only media and documents; anything else is shown in its folder, so a downloaded program never starts.
+ipcMain.handle("row-menu", (_event, body) => {
+  if (!mainWindow || mainWindow.isDestroyed() || !body || typeof body !== "object") return;
+  const url = String(body.url || "").slice(0, 4000);
+  const name = String(body.name || "").slice(0, 400);
+  const reason = String(body.reason || "").slice(0, 400);
+  let file = "";
+  if (typeof body.path === "string" && body.path) {
+    const resolved = path.resolve(body.path);
+    if (allowedRoots().some((dir) => isInside(resolved, dir)) && existingFile(resolved)) file = resolved;
+  }
+  const ext = path.extname(file).slice(1).toLowerCase();
+  const items = [
+    { label: "Copy link", enabled: /^https?:\/\//i.test(url), click: () => clipboard.writeText(url) },
+    { label: "Copy file name", enabled: Boolean(name), click: () => clipboard.writeText(name) },
+  ];
+  if (reason) items.push({ label: "Copy the reason it failed", click: () => clipboard.writeText(reason) });
+  items.push({ type: "separator" });
+  items.push({ label: "Open", enabled: Boolean(file) && MEDIA_OPEN.has(ext), click: () => shell.openPath(file) });
+  items.push({ label: "Show in folder", enabled: Boolean(file), click: () => shell.showItemInFolder(file) });
+  Menu.buildFromTemplate(items).popup({ window: mainWindow });
+});
 
 ipcMain.handle("open-path", async (_event, targetPath) => {
   if (!targetPath || typeof targetPath !== "string") return { ok: false };
@@ -1858,6 +1895,7 @@ async function afterRun(after, event, slot, config) {
       else if (plan && plan.count - plan.conflicts > 0) {
         const label = `After ${String((config && config.label) || "a job").slice(0, 60)}`;
         const done = await organizer("apply", { plan, jobs: JOBS_DB, journal: ORGANIZE_JOURNAL, roots: libraryRoots(), label });
+        if (done.ok) send({ type: "moved", slot, moves: plan.moves.filter((m) => !m.conflict).slice(0, 20000).map((m) => [m.from, m.to]) });
         if (done.ok) report(`Organized ${done.moved} file(s)${plan.conflicts ? `, ${plan.conflicts} left in place because of a name conflict` : ""}. Undo it in Library > Storage.`, "ok");
         else report(`Organize: ${done.error}`, "warning");
       }

@@ -280,6 +280,11 @@ class FileTable:
             row = self.rows.get(url)
             return row["state"] if row else None
 
+    def retries(self, url: str) -> int:
+        with self.lock:
+            row = self.rows.get(url)
+            return int(row.get("retries") or 0) if row else 0
+
     def reason(self, url: str) -> str:
         with self.lock:
             row = self.rows.get(url)
@@ -1141,7 +1146,7 @@ def retry_pass(failed: list[str], referers: dict[str, str], payload: dict, engin
     targets = list(dict.fromkeys(referers.get(url) or url for url in retry_files))
     expired = [url for url in retry_files if error_classes.classify(FILES.reason(url), url) == "expired_url"]
     for url in retry_files:
-        FILES.update(url, state="retrying", reason=f"retrying in {RETRY_WAIT} s")
+        FILES.update(url, state="retrying", reason=f"retrying in {RETRY_WAIT} s", retries=FILES.retries(url) + 1)
     log("info", f"{len(retry_files)} file(s) failed with a temporary error. Trying them again in {RETRY_WAIT} s.")
     if expired:
         log("info", f"{len(expired)} of them had an expired download link. Their pages are read again for fresh links.")
@@ -1633,7 +1638,7 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
             elif kind == "retry":
                 url = str(event.get("url") or "")
                 if url and FILES.state(url) not in FINAL_STATES:
-                    FILES.update(url, state="retrying", reason="retrying")
+                    FILES.update(url, state="retrying", reason="retrying", retries=FILES.retries(url) + 1)
             elif kind == "unsupported":
                 url = str(event.get("url") or "")
                 if url and looks_like_file(url):

@@ -56,6 +56,7 @@ contextBridge.exposeInMainWorld("api", {
   libraryGroups: (body) => ipcRenderer.invoke("library-groups", body),
   rulesPreview: (body) => ipcRenderer.invoke("rules-preview", body),
   brokenReport: (body) => ipcRenderer.invoke("broken-report", body),
+  rowMenu: (body) => ipcRenderer.invoke("row-menu", body),
   settingsExport: (body) => ipcRenderer.invoke("settings-export", body),
   settingsImport: () => ipcRenderer.invoke("settings-import"),
   statsSummary: (body) => ipcRenderer.invoke("stats-summary", body),

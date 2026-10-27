@@ -34,7 +34,10 @@
     samples: [],       // { t, bytes, finished } about once a second, for the speed graph and time left
     peak: 0,
   };
-  const view = { filter: "all", host: "", list: [], dirty: true, hosts: new Map() };
+  const view = { filter: "all", host: "", text: "", list: [], dirty: true, hosts: new Map() };
+  // 3.1 file list: columns shown, column widths and sort, kept with the settings.
+  const LIST_DEFAULT = { cols: { seq: true, site: true, size: true, speed: true, dest: false, retries: false }, widths: { stats: 150, state: 74 }, sort: "page", dir: 1 };
+  let listView = JSON.parse(JSON.stringify(LIST_DEFAULT));
   let prefs = {};
   let cookieFiles = [];
   let downloadsDir = "";
@@ -72,6 +75,7 @@
     typeFolders: { el: "#type-folders", type: "check", def: false },
     duplicateAction: { el: "#duplicate-action", type: "text", def: "keep", max: 10 },
     rules: { get: () => fmt.cleanRuleList(rules), set: (v) => { rules = fmt.cleanRuleList(v); renderRules(); } },
+    listView: { get: () => listView, set: (v) => { listView = cleanListView(v); applyListView(); } },
     typeImages: { el: "#type-images", type: "check", def: true },
     typeVideos: { el: "#type-videos", type: "check", def: true },
     typeAudio: { el: "#type-audio", type: "check", def: true },
@@ -239,7 +243,14 @@
       if (file && file.error) log("warning", file.error);
       return;
     }
-    const { jobs, dropped, kind } = fmt.parseJobFile(file.name, file.text, file.knownDirs || []);
+    importText(file.name, file.text, file.knownDirs || []);
+  });
+
+  // A jobs export goes into the queue; a link list fills the links box. Links are checked and
+  // duplicates dropped by parseJobFile/parseLinks.
+  function importText(name, text, knownDirs) {
+    const file = { name };
+    const { jobs, dropped, kind } = fmt.parseJobFile(name, text, knownDirs);
     if (!jobs.length) return log("warning", `${file.name} has no links.`);
     if (kind === "links") {
       const added = addLinks(jobs[0].urls.concat(jobs[0].unsupported).join("\n"), false);
@@ -255,7 +266,7 @@
     const note = dropped ? ` ${dropped} job folder(s) or empty job(s) were left out (a folder must be chosen on this PC).` : "";
     const how = run.running ? "They start after the current run." : "Press Start with an empty links box to begin.";
     log("info", `Imported ${added} job(s) from ${file.name}${added < jobs.length ? `; ${jobs.length - added} were already queued` : ""}. ${how}${note}`);
-  });
+  }
   $("#import-file").addEventListener("change", async (event) => {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -264,13 +275,17 @@
     log(added ? "info" : "warning", added ? `Added ${added} links from ${file.name}.` : `${file.name} has no links.`);
   });
 
-  // Drop a .txt file or links anywhere on the window.
+  // Drop links, or a .txt, .csv, .json, .m3u or .m3u8 file with links (or a jobs export), anywhere on the window.
   document.addEventListener("dragover", (event) => event.preventDefault());
   document.addEventListener("drop", async (event) => {
     event.preventDefault();
     const file = event.dataTransfer?.files?.[0];
-    const text = file && /\.txt$/i.test(file.name) ? await file.text() : event.dataTransfer?.getData("text") || "";
-    if (addLinks(text, false)) urlsBox.focus();
+    if (file && /\.(txt|csv|json|m3u8?)$/i.test(file.name)) {
+      if (file.size > 20 * 1024 * 1024) return log("warning", `${file.name} is too large for a link list.`);
+      importText(file.name, await file.text(), []);
+      return urlsBox.focus();
+    }
+    if (addLinks(event.dataTransfer?.getData("text") || "", false)) urlsBox.focus();
   });
 
   // ─── jobs: one run of one or more links ────────────────────────────────────
@@ -1672,6 +1687,13 @@
       case "job-event":
         bgEvent(event.slot, event.event || {});
         break;
+      case "moved": { // files organized after a job: the list's "Saved to", Open and Show in folder follow them
+        const to = new Map(event.moves || []);
+        for (const row of run.order) if (row.path && to.has(row.path)) row.path = to.get(row.path);
+        view.dirty = true;
+        scheduleRender();
+        break;
+      }
       case "after":
         log(event.level === "ok" ? "ok" : event.level === "warning" ? "warning" : "info", event.slot && event.label ? `${event.label}: ${event.message}` : event.message);
         break;
@@ -1797,6 +1819,7 @@
 
   function matches(row) {
     if (view.host && row.host !== view.host) return false;
+    if (view.text && !`${nameFor(row)} ${row.url} ${row.host || ""}`.toLowerCase().includes(view.text)) return false;
     switch (view.filter) {
       case "active": return ACTIVE_STATES.has(row.state);
       case "done": return row.state === "done";
@@ -1817,6 +1840,8 @@
     if (view.dirty) {
       if (run.needsSort) sortRows();
       view.list = run.order.filter(matches);
+      if (listView.sort !== "page") view.list.sort(LIST_SORT[listView.sort] ? (a, b) => LIST_SORT[listView.sort](a, b) * listView.dir : undefined);
+      else if (listView.dir < 0) view.list.reverse();
       updateCounts();
       updateTally();
       view.dirty = false;
@@ -1849,7 +1874,7 @@
       '<span class="row-seq"></span>' +
       '<span class="row-main"><span class="row-name"></span>' +
       '<span class="row-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"><span class="row-bar-fill"></span></span>' +
-      '<span class="row-sub"><span class="host"></span><span class="detail"></span></span></span>' +
+      '<span class="row-sub"><span class="host"></span><span class="detail"></span><span class="retries"></span><span class="dest"></span></span></span>' +
       '<span class="row-stats"><span class="row-size"></span><span class="row-speed"></span></span>' +
       '<span class="row-state"></span>' +
       '<button class="row-act" type="button" data-act="copy" title="Copy link" aria-label="Copy link"><svg viewBox="0 0 20 20"><rect x="7" y="7" width="9" height="9" rx="1.5"/><path d="M4 13V5.5A1.5 1.5 0 0 1 5.5 4H13"/></svg></button>';
@@ -1858,6 +1883,8 @@
       name: $(".row-name", el),
       host: $(".host", el),
       detail: $(".detail", el),
+      retries: $(".retries", el),
+      dest: $(".dest", el),
       size: $(".row-size", el),
       speed: $(".row-speed", el),
       state: $(".row-state", el),
@@ -1919,6 +1946,8 @@
     else if (row.state === "active" && total && row.speed > 0) detail = `${fmt.duration((total - read) / row.speed)} left`;
     else if (row.state === "retrying") detail = "Retrying";
     setText(p.detail, detail);
+    setText(p.retries, row.retries ? `${row.retries} ${row.retries === 1 ? "retry" : "retries"}` : "");
+    setText(p.dest, row.state === "done" && row.path ? row.path : "");
     p.detail.title = row.state === "failed" && row.action ? row.action : "";
 
     let size = "";
@@ -1939,6 +1968,115 @@
   function setText(node, text) {
     if (node.textContent !== text) node.textContent = text;
   }
+
+  // ─── file list header: sort, column widths, columns, search, row menu (3.1) ──
+  const STATE_ORDER = { active: 0, retrying: 1, queued: 2, failed: 3, cancelled: 4, done: 5, skipped: 6 };
+  const LIST_SORT = {
+    name: (a, b) => nameFor(a).localeCompare(nameFor(b), undefined, { numeric: true, sensitivity: "base" }),
+    size: (a, b) => (Number(a.total) || Number(a.read) || 0) - (Number(b.total) || Number(b.read) || 0),
+    state: (a, b) => (STATE_ORDER[a.state] ?? 9) - (STATE_ORDER[b.state] ?? 9) || (Number(b.speed) || 0) - (Number(a.speed) || 0),
+  };
+
+  function cleanListView(v) {
+    const out = JSON.parse(JSON.stringify(LIST_DEFAULT));
+    if (!v || typeof v !== "object") return out;
+    for (const key of Object.keys(out.cols)) if (v.cols && typeof v.cols[key] === "boolean") out.cols[key] = v.cols[key];
+    for (const key of Object.keys(out.widths)) {
+      const n = Number(v.widths && v.widths[key]);
+      if (Number.isFinite(n)) out.widths[key] = Math.max(40, Math.min(360, Math.round(n)));
+    }
+    if (v.sort === "page" || LIST_SORT[v.sort]) out.sort = v.sort;
+    out.dir = v.dir === -1 ? -1 : 1;
+    return out;
+  }
+
+  function applyListView() {
+    const ws = $(".workspace");
+    for (const key of ["seq", "site", "size", "speed"]) ws.classList.toggle(`no-${key}`, !listView.cols[key]);
+    ws.classList.toggle("show-dest", listView.cols.dest);
+    ws.classList.toggle("show-retries", listView.cols.retries);
+    ws.style.setProperty("--col-seq", listView.cols.seq ? "46px" : "0px");
+    ws.style.setProperty("--col-stats", `${listView.cols.size || listView.cols.speed ? listView.widths.stats : 0}px`);
+    ws.style.setProperty("--col-state", `${listView.widths.state}px`);
+    for (const box of $$("#col-pop input[data-col]")) box.checked = Boolean(listView.cols[box.dataset.col]);
+    for (const col of $$("#list-head [data-sort]")) {
+      if (col.dataset.sort === listView.sort) col.setAttribute("aria-sort", listView.dir > 0 ? "ascending" : "descending");
+      else col.removeAttribute("aria-sort");
+    }
+    view.dirty = true;
+    scheduleRender();
+  }
+
+  $("#list-head").addEventListener("click", (event) => {
+    if (event.target.closest(".col-grip, #col-pop, #btn-columns")) return;
+    const col = event.target.closest("[data-sort]");
+    if (!col) return;
+    const sort = col.dataset.sort;
+    listView.dir = listView.sort === sort ? -listView.dir : 1;
+    listView.sort = sort;
+    applyListView();
+    savePrefsSoon();
+  });
+  // Drag the left edge of Size · Speed or Status to make it wider or narrower.
+  for (const grip of $$("#list-head .col-grip")) {
+    grip.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const key = grip.dataset.grip;
+      const startX = event.clientX;
+      const startW = listView.widths[key];
+      grip.setPointerCapture(event.pointerId);
+      grip.classList.add("is-drag");
+      const move = (e) => {
+        listView.widths[key] = Math.max(40, Math.min(360, startW - (e.clientX - startX)));
+        applyListView();
+      };
+      const up = () => {
+        grip.classList.remove("is-drag");
+        grip.removeEventListener("pointermove", move);
+        savePrefsSoon();
+      };
+      grip.addEventListener("pointermove", move);
+      grip.addEventListener("pointerup", up, { once: true });
+    });
+    grip.addEventListener("click", (event) => event.stopPropagation());
+  }
+  $("#btn-columns").addEventListener("click", (event) => {
+    event.stopPropagation();
+    $("#col-pop").hidden = !$("#col-pop").hidden;
+  });
+  document.addEventListener("click", (event) => {
+    if (!$("#col-pop").hidden && !event.target.closest("#col-pop")) $("#col-pop").hidden = true;
+  });
+  $("#col-pop").addEventListener("change", (event) => {
+    const box = event.target.closest("input[data-col]");
+    if (!box) return;
+    listView.cols[box.dataset.col] = box.checked;
+    applyListView();
+    savePrefsSoon();
+  });
+  $("#btn-columns-reset").addEventListener("click", () => {
+    listView = JSON.parse(JSON.stringify(LIST_DEFAULT));
+    applyListView();
+    savePrefsSoon();
+  });
+  let listSearchTimer = 0;
+  $("#list-search").addEventListener("input", () => {
+    clearTimeout(listSearchTimer);
+    listSearchTimer = setTimeout(() => {
+      view.text = $("#list-search").value.trim().toLowerCase();
+      view.dirty = true;
+      scheduleRender();
+    }, 150);
+  });
+  // Right-click a file: copy its link or name, open it or show it in its folder (native menu).
+  rowsEl.addEventListener("contextmenu", (event) => {
+    const el = event.target.closest(".row");
+    const row = el && run.rows.get(el.dataset.url);
+    if (!row) return;
+    event.preventDefault();
+    api.rowMenu({ url: row.url, name: nameFor(row), path: row.state === "done" ? row.path || "" : "", reason: row.state === "failed" ? row.reason || "" : "" });
+  });
 
   rowsEl.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-act]");
@@ -3158,6 +3296,7 @@
     // 3.0: download modes. Settings left at the old defaults become Auto; changed ones stay as Custom.
     if (!prefs.downloadMode) prefs.downloadMode = fmt.guessMode(prefs);
     for (const [key, spec] of Object.entries(PREF_FIELDS)) writeField(spec, prefs[key]);
+    applyListView();
     for (const id of ["#max-downloads", "#per-host", "#server-slots"]) $(id).dataset.custom = $(id).value;
     showDownloadMode();
     showTemplateExample();
