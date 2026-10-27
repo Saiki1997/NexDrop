@@ -44,15 +44,13 @@ class ConfigModel(DeferredModel, extra="forbid"):
         if not deprecated:
             return
 
-        import time
-
         for field in deprecated:
             warn_id = type(self), field
             if warn_id not in _warned:
                 _warned.add(warn_id)
                 logger.warning("'%s' config option is deprecated and will be removed in a future version", field)
-
-        time.sleep(2)
+        # NEXDROP patch: no time.sleep(2) here. Nobody reads a console in NexDrop, and the pause
+        # cost 4 s on every engine start (the bundled config set the deprecated ssl_context).
 
 
 def _deprecated_fields(model: BaseModel) -> list[str]:

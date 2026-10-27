@@ -26,9 +26,17 @@ if _ffmpeg.is_dir():
     os.environ["PATH"] = str(_ffmpeg) + os.pathsep + os.environ.get("PATH", "")
 _template = ROOT / "user-config.yaml"
 _installed = PORTABLE / "config.yaml"
+
+
+def _config_version(text: str) -> int:
+    match = re.search(r"NEXDROP-CONFIG (\d+)", text)
+    return int(match.group(1)) if match else 0
+
+
 if _template.is_file():
     current = _installed.read_text(encoding="utf-8") if _installed.is_file() else ""
-    if "NEXDROP-CONFIG" not in current:
+    # A newer bundled config replaces the installed copy (2: no deprecated ssl_context, which cost 4 s per start).
+    if _config_version(current) < _config_version(_template.read_text(encoding="utf-8")):
         shutil.copyfile(_template, _installed)
 sys.path.insert(0, str(ROOT / "vendor"))
 
@@ -314,7 +322,7 @@ def _install_download_clearance() -> None:
 
     async def check_response(media_item, resp, resume_point):
         try:
-            await original_check(media_item, resp, resume_point)
+            return await original_check(media_item, resp, resume_point)  # the resume point that applies
         except InvalidContentTypeError as error:
             title = ""
             try:

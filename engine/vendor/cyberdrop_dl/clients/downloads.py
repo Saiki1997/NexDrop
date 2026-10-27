@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, final
 from aiohttp import hdrs
 
 from cyberdrop_dl import aio, constants, ffmpeg, storage
-from cyberdrop_dl.clients import etag
+from cyberdrop_dl.clients import etag, resume_validators
 from cyberdrop_dl.clients.http import JSON_CHECK, check_http_status
 from cyberdrop_dl.constants import USE_RETRY_PATH, FileExt
 from cyberdrop_dl.exceptions import DownloadError, InvalidContentTypeError, SlowDownloadError
@@ -80,9 +80,14 @@ class DownloadClient:
 
         resume_point = 0
         media_item.headers.pop(hdrs.RANGE, None)  # Delete ranges from previous attempts
+        media_item.headers.pop(hdrs.IF_RANGE, None)
         if self.SUPPORTS_RANGES and media_item.partial_file and (size := await aio.get_size(media_item.partial_file)):
             resume_point = size
             media_item.headers[hdrs.RANGE] = f"bytes={size}-"
+            # NEXDROP patch: If-Range makes the server send the whole file again (200) when it changed
+            # since the partial file was started, instead of bytes of a different file.
+            if not media_item.is_segment and (if_range := resume_validators.if_range(media_item.partial_file)):
+                media_item.headers[hdrs.IF_RANGE] = if_range
 
         await asyncio.sleep(self.config.downloads.total_delay)
 
@@ -116,12 +121,16 @@ class DownloadClient:
         resume_point: int,
         resp: AbstractResponse[Any],
     ) -> bool:
-        await _check_response(media_item, resp, resume_point)
+        resume_point = await _check_response(media_item, resp, resume_point)
         media_item.size = _get_content_length(resp.headers)
+        if resp.headers.get(hdrs.CONTENT_ENCODING, "identity").lower() not in ("identity", ""):
+            media_item.size = 0  # NEXDROP patch: compressed body, so Content-Length is not the file size
         if resp.status == HTTPStatus.PARTIAL_CONTENT:
             # Content-Length of a ranged response only counts the bytes after resume_point.
             # Every check below (partial size, final size, filesize limits) needs the size of the whole file
             media_item.size += resume_point
+        elif not media_item.is_segment and media_item.partial_file:
+            resume_validators.save(media_item.partial_file, resp.headers, media_item.size, str(media_item.url))
         _set_upload_date(media_item, resp.headers)
         if not media_item.path:
             downloaded = await self._predownload_skip(media_item, domain)
@@ -187,10 +196,16 @@ class DownloadClient:
             raise DownloadError(HTTPStatus.INTERNAL_SERVER_ERROR, "File is empty")
 
         assert media_item.size is not None
-        if size < media_item.size:
-            await aio.unlink(media_item.partial_file, missing_ok=True)
-            msg = f"Expected at least {media_item.size:,} bytes but only got {size:,} bytes"
-            raise DownloadError("Corrupted File", msg)
+        if media_item.size and size != media_item.size:
+            # NEXDROP patch: an exact check. More bytes than announced means a bad resume joined two transfers.
+            await _discard_partial(media_item.partial_file)
+            word = "only got" if size < media_item.size else "got"
+            msg = f"Expected {media_item.size:,} bytes but {word} {size:,} bytes"
+            raise DownloadError("Corrupted File", msg, retry=True)
+
+        if not media_item.is_segment and await aio.to_thread(_looks_like_web_page)(media_item.partial_file, media_item.ext):
+            await _discard_partial(media_item.partial_file)
+            raise InvalidContentTypeError(message="Got a web page instead of the file")
 
     async def download_file(self, domain: str, media_item: MediaItem) -> bool:
         """Starts a file."""
@@ -204,6 +219,7 @@ class DownloadClient:
         downloaded = await self._download(domain, media_item)
         if downloaded:
             await aio.move(media_item.partial_file, media_item.path)
+            resume_validators.forget(media_item.partial_file)
         return downloaded
 
     async def mark_incomplete(self, media_item: MediaItem, domain: str) -> None:
@@ -489,13 +505,16 @@ def _set_upload_date(media_item: MediaItem, headers: Mapping[str, str]) -> None:
         media_item.uploaded_at = last_modified
 
 
-async def _check_response(media_item: MediaItem, resp: AbstractResponse[Any], resume_point: int) -> None:
+async def _check_response(media_item: MediaItem, resp: AbstractResponse[Any], resume_point: int) -> int:
+    """Checks the answer and returns the resume point that applies to it (0 when the file starts over)."""
     if resp.status == HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE:
         logger.warning(
             "Deleting partial file '%s'. Download is corrupted. Partial file is bigger that expected size",
             media_item.partial_file,
         )
-        await aio.unlink(media_item.partial_file)
+        await _discard_partial(media_item.partial_file)
+        # NEXDROP patch: try again from the start instead of failing the file
+        raise DownloadError(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE, "Partial file was out of range", retry=True)
 
     etag.check(resp.headers)
     await check_http_status(resp)
@@ -510,7 +529,43 @@ async def _check_response(media_item: MediaItem, resp: AbstractResponse[Any], re
             "Deleting partial file '%s'. Server did not acknowledge byte-range request",
             media_item.partial_file,
         )
-        await aio.unlink(media_item.partial_file)
+        await _discard_partial(media_item.partial_file)
+        return 0  # NEXDROP patch: the old bytes are gone, so they must not count as progress
+
+    if resp.status == HTTPStatus.PARTIAL_CONTENT and resume_point:
+        # NEXDROP patch: never append bytes that don't continue this exact file.
+        problem = resume_validators.mismatch(media_item.partial_file, resp.headers, resume_point)
+        if problem:
+            logger.warning("Deleting partial file '%s'. %s", media_item.partial_file, problem)
+            await _discard_partial(media_item.partial_file)
+            raise DownloadError("Resume Mismatch", f"{problem}. Starting the file again", retry=True)
+    return resume_point
+
+
+async def _discard_partial(partial_file: Path | None) -> None:
+    if partial_file is None:
+        return
+    await aio.unlink(partial_file, missing_ok=True)
+    resume_validators.forget(partial_file)
+
+
+_WEB_PAGE_STARTS = (b"<!doctype html", b"<html", b"<head", b"<?xml version")
+
+
+def _looks_like_web_page(path: Path, ext: str) -> bool:
+    """NEXDROP patch: a media file whose first bytes are an HTML page (a login or error page served
+    with a binary content type) is not a successful download."""
+    ext = (ext or "").lower()
+    if ext not in FileExt.IMAGE and ext not in FileExt.VIDEO and ext not in FileExt.AUDIO:
+        return False
+    if ext in (".svg",):
+        return False
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(512).lstrip(b"\xef\xbb\xbf \t\r\n").lower()
+    except OSError:
+        return False
+    return head.startswith(_WEB_PAGE_STARTS)
 
 
 def resolve_download_dir(download_folder: Path, config: Config) -> Path:

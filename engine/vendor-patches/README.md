@@ -126,3 +126,20 @@ Smart naming V2 (2.5.0):
   the file already sits in a folder with that name. `handle_file` saves the file there.
 - No more `Loose Files` folders: `_prepare_download_path` puts a file linked on its own in the folder of the page that
   linked it (or the download folder). The desktop app's plain-HTTP fallback does the same.
+
+3.0 (download integrity and speed):
+- `cyberdrop_dl/clients/downloads.py` and `cyberdrop_dl/clients/resume_validators.py` (new): a resumed download only appends
+  bytes of the same file. Beside each `.part` file a `.part.nxmeta` sidecar keeps the link (no query string), ETag,
+  Last-Modified and full size from the answer that started it. A resume sends `If-Range`; a `206` must start at the resume
+  point, report the same size and ETag, or the partial file is deleted and the file starts again. A `200` to a range request
+  no longer counts the deleted bytes as progress. `416` restarts the file instead of failing it. The finished file must have
+  exactly the announced size (not "at least"), and an image, video or audio file whose first bytes are an HTML page fails
+  with "Got a web page instead of the file". A compressed answer (Content-Encoding) is not size-checked.
+- `cyberdrop_dl/clients/http.py`: `check_http_status` marks 408, 425, 429, 500, 502, 503, 504 and 520-524 as retryable and
+  attaches the server's `Retry-After` (seconds or HTTP date). Before, every HTTP error was final inside the run.
+- `cyberdrop_dl/downloader/http.py`: a retry waits first: the server's Retry-After (at most 60 s), else 2 s, 4 s, 8 s ... up
+  to 20 s with ±25% jitter. Before, the retry was sent at once.
+- `cyberdrop_dl/hasher.py`: xxh128, MD5 and SHA-256 come from one read of the file instead of one full read each.
+- `cyberdrop_dl/models/__init__.py`: no `time.sleep(2)` after a deprecated-option warning. With the bundled config's old
+  `ssl_context` line this cost 4 s on every engine start (the config is now version 2 without it, and the bridge replaces an
+  older installed copy).
