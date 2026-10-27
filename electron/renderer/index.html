@@ -104,7 +104,8 @@
             <span class="tally-of">of <span id="t-total">0</span> files saved</span>
           </div>
           <dl class="tally-stats">
-            <div><dt>Speed</dt><dd id="t-speed">–</dd></div>
+            <div class="t-speed" id="t-speed-box"><dt>Speed</dt><dd><canvas id="t-graph" width="72" height="20" aria-hidden="true"></canvas><span id="t-speed">–</span></dd></div>
+            <div><dt>Left</dt><dd id="t-eta" title="Estimated from how fast files finished in the last two minutes">–</dd></div>
             <div><dt>Downloaded</dt><dd id="t-bytes">0 B</dd></div>
             <div><dt>Time</dt><dd id="t-time">0:00</dd></div>
           </dl>
@@ -344,7 +345,14 @@
           <label class="field"><span class="field-label">Speed cap, MB/s</span><input type="number" id="speed-limit" min="0" max="1000" value="0"><small class="field-help">0 means no cap.</small></label>
           <label class="field"><span class="field-label">Connect timeout, s</span><input type="number" id="connect-timeout" min="10" max="30" value="15"></label>
           <label class="field"><span class="field-label">Read timeout, s</span><input type="number" id="read-timeout" min="30" max="300" value="60"></label>
+          <label class="field"><span class="field-label">Longest wait between attempts, s</span><input type="number" id="retry-max-delay" min="2" max="120" value="20"><small class="field-help">Waits grow 2 s, 4 s, 8 s… up to this, with a little randomness.</small></label>
+          <label class="field"><span class="field-label">Honour "retry after" up to, s</span><input type="number" id="retry-after-cap" min="5" max="600" value="60"><small class="field-help">When a server says how long to wait. Longer waits move the file to the retry pass.</small></label>
         </div>
+        <label class="field">
+          <span class="field-label">Per-site limits</span>
+          <textarea id="site-limits" rows="3" spellcheck="false" placeholder="bunkr.cr = 2&#10;gofile.io = 1"></textarea>
+          <small class="field-help">One site per line: at most this many downloads at once from it (1 to 32), on top of the limits above. A site also covers its servers (c3.bunkr.cr).</small>
+        </label>
         <label class="field">
           <span class="field-label">Proxy</span>
           <input type="text" id="proxy" placeholder="http://127.0.0.1:8080" spellcheck="false" autocomplete="off">
@@ -368,6 +376,17 @@
           <label class="field"><span class="field-label">Speed cap, MB/s</span><input type="number" id="quiet-speed" min="1" max="1000" value="2"></label>
         </div>
         <p class="status-line" id="schedule-status" role="status"></p>
+
+        <div class="divider"></div>
+        <div class="field">
+          <span class="field-label">Test a site</span>
+          <div class="field-row">
+            <input type="text" id="net-check-url" placeholder="https://bunkr.cr" spellcheck="false" autocomplete="off">
+            <button class="btn btn-quiet" id="btn-net-check" type="button">Test</button>
+          </div>
+          <small class="field-help">Looks the site up, connects (through the proxy when one is set) and sends one small request. Nothing is downloaded.</small>
+          <ul class="net-steps" id="net-steps"></ul>
+        </div>
       </section>
 
       <section class="pane" data-pane="accounts" hidden>
@@ -503,6 +522,10 @@
             <button class="btn btn-quiet" id="btn-update-check" type="button">Check for updates</button>
           </div>
           <p class="status-line" id="update-status" role="status"></p>
+          <div class="field-row" id="rollback-row" hidden>
+            <button class="btn btn-quiet" id="btn-rollback" type="button">Go back</button>
+            <span class="field-help" id="rollback-text"></span>
+          </div>
         </div>
         <label class="switch"><input type="checkbox" id="update-auto" checked><span class="switch-text">Check for updates automatically<small>Asks GitHub for the newest release when NEXDROP starts and twice a day. Nothing is downloaded until you press Update now.</small></span></label>
         <div class="divider"></div>

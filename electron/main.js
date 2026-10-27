@@ -1374,6 +1374,25 @@ function scheduleUpdateChecks(on) {
 
 ipcMain.handle("update-check", () => checkForUpdate(true));
 ipcMain.handle("update-install", () => updater.install());
+ipcMain.handle("update-rollback-info", () => {
+  const info = updater.rollbackAvailable();
+  return info ? { ok: true, from: info.from, files: (info.files || []).length, created: info.created } : { ok: false };
+});
+ipcMain.handle("update-rollback", async () => {
+  const info = updater.rollbackAvailable();
+  if (!info) return { ok: false, error: "There is no earlier version saved to go back to." };
+  const answer = await dialog.showMessageBox(mainWindow, {
+    type: "question",
+    buttons: ["Go back and restart", "Cancel"],
+    defaultId: 1,
+    cancelId: 1,
+    title: "Go back to the previous version",
+    message: `Go back to NEXDROP ${info.from}?`,
+    detail: `The ${(info.files || []).length} app files the update changed are put back and NEXDROP restarts. Settings, sign-ins, history and downloads are not touched.`,
+  });
+  if (answer.response !== 0) return { ok: false, cancelled: true };
+  return updater.rollback();
+});
 ipcMain.handle("update-skip", (_event, version) => {
   writeSettings({ update_skip: String(version || "") });
   return { ok: true };
@@ -1422,6 +1441,13 @@ ipcMain.handle("history-export", async (_event, body) => {
 });
 
 // 3.0: per-site results from the history database (nothing is sent anywhere).
+// 3.1 network diagnostics: DNS, connect and one HEAD request to a site.
+ipcMain.handle("net-check", async (_event, url) => {
+  const input = `${JSON.stringify({ url: String(url || "").slice(0, 500), proxy: String(readSettings().prefs?.proxy || "") })}\n`;
+  const result = await runPython([path.join(ROOT, "desktop", "net_check.py")], { input, timeout: 45000 });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "The test could not run.").slice(-300), steps: [] };
+});
+
 // 3.1 URL analyzer: what each link is (offline, from the engine's handlers), and with `preview`
 // one request per link for its title, size or the reason it can't be read.
 ipcMain.handle("analyze-links", async (_event, body) => {

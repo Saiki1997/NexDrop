@@ -147,3 +147,9 @@ test("duplicate links with other tracking parameters are left out (3.1)", () => 
   assert.deepStrictEqual(parsed.urls, ["https://a.test/x?utm_source=1", "https://b.test/y"]);
   assert.deepStrictEqual(parsed.duplicates, ["https://a.test/x/"]);
 });
+
+test("per-site limits accept host = N lines and report the rest", () => {
+  const { limits, bad } = fmt.parseSiteLimits("# comment\nbunkr.cr = 2\nhttps://www.GoFile.io/: 3\n\nnope\nx.test = 99");
+  assert.deepStrictEqual(limits, { "bunkr.cr": 2, "gofile.io": 3 });
+  assert.deepStrictEqual(bad, ["nope", "x.test = 99"]);
+});

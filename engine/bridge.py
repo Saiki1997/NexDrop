@@ -909,6 +909,54 @@ class _ServerSlots:
 SERVER_SLOTS = _ServerSlots()
 
 
+class _SiteLimits:
+    """Settings > Speed > Per-site limits: at most N downloads at once from one site (3.1).
+    "bunkr.cr = 2" also covers its CDN hosts (c3.bunkr.cr, ...)."""
+
+    def __init__(self) -> None:
+        self.limits: dict[str, int] = {}
+        self.gates: dict[str, object] = {}
+
+    def configure(self, raw: object) -> None:
+        self.limits = {}
+        if isinstance(raw, dict):
+            for key, value in raw.items():
+                site = str(key).strip().lower().removeprefix("www.")
+                try:
+                    number = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if site and 1 <= number <= 32:
+                    self.limits[site] = number
+
+    def get(self, host: str):
+        import asyncio
+        import contextlib
+
+        host = host.lower().removeprefix("www.")
+        site = next((s for s in sorted(self.limits, key=len, reverse=True) if host == s or host.endswith("." + s)), "")
+        if not site:
+            return contextlib.nullcontext()
+        gate = self.gates.get(site)
+        if gate is None:
+            gate = self.gates[site] = asyncio.Semaphore(self.limits[site])
+        return gate
+
+
+SITE_LIMITS = _SiteLimits()
+
+
+def _install_retry_policy(max_delay: int, retry_after_cap: int) -> None:
+    """Settings > Speed > Retries: the longest wait between attempts, and how long a server's
+    Retry-After is honoured before the file gives its slot to others."""
+    try:
+        from cyberdrop_dl.downloader import http as downloader_http
+    except Exception:  # noqa: BLE001
+        return
+    downloader_http.RETRY_MAX_DELAY = float(max_delay)
+    downloader_http.RETRY_AFTER_CAP = float(retry_after_cap)
+
+
 def _install_server_slots(per_server: int) -> None:
     import contextlib
 
@@ -921,7 +969,8 @@ def _install_server_slots(per_server: int) -> None:
     @contextlib.asynccontextmanager
     async def lock(self, url):
         server = SERVER_SLOTS.get(url.host or "") if self.use_server_lock else contextlib.nullcontext()
-        async with server, self._semaphore, self.manager.http_client.limiter.downloads:
+        site = SITE_LIMITS.get(url.host or "")
+        async with site, server, self._semaphore, self.manager.http_client.limiter.downloads:
             yield
 
     Downloader.lock = lock
@@ -1364,6 +1413,8 @@ def _run() -> int:
     _install_db_open_lock()
     _install_download_clearance()
     _install_server_slots(_bound_int(payload.get("serverSlots"), 1, 6, 3))
+    SITE_LIMITS.configure(payload.get("siteLimits"))
+    _install_retry_policy(_bound_int(payload.get("retryMaxDelay"), 2, 120, 20), _bound_int(payload.get("retryAfterCap"), 5, 600, 60))
     _install_type_folders(bool(payload.get("typeFolders")))
     _install_segments(_bound_int(payload.get("segments"), 0, 8, 4), _bound_int(payload.get("segmentMinMB"), 1, 4096, 64))
     _install_last_post_report()

@@ -31,6 +31,8 @@
     bytes: 0,
     speed: 0,
     failedUrls: [],
+    samples: [],       // { t, bytes, finished } about once a second, for the speed graph and time left
+    peak: 0,
   };
   const view = { filter: "all", host: "", list: [], dirty: true, hosts: new Map() };
   let prefs = {};
@@ -77,6 +79,9 @@
     speedLimitMB: { el: "#speed-limit", type: "int", def: 0, min: 0, max: 1000 },
     connectionTimeout: { el: "#connect-timeout", type: "int", def: 15, min: 10, max: 30 },
     readTimeout: { el: "#read-timeout", type: "int", def: 60, min: 30, max: 300 },
+    retryMaxDelay: { el: "#retry-max-delay", type: "int", def: 20, min: 2, max: 120 },
+    retryAfterCap: { el: "#retry-after-cap", type: "int", def: 60, min: 5, max: 600 },
+    siteLimits: { el: "#site-limits", type: "text", def: "", max: 4000 },
     proxy: { el: "#proxy", type: "text", def: "", max: 500 },
     proxyScope: { el: "#proxy-scope", type: "text", def: "all", max: 20 },
     simpcityGap: { el: "#simpcity-gap", type: "int", def: 2, min: 1, max: 30 },
@@ -410,6 +415,9 @@
       simpcityGap: prefs.simpcityGap,
       connectionTimeout: prefs.connectionTimeout,
       readTimeout: prefs.readTimeout,
+      retryMaxDelay: prefs.retryMaxDelay,
+      retryAfterCap: prefs.retryAfterCap,
+      siteLimits: fmt.parseSiteLimits(prefs.siteLimits).limits,
     };
   }
 
@@ -1091,6 +1099,8 @@
     run.order = [];
     run.arrival = 0;
     run.bytes = 0;
+    run.samples = [];
+    run.peak = 0;
     view.hosts.clear();
     view.filter = "all";
     view.host = "";
@@ -1203,8 +1213,48 @@
     }
     if (event.bytes) run.bytes = run.bytesBefore + event.bytes;
     run.speed = event.speed || 0;
+    run.peak = Math.max(run.peak, run.speed);
+    const now = Date.now();
+    const last = run.samples[run.samples.length - 1];
+    if (!last || now - last.t >= 1000) {
+      const c = event.counts || {};
+      run.samples.push({ t: now, bytes: run.bytes, speed: run.speed, finished: (c.done || 0) + (c.skipped || 0) + (c.failed || 0) + (c.cancelled || 0) });
+      if (run.samples.length > 600) run.samples.splice(0, run.samples.length - 600);
+    }
     view.dirty = true;
     scheduleRender();
+  }
+
+  // Time left from how fast files finished in the last two minutes; nothing until that is known.
+  function timeLeft() {
+    if (!run.running || run.samples.length < 2) return "";
+    const now = run.samples[run.samples.length - 1];
+    const then = run.samples.find((s) => now.t - s.t <= 120000) || run.samples[0];
+    const seconds = (now.t - then.t) / 1000;
+    const rate = seconds >= 20 ? (now.finished - then.finished) / seconds : 0;
+    const remaining = run.order.length - now.finished;
+    if (rate <= 0 || remaining <= 0) return "";
+    return fmt.duration(remaining / rate);
+  }
+
+  function drawGraph() {
+    const canvas = $("#t-graph");
+    const ctx = canvas.getContext && canvas.getContext("2d");
+    if (!ctx) return;
+    const points = run.samples.slice(-72);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const top = Math.max(1, ...points.map((p) => p.speed));
+    if (points.length < 2) return;
+    ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--copper") || "#c8804e";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    points.forEach((p, i) => {
+      const x = (i / (points.length - 1)) * (canvas.width - 1);
+      const y = canvas.height - 1 - (p.speed / top) * (canvas.height - 3);
+      if (i) ctx.lineTo(x, y);
+      else ctx.moveTo(x, y);
+    });
+    ctx.stroke();
   }
 
   function finish(event) {
@@ -1419,6 +1469,20 @@
     setText($("#t-total"), String(run.order.length));
     setText($("#t-bytes"), fmt.bytes(run.bytes));
     setText($("#t-speed"), run.running ? fmt.mbps(run.speed) : "–");
+    setText($("#t-eta"), timeLeft() || "–");
+    const seconds = run.startedAt ? (Date.now() - run.startedAt) / 1000 : 0;
+    const average = seconds > 1 ? (run.bytes - run.bytesBefore) / seconds : 0;
+    let active = 0;
+    let finished = 0;
+    let failed = 0;
+    for (const row of run.order) {
+      if (ACTIVE_STATES.has(row.state)) active += 1;
+      if (row.state === "done") finished += 1;
+      if (row.state === "failed") failed += 1;
+    }
+    const errors = finished + failed ? Math.round((failed / (finished + failed)) * 100) : 0;
+    $("#t-speed-box").title = `Average ${fmt.mbps(average)} · peak ${fmt.mbps(run.peak)} · ${active} downloading now · ${errors}% of finished files failed`;
+    drawGraph();
   }
 
   function tickClock() {
@@ -1973,6 +2037,8 @@
       $("#update-bar-fill").style.width = `${pct}%`;
     } else if (event.stage === "checksum") {
       text.textContent = "Getting the release's checksum…";
+    } else if (event.stage === "rollback") {
+      text.textContent = "Saving the files this update changes, so it can be undone…";
     } else if (event.stage === "unpack") {
       text.textContent = "Checksum matches. Unpacking the update…";
       bar.hidden = true;
@@ -1980,6 +2046,41 @@
       text.textContent = "Restarting NEXDROP to finish the update…";
     }
   }
+
+  $("#btn-net-check").addEventListener("click", async () => {
+    const list = $("#net-steps");
+    const url = $("#net-check-url").value.trim();
+    if (!url) return $("#net-check-url").focus();
+    list.textContent = "";
+    const pending = document.createElement("li");
+    pending.textContent = "Testing…";
+    list.appendChild(pending);
+    const result = await api.netCheck(url).catch((error) => ({ ok: false, error: error.message, steps: [] }));
+    list.textContent = "";
+    for (const step of result.steps || []) {
+      const li = document.createElement("li");
+      li.dataset.ok = String(Boolean(step.ok));
+      li.textContent = `${step.ok ? "✓" : "✗"} ${step.step}: ${step.detail} (${step.ms} ms)`;
+      list.appendChild(li);
+    }
+    if (result.error) {
+      const li = document.createElement("li");
+      li.dataset.ok = "false";
+      li.textContent = result.error;
+      list.appendChild(li);
+    }
+  });
+
+  async function showRollback() {
+    const info = await api.updateRollbackInfo().catch(() => null);
+    $("#rollback-row").hidden = !(info && info.ok);
+    if (info && info.ok) $("#rollback-text").textContent = `Go back to NEXDROP ${info.from} (${info.files} app files were saved before this update).`;
+  }
+  $("#btn-rollback").addEventListener("click", async () => {
+    const result = await api.updateRollback();
+    if (result && !result.ok && !result.cancelled) $("#update-status").textContent = result.error || "Could not go back.";
+  });
+  showRollback();
 
   $("#btn-update-install").addEventListener("click", async () => {
     if (!updateInfo) return;

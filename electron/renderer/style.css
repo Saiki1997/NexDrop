@@ -279,6 +279,8 @@ svg { stroke: currentColor; stroke-width: 1.6; fill: none; stroke-linecap: round
 .tally-stats div { text-align: right; }
 .tally-stats dt { font-size: 11.5px; color: var(--ash-dim); }
 .tally-stats dd { font-family: var(--font-display); font-stretch: 110%; font-weight: 600; font-size: 16px; }
+.t-speed dd { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+#t-graph { width: 72px; height: 20px; opacity: .9; }
 
 /* filters */
 .filter-bar {
@@ -595,6 +597,9 @@ svg { stroke: currentColor; stroke-width: 1.6; fill: none; stroke-linecap: round
 .history-filters .select { flex: 1; }
 .history-info small.problem { color: var(--rust, #c0563f); }
 .health-title { flex: 1; margin: 0; }
+.net-steps { list-style: none; display: flex; flex-direction: column; gap: 4px; margin-top: 8px; font: 400 12px var(--font-mono); }
+.net-steps li[data-ok="true"] { color: var(--verdigris, #7fb8a4); }
+.net-steps li[data-ok="false"] { color: var(--rust); }
 .health-list { list-style: none; display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
 .health-list li { display: grid; grid-template-columns: 10px 1fr auto; gap: 4px 10px; align-items: center; padding: 8px 12px; border: 1px solid var(--shale); border-radius: var(--r-control); background: var(--slate); }
 .health-list li.empty-note { display: block; color: var(--ash-dim); border-style: dashed; background: none; }

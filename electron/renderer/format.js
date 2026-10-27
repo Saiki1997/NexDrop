@@ -74,6 +74,21 @@
     return `${u.protocol}//${hostName}${u.port ? `:${u.port}` : ""}${pathName}${query}${fragment}`;
   }
 
+  /** "host = N" lines (Settings > Speed > Per-site limits) to { limits: {host: N}, bad: [line] }. */
+  function parseSiteLimits(text) {
+    const limits = {};
+    const bad = [];
+    for (const raw of String(text || "").split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith("#")) continue;
+      const match = /^(?:https?:\/\/)?(?:www\.)?([a-z0-9.-]+\.[a-z]{2,})\/?\s*[=:]\s*(\d+)$/i.exec(line);
+      const n = match ? parseInt(match[2], 10) : NaN;
+      if (match && n >= 1 && n <= 32) limits[match[1].toLowerCase()] = n;
+      else bad.push(line);
+    }
+    return { limits, bad };
+  }
+
   function parseLinks(text) {
     const urls = [];
     const unsupported = [];
@@ -364,5 +379,5 @@
     return out;
   }
 
-  return { normalizeUrl, redact, cleanJob, parseJobFile, exportJob, TEMPLATE_VARS, templateProblem, renderTemplate, DOWNLOAD_MODES, modeLimits, guessMode, bytes, speed, mbps, duration, ago, parseLinks, host, finishText, compareVersions, clockMinutes, inTimeWindow, appLinkUrls, checksumFor };
+  return { parseSiteLimits, normalizeUrl, redact, cleanJob, parseJobFile, exportJob, TEMPLATE_VARS, templateProblem, renderTemplate, DOWNLOAD_MODES, modeLimits, guessMode, bytes, speed, mbps, duration, ago, parseLinks, host, finishText, compareVersions, clockMinutes, inTimeWindow, appLinkUrls, checksumFor };
 });

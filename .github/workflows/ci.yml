@@ -51,4 +51,4 @@ jobs:
           python -c "import json; json.load(open('browser-extension/manifest.json'))"
 
       - name: Node tests
-        run: node --test tests/format.test.js
+        run: node --test tests/*.test.js
