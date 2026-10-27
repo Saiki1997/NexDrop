@@ -122,7 +122,9 @@ def workload(root: Path, server: LocalServer, count: int, size: int, tag: str) -
     started = time.monotonic()
     runs = []
     for at in range(0, count, PER_RUN):
+        run_started = time.monotonic()
         runs.append(one_run(root, appdata, urls[at:at + PER_RUN], folder))
+        runs[-1]["seconds"] = time.monotonic() - run_started
     wall = time.monotonic() - started
     after = resource.getrusage(resource.RUSAGE_CHILDREN)
     good = bad = 0
@@ -145,6 +147,8 @@ def workload(root: Path, server: LocalServer, count: int, size: int, tag: str) -
         "filesPerSecond": round(count / wall, 1),
         "megabytesPerSecond": round(count * size / wall / 1e6, 1),
         "cpuSeconds": round((after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime), 2),
+        "firstRunSeconds": round(runs[0]["seconds"], 1),
+        "lastRunSeconds": round(runs[-1]["seconds"], 1),
         "peakMemoryMB": round(max(r["peak"] for r in runs) / 1e6, 1),
         "firstRunPeakMB": round(runs[0]["peak"] / 1e6, 1),
         "lastRunPeakMB": round(runs[-1]["peak"] / 1e6, 1),
