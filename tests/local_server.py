@@ -4,6 +4,7 @@ Every file's bytes are a pure function of its name and version, so a test can ch
 file holds exactly one version of one file. Routes, all GET:
 
   /ok/<name>?size=N                 a file with Range, ETag and Last-Modified support
+                                    (&rate=B caps each connection at B bytes per second)
                                     (&as=<other> serves the bytes of <other> under this name)
   /trunc/<name>?size=N              no range support; announces N bytes, sends half, then drops (every time)
   /drop-once/<name>?size=N          the first request drops half way, later ones behave like /ok
@@ -16,6 +17,10 @@ file holds exactly one version of one file. Routes, all GET:
   /changed/<name>?size=N            first request drops half way with ETag "v1"; afterwards the file is
                                     version 2 (ETag "v2") and If-Range: "v1" gets a 200 with all of v2
   /changed-ignore/<name>?size=N     like /changed, but the server ignores If-Range and answers 206 with v2
+  /redirect/<name>?to=URL           302 to URL, like a link shortener
+  /page/<name>                      an HTML album page: og:title, og:site_name, author and 3 distinct file links
+  /seg-wrong/<name>?size=N          like /ok, but a range starting after byte 0 is answered from byte 0
+  /seg-drop/<name>?size=N           like /ok, but the first range starting after byte 0 drops half way
 
 `server.hits[path]` counts the requests per path and `server.headers[path]` keeps the last
 request headers.
@@ -24,14 +29,17 @@ request headers.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import socket
 import threading
+import time
 from collections import Counter
 
 from aiohttp import web
 
 
+@functools.lru_cache(maxsize=16)  # a split download asks for the same large file once per part
 def content(name: str, size: int, version: int = 1) -> bytes:
     seed = hashlib.sha256(f"{name}:{version}".encode()).digest()
     return (seed * (size // len(seed) + 1))[:size]
@@ -41,6 +49,8 @@ class LocalServer:
     def __init__(self) -> None:
         self.hits: Counter[str] = Counter()
         self.headers: dict[str, dict[str, str]] = {}
+        self.ranged: Counter[str] = Counter()  # range requests that start after byte 0
+        self.ranges: dict[str, list[str]] = {}  # their Range headers, after the first one
         self.port = 0
         self._loop: asyncio.AbstractEventLoop | None = None
         self._runner: web.AppRunner | None = None
@@ -120,6 +130,32 @@ class LocalServer:
                     return await self._send(request, new, etag='"v2"', ranges=False)
                 return await self._send(request, new, etag='"v2"')
             return await self._send(request, new, etag='"v2"')  # ignores If-Range
+        if route == "redirect":  # 302 to ?to=<url>, like a link shortener
+            raise web.HTTPFound(request.query.get("to", "/"))
+        if route == "page":  # an album page with Open Graph tags and file links
+            body = ('<!doctype html><html><head><title>Ignored title</title>'
+                    '<meta property="og:title" content="Summer &amp; Sun">'
+                    '<meta property="og:site_name" content="Test Host"><meta name="author" content="Ana">'
+                    '</head><body><a href="/ok/1.jpg">1</a><img src="/ok/2.jpg?w=1"><a href="/ok/1.jpg">again</a>'
+                    '<a href="https://cdn.test/v.mp4">v</a></body></html>')
+            return web.Response(status=200, text=body, content_type="text/html")
+        if route == "seg-wrong":  # plain requests work; a range that starts after byte 0 is answered from byte 0
+            data = content(name, size)
+            wanted = request.headers.get("Range", "")
+            if wanted.startswith("bytes=") and not wanted.startswith("bytes=0-"):
+                return await self._send(request, data, etag='"w1"', force_range_start=0)
+            return await self._send(request, data, etag='"w1"')
+        if route == "seg-drop":  # the first range request after byte 0 drops half way through its part
+            data = content(name, size)
+            wanted = request.headers.get("Range", "")
+            if wanted.startswith("bytes=") and not wanted.startswith("bytes=0-"):
+                self.ranged[key] += 1
+                if self.ranged[key] == 1:
+                    first, _, last = wanted[6:].partition("-")
+                    middle = (int(first) + int(last or size - 1)) // 2
+                    return await self._send(request, data, etag='"s1"', drop_at=middle)
+                self.ranges.setdefault(key, []).append(wanted)
+            return await self._send(request, data, etag='"s1"')
         same = request.query.get("as", name)  # /ok/<name>?as=<other> serves <other>'s bytes
         return await self._send(request, content(same, size), etag=f'"{same}-{size}"')
 
@@ -134,14 +170,18 @@ class LocalServer:
             headers["ETag"] = etag
         wanted = request.headers.get("Range", "")
         if ranges and wanted.startswith("bytes="):
-            start = int(wanted[6:].split("-")[0] or 0)
+            first, _, last = wanted[6:].partition("-")
+            start = int(first or 0)
+            end = min(int(last), size - 1) if last.strip() else size - 1
             if start >= size:
                 return web.Response(status=416, headers={"Content-Range": f"bytes */{size}"})
             if force_range_start is not None:
                 start = force_range_start
             status = 206
-            headers["Content-Range"] = f"bytes {start}-{size - 1}/{size}"
-        body = data[start:]
+            headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+        else:
+            end = size - 1
+        body = data[start:end + 1]
         headers["Content-Length"] = str(len(body))
         response = web.StreamResponse(status=status, headers=headers)
         await response.prepare(request)
@@ -150,7 +190,13 @@ class LocalServer:
             await asyncio.sleep(0.5)  # let the client read what was sent before the drop
             request.transport.close()  # the client sees a broken transfer
             return response
+        rate = int(request.query.get("rate", "0") or 0)  # bytes per second for this connection, like a host's cap
+        sent_at = time.monotonic()
         for offset in range(0, len(body), 65536):
             await response.write(body[offset:offset + 65536])
+            if rate:
+                ahead = (offset + 65536) / rate - (time.monotonic() - sent_at)
+                if ahead > 0:
+                    await asyncio.sleep(ahead)
         await response.write_eof()
         return response

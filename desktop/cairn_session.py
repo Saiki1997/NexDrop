@@ -41,18 +41,37 @@ if os.path.normcase(_DESKTOP_DIR) not in {os.path.normcase(os.path.abspath(e)) f
     sys.path.insert(0, _DESKTOP_DIR)
 from auth_cookies import convert_any  # noqa: E402
 import error_classes  # noqa: E402
+import dup_actions  # noqa: E402
+import rules as rule_engine  # noqa: E402
 from job_store import JobStore  # noqa: E402
 from scrape_status import classify_scrape_message  # noqa: E402
+from state_lock import RunningMarker, shared_state  # noqa: E402
+import stats  # noqa: E402
 import telegram_account  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 ENGINE = ROOT / "engine"
 BRIDGE = ENGINE / "bridge.py"
 VENDOR = ENGINE / "vendor"
-APPDATA = ENGINE / "appdata"
+APPDATA = Path(os.environ.get("NEXDROP_APPDATA") or ENGINE / "appdata")  # the override is for tests
 HISTORY = APPDATA / "completed-urls.json"
 RUNS = APPDATA / "runs.json"
-RUN_COOKIES = APPDATA / "cookies" / "run"
+STATS_RUNS = APPDATA / "stats-runs.jsonl"  # one line per run for Library > Statistics (stats.py)
+
+def _slot() -> int:
+    try:
+        return max(0, min(8, int(os.environ.get("NEXDROP_SLOT", "0"))))
+    except ValueError:
+        return 0
+
+
+# 0 is the job shown in the window; 1 and up are jobs running beside it (3.1). Each slot has its
+# own cookie copies and engine logs; history files are shared under a lock.
+SLOT = _slot()
+PREVIEW = False  # 3.1 naming preview: crawl and name every file, download nothing, record nothing
+RUN_COOKIES = APPDATA / "cookies" / ("run" if SLOT == 0 else f"run-{SLOT}")
+ENGINE_COOKIES = APPDATA / "cookies" / ("engine" if SLOT == 0 else f"engine-{SLOT}")
+MARKER = RunningMarker(APPDATA, SLOT)
 MANIFEST = APPDATA / "order-manifest.jsonl"
 FOLDER_REGISTRY = APPDATA / "folder-registry.jsonl"  # smart naming: which collection owns which folder
 CORRECTIONS = APPDATA / "naming-corrections.jsonl"  # smart naming V2: names you changed in History
@@ -136,7 +155,7 @@ def open_run_log(config: dict, urls: list[str]) -> None:
     folder = APPDATA / "logs" / "runs"
     try:
         folder.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S") + (f"-job{SLOT}" if SLOT else "")
         RUN_LOG_PATH = folder / f"{stamp}.log"
         ENGINE_LOG_PATH = folder / f"{stamp}.engine.log"
         NAMING_LOG_PATH = folder / f"{stamp}.naming.log" if config.get("explainNames") else None
@@ -192,6 +211,8 @@ class FileTable:
         self.dirty: set[str] = set()
         self.bytes = 0
         self._samples: list[tuple[float, int]] = []
+        self.peak = 0  # highest speed seen this run, bytes per second
+        self.duplicates = 0  # files with the same content as an earlier one
         self.counts = {state: 0 for state in FINAL_STATES}
         self.on_change = None  # callback(row) when a row changes state
 
@@ -249,6 +270,7 @@ class FileTable:
             first = self._samples[0]
             span = now - first[0]
             speed = int((self.bytes - first[1]) / span) if span > 0.2 else 0
+            self.peak = max(self.peak, speed)
             payload = {"type": "files", "items": items, "bytes": self.bytes, "speed": speed,
                        "counts": dict(self.counts), "total": len(self.rows)}
         emit(payload)
@@ -257,6 +279,11 @@ class FileTable:
         with self.lock:
             row = self.rows.get(url)
             return row["state"] if row else None
+
+    def retries(self, url: str) -> int:
+        with self.lock:
+            row = self.rows.get(url)
+            return int(row.get("retries") or 0) if row else 0
 
     def reason(self, url: str) -> str:
         with self.lock:
@@ -299,6 +326,22 @@ def load_history() -> set[str]:
 
 def save_history(urls: set[str]) -> None:
     _write_json(HISTORY, sorted(urls))
+
+
+VIDEO_QUALITIES = {"best", "smallest", "2160", "1440", "1080", "720", "480", "360"}
+
+
+def quality_options(config: dict) -> dict:
+    """Settings > Downloads > Quality (3.1), checked before they reach the engine."""
+    quality = str(config.get("videoQuality") or "best")
+    subs = config.get("subtitles") if isinstance(config.get("subtitles"), dict) else {}
+    languages = [re.sub(r"[^a-z0-9-]", "", str(x).lower())[:12] for x in subs.get("languages") or []] if isinstance(subs.get("languages"), list) else []
+    return {
+        "tiktokOriginal": bool(config.get("tiktokOriginal")),
+        "audioLossless": bool(config.get("audioLossless")),
+        "videoQuality": quality if quality in VIDEO_QUALITIES else "best",
+        "subtitles": {"on": bool(subs.get("on")), "languages": [x for x in languages if x][:10]},
+    }
 
 
 def record_runs(urls: list[str], saved: int, failed: int, skipped: int, stopped: bool) -> None:
@@ -552,7 +595,27 @@ def trim_manifest() -> None:
         pass
 
 
+class RuleSkip(Exception):
+    """A download rule says this direct file is not wanted."""
+
+
+RULES: list[dict] = []  # this run's download rules (rules.py), also applied to direct files
+_SINGLE = threading.Semaphore(1)
+
+
+class _Single(Exception):
+    pass
+
+
 def http_save(url: str, folder: Path) -> dict:
+    try:
+        return _http_save(url, folder, in_slot=False)
+    except _Single:  # a "one at a time" rule: wait for the shared slot, then fetch again
+        with _SINGLE:
+            return _http_save(url, folder, in_slot=True)
+
+
+def _http_save(url: str, folder: Path, *, in_slot: bool) -> dict:
     current = public_url(url)
     for _ in range(6):
         request = urllib.request.Request(current, headers={"Accept-Encoding": "identity", "User-Agent": "NEXDROP/2.1"})
@@ -576,11 +639,19 @@ def http_save(url: str, folder: Path) -> dict:
         if total and total > MAX_BYTES:
             response.close()
             raise ValueError("File exceeds the 80 MB transfer limit")
-        target_dir = folder  # NEXDROP: no "Loose Files" folder
+        name_guess = _pick_name(url, current, response.headers.get("Content-Disposition"))
+        verdict = rule_engine.decide(RULES, rule_engine.facts(url, name_guess, size=total)) if RULES else {}
+        if verdict.get("skip"):
+            response.close()
+            raise RuleSkip(verdict["skip"])
+        if verdict.get("single") and not in_slot:
+            response.close()
+            raise _Single()
+        target_dir = Path(verdict["folder"]) if verdict.get("folder") else folder  # NEXDROP: no "Loose Files" folder
         if TYPE_FOLDERS_ON:
             target_dir = target_dir / type_folder(urlparse(current).path)
         target_dir.mkdir(parents=True, exist_ok=True)
-        number, name = _numbered_filename(url, _pick_name(url, current, response.headers.get("Content-Disposition")))
+        number, name = _numbered_filename(url, name_guess)
         with _NAME_LOCK:  # parallel fallback downloads must never pick the same name
             target = unique_path(target_dir, safe_filename(name))
             target.touch()
@@ -613,6 +684,10 @@ def http_save(url: str, folder: Path) -> dict:
                 raise ValueError(f"Incomplete transfer: got {read:,} of {total:,} bytes")
             if read == 0:
                 raise ValueError("Incomplete transfer: the file is empty")
+            if verdict.get("pending"):  # the server sent no size: check size rules now
+                late = rule_engine.decide(RULES, rule_engine.facts(url, name_guess, size=read))
+                if late.get("skip"):
+                    raise RuleSkip(late["skip"])
             os.replace(partial, target)
         except BaseException:
             partial.unlink(missing_ok=True)
@@ -672,7 +747,7 @@ def prepare_cookies(account_folder: str, fallback_files: list[str], account_text
 
 def clear_run_cookies() -> None:
     """Cookie copies are sign-ins in plain text; none stays on disk after a run."""
-    for folder in (RUN_COOKIES, APPDATA / "cookies" / "engine"):
+    for folder in (RUN_COOKIES, ENGINE_COOKIES):
         shutil.rmtree(folder, ignore_errors=True)
 
 
@@ -858,8 +933,8 @@ def maintain_engine_db() -> None:
 
     db = APPDATA / "cyberdrop.db"
     wal = db.with_name(db.name + "-wal")
-    if not db.is_file():
-        return
+    if not db.is_file() or MARKER.others():
+        return  # another job's engine has the database open
     try:
         before = db.stat().st_size + (wal.stat().st_size if wal.is_file() else 0)
         if before < 32 * 1024 * 1024:
@@ -1087,7 +1162,7 @@ def retry_pass(failed: list[str], referers: dict[str, str], payload: dict, engin
     targets = list(dict.fromkeys(referers.get(url) or url for url in retry_files))
     expired = [url for url in retry_files if error_classes.classify(FILES.reason(url), url) == "expired_url"]
     for url in retry_files:
-        FILES.update(url, state="retrying", reason=f"retrying in {RETRY_WAIT} s")
+        FILES.update(url, state="retrying", reason=f"retrying in {RETRY_WAIT} s", retries=FILES.retries(url) + 1)
     log("info", f"{len(retry_files)} file(s) failed with a temporary error. Trying them again in {RETRY_WAIT} s.")
     if expired:
         log("info", f"{len(expired)} of them had an expired download link. Their pages are read again for fresh links.")
@@ -1225,6 +1300,42 @@ class _TelegramHooks:
         log(level, text)
 
 
+ENGINE_MIN_FREE = 5 * 1024**3  # engine/user-config.yaml min_free_space: below this every file is refused
+LOW_FREE = 20 * 1024**3
+
+
+def check_destinations(folders: list[Path]) -> str:
+    """Why the run can't start (a folder can't be written, the drive is almost full), or "".
+    Low space that still works is only a warning."""
+    seen: set[str] = set()
+    for folder in folders:
+        key = str(folder).lower() if os.name == "nt" else str(folder)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            probe = folder / f".nexdrop-write-test-{os.getpid()}"
+            probe.write_bytes(b"")
+            probe.unlink()
+        except OSError as error:
+            return f"Can't save files in {folder}: {error.strerror or error}. Choose another download folder in Settings."
+        try:
+            free = shutil.disk_usage(folder).free
+        except OSError:
+            continue
+        if free < ENGINE_MIN_FREE:
+            return (f"Only {free / 1024**3:.1f} GB is free on the drive of {folder}. NEXDROP needs at least 5 GB free "
+                    "so files are never cut off by a full disk. Free up space or choose another folder.")
+        if free < LOW_FREE:
+            log("warning", f"The drive of {folder} has {free / 1024**3:.1f} GB free. Downloads stop when it gets below 5 GB.")
+    return ""
+
+
+class _NoHistory(Exception):
+    """A naming preview keeps no job history."""
+
+
 def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
     started = time.monotonic()
     seen: set[str] = set()
@@ -1266,14 +1377,31 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         emit({"type": "error", "message": "Last page cannot be lower than the start page."})
         return _finish(urls, folder, [], [], [], started, stopped=False)
 
+    global PREVIEW
+    PREVIEW = bool(config.get("previewNames"))
+    rules = rule_engine.clean(config.get("rules"))
+    RULES[:] = rules
+    if not PREVIEW:
+        problem = check_destinations([folder, *[Path(rule["folder"]) for rule in rules if rule["then"] == "folder"]])
+        if problem:
+            emit({"type": "error", "message": problem})
+            return _finish(urls, folder, [], [], [], started, stopped=False)
     store = None
     job_id = None
     try:
-        store = JobStore(APPDATA / "jobs.sqlite")
-        recovered = store.recover()
+        if PREVIEW:
+            raise _NoHistory
+        # One process at a time: two jobs starting together could otherwise race on creating
+        # the database (its health check, the switch to WAL) and one would run without History.
+        with shared_state(APPDATA):
+            store = JobStore(APPDATA / "jobs.sqlite")
+            # Jobs still marked running belong to a crashed session, unless another job is running now
+            recovered = [] if MARKER.others() else store.recover()
+            job_id = store.start_job(urls, str(folder))
         if recovered:
             log("warning", f"Marked {len(recovered)} unfinished job(s) as interrupted. They were not started again.")
-        job_id = store.start_job(urls, str(folder))
+    except _NoHistory:
+        store = None
     except Exception as error:  # noqa: BLE001
         log("warning", f"Job history could not be opened: {error}")
         store = None
@@ -1330,8 +1458,14 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         "maxDownloads": _int(config.get("maxDownloads"), 16, 1, 32),
         "perHost": _int(config.get("perHost"), 6, 1, 16),
         "serverSlots": _int(config.get("serverSlots"), 3, 1, 6),
+        "segments": _int(config.get("segments"), 4, 0, 8),
+        "retryMaxDelay": _int(config.get("retryMaxDelay"), 20, 2, 120),
+        "retryAfterCap": _int(config.get("retryAfterCap"), 60, 5, 600),
+        "siteLimits": config.get("siteLimits") if isinstance(config.get("siteLimits"), dict) else {},
         "tiktokAudio": bool(config.get("tiktokAudio")),
+        **quality_options(config),
         "typeFolders": bool(config.get("typeFolders")),
+        "rules": rules,
         "fileTypes": config.get("fileTypes") if isinstance(config.get("fileTypes"), dict) else {},
         "minImageKB": _int(config.get("minImageKB"), 0, 0, 100_000),
         "skipUrls": [str(u) for u in (config.get("skipUrls") or [])][:200_000],
@@ -1342,7 +1476,8 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         "proxy": proxy,
         "proxyScope": proxy_scope,
         "simpcityGap": _int(config.get("simpcityGap"), 2, 1, 30),
-        "ignoreHistory": redownload,
+        "ignoreHistory": redownload or PREVIEW,
+        "previewOnly": PREVIEW,
         "deepScrape": bool(config.get("deepScrape")),
         "cookieFolder": cookie_folder or "",
         "downloadFolder": str(folder),
@@ -1378,7 +1513,8 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
     if order_mode != "source":
         mode = _choice(config.get("downloadMode"), tuple(DOWNLOAD_MODE_LABELS), "custom")
         log("info", f"Download mode: {DOWNLOAD_MODE_LABELS[mode]}, {payload['maxDownloads']} at once, "
-                    f"{payload['perHost']} per site, {payload['serverSlots']} per server.")
+                    f"{payload['perHost']} per site, {payload['serverSlots']} per server, "
+                    + (f"large files in up to {payload['segments']} parts." if payload["segments"] > 1 else "large files in one stream."))
     maintain_engine_db()  # tidy up after an earlier crash or forced stop
     env = os.environ.copy()
     env.update({
@@ -1451,7 +1587,8 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
                     for key in ("folder", "original", "source", "confidence", "strategy", "title", "parent", "naming"):
                         if event.get(key) not in (None, ""):
                             row[key] = event[key]
-                    _write_manifest(row)
+                    if not PREVIEW:
+                        _write_manifest(row)
                     if isinstance(event.get("identity"), dict):
                         row = {**row, "identity": event["identity"]}  # job database only, not the manifest
                     NAMING_ROWS[url] = row
@@ -1516,11 +1653,12 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
                 other = str(event.get("of") or "")
                 if url and other:
                     duplicates.append((str(event.get("path") or ""), other))
+                    FILES.duplicates += 1
                     FILES.update(url, reason=f"same content as {Path(other).name}")
             elif kind == "retry":
                 url = str(event.get("url") or "")
                 if url and FILES.state(url) not in FINAL_STATES:
-                    FILES.update(url, state="retrying", reason="retrying")
+                    FILES.update(url, state="retrying", reason="retrying", retries=FILES.retries(url) + 1)
             elif kind == "unsupported":
                 url = str(event.get("url") or "")
                 if url and looks_like_file(url):
@@ -1561,7 +1699,7 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
     # Telegram links go through the signed-in account when there is one; the engine's
     # public t.me crawler handles them otherwise.
     account = config.get("telegram") if isinstance(config.get("telegram"), dict) else None
-    tg_urls = [u for u in urls if telegram_account.is_telegram(u)] if account else []
+    tg_urls = [u for u in urls if telegram_account.is_telegram(u)] if account and not PREVIEW else []
     if tg_urls and not telegram_account.available():
         log("warning", "The Telegram library is missing from this NEXDROP folder, so Telegram links use the public preview instead of your account.")
         tg_urls = []
@@ -1589,6 +1727,11 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         code = engine_pass(payload)
         if code not in (0, None) and not STOP.is_set() and not saved_urls and not skipped_urls:
             emit({"type": "error", "message": f"The engine exited with code {code}. See engine\\appdata\\logs for details."})
+    if PREVIEW:
+        rows = sorted(NAMING_ROWS.values(), key=lambda row: int(row.get("sequence") or 0))
+        emit({"type": "naming-preview", "items": rows[:5000], "total": len(rows), "unsupported": list(dict.fromkeys(unsupported))[:200],
+              "notes": list(dict.fromkeys(scrape_notes))[:20]})
+        return _finish(urls, folder, [], [], [], started, stopped=STOP.is_set())
 
     def fetch(url: str) -> None:
         if STOP.is_set():
@@ -1596,6 +1739,9 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         try:
             http_save(url, folder)
             saved_urls.append(url)
+        except RuleSkip as reason:
+            skipped_urls.append(url)
+            FILES.update(url, state="skipped", reason=str(reason), speed=0)
         except Exception as error:  # noqa: BLE001
             failed.append(url)
             reason = str(error)[:200]
@@ -1627,10 +1773,20 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
     for text in hints.summary():
         log("warning", text)
     if duplicates:
-        log("info", f"{len(duplicates)} saved file(s) have the same content as files you already had. "
-                    "Both copies were kept; nothing was deleted.")
-        for path, other in duplicates[:20]:
-            log("info", f"  {path}  =  {other}")
+        action = str(config.get("duplicateAction") or "keep")
+        action = action if action in dup_actions.ACTIONS else "keep"
+        if store:
+            store.flush()  # the new copies' History rows must exist before they are moved or renamed
+        handled = dup_actions.apply(action, duplicates, folder, APPDATA / "jobs.sqlite")
+        what = {"rename": "The new copies were renamed with \"(duplicate)\".",
+                "skip": f"The new copies were moved to the {dup_actions.ASIDE} folder.",
+                "ask": "Choose what to do with them in the list that opens.",
+                "replace": "Choose what to do with them in the list that opens."}.get(action, "Both copies were kept.")
+        log("info", f"{len(duplicates)} saved file(s) have the same content as files you already had. {what} Nothing was deleted.")
+        for row in handled[:20]:
+            log("info", f"  {row['path']}  =  {row['of']}" + (f"  ({row['error']})" if row.get("error") else ""))
+        if action in ("ask", "replace"):
+            emit({"type": "duplicates", "action": action, "root": str(folder), "items": handled[:500]})
     with FILES.lock:
         needs_account = sum(1 for row in FILES.rows.values() if "sign in to Telegram" in (row.get("reason") or ""))
     if needs_account:
@@ -1659,13 +1815,17 @@ def _finish(urls, folder, saved_urls, failed, skipped_urls, started, *, stopped,
             FILES.update(url, state="skipped", reason="not downloaded", speed=0)
     FILES.flush()
     try:
-        history = load_history()
-        history.update(saved_urls)
-        history.update(skipped_urls)
-        if history:
-            save_history(history)
-        if urls:
-            record_runs(urls, len(saved_urls), len(failed), len(skipped_urls), stopped)
+        with shared_state(APPDATA):  # another job may finish at the same moment
+            history = load_history()
+            history.update(saved_urls)
+            history.update(skipped_urls)
+            if history:
+                save_history(history)
+            if urls and not PREVIEW:
+                record_runs(urls, len(saved_urls), len(failed), len(skipped_urls), stopped)
+                stats.append_run(STATS_RUNS, {"t": round(time.time()), "seconds": round(time.monotonic() - started, 1),
+                                              "bytes": FILES.bytes, "peak": FILES.peak, "saved": len(saved_urls),
+                                              "failed": len(failed), "skipped": len(skipped_urls), "duplicates": FILES.duplicates})
     except OSError as error:
         log("warning", f"Could not save history: {error}")
     if store and job_id:
@@ -1685,11 +1845,15 @@ def _finish(urls, folder, saved_urls, failed, skipped_urls, started, *, stopped,
         "failed": len(failed),
         "skipped": len(skipped_urls),
         "failedUrls": list(dict.fromkeys(failed))[:500],
+        # failed files a later try can fix (busy server, rate limit, time-out, dropped connection, quota)
+        "retryLater": sum(1 for url in dict.fromkeys(failed)
+                          if error_classes.classify(FILES.reason(url), url) in error_classes.RETRY_LATER),
         "root": str(folder),
         "stopped": stopped,
         "bytes": FILES.bytes,
         "seconds": round(time.monotonic() - started, 1),
         "emptyReason": empty_reason,
+        "jobId": job_id or None,
     })
     global RUN_LOG
     if RUN_LOG is not None:
@@ -1706,7 +1870,8 @@ def main() -> int:
     if not isinstance(config, dict):
         config = {}
     threading.Thread(target=_listen_for_stop, daemon=True).start()
-    return run(config)
+    with MARKER:
+        return run(config)
 
 
 if __name__ == "__main__":

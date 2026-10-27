@@ -31,8 +31,13 @@
     bytes: 0,
     speed: 0,
     failedUrls: [],
+    samples: [],       // { t, bytes, finished } about once a second, for the speed graph and time left
+    peak: 0,
   };
-  const view = { filter: "all", host: "", list: [], dirty: true, hosts: new Map() };
+  const view = { filter: "all", host: "", text: "", list: [], dirty: true, hosts: new Map() };
+  // 3.1 file list: columns shown, column widths and sort, kept with the settings.
+  const LIST_DEFAULT = { cols: { seq: true, site: true, size: true, speed: true, dest: false, retries: false }, widths: { stats: 150, state: 74 }, sort: "page", dir: 1 };
+  let listView = JSON.parse(JSON.stringify(LIST_DEFAULT));
   let prefs = {};
   let cookieFiles = [];
   let downloadsDir = "";
@@ -60,12 +65,22 @@
     flareSolver: { el: "#flare", type: "check", def: true },
     threadDepth: { el: "#thread-depth", type: "int", def: 0, min: 0, max: 3 },
     downloadMode: { el: "#download-mode", type: "text", def: "auto", max: 20 },
+    jobsAtOnce: { el: "#jobs-at-once", type: "int", def: 1, min: 1, max: 4 },
     maxDownloads: { el: "#max-downloads", type: "int", def: 16, min: 1, max: 32 },
     perHost: { el: "#per-host", type: "int", def: 6, min: 1, max: 16 },
     serverSlots: { el: "#server-slots", type: "int", def: 3, min: 1, max: 6 },
+    segments: { el: "#segments", type: "int", def: 4, min: 0, max: 8 },
     tiktokAudio: { el: "#tiktok-audio", type: "check", def: false },
+    videoQuality: { el: "#video-quality", type: "text", def: "best", max: 10 },
+    tiktokOriginal: { el: "#tiktok-original", type: "check", def: false },
+    audioLossless: { el: "#audio-lossless", type: "check", def: false },
+    subtitlesOn: { el: "#subtitles-on", type: "check", def: false },
+    subtitleLanguages: { el: "#subtitle-languages", type: "text", def: "", max: 80 },
     autoRetry: { el: "#auto-retry", type: "check", def: true },
     typeFolders: { el: "#type-folders", type: "check", def: false },
+    duplicateAction: { el: "#duplicate-action", type: "text", def: "keep", max: 10 },
+    rules: { get: () => fmt.cleanRuleList(rules), set: (v) => { rules = fmt.cleanRuleList(v); renderRules(); } },
+    listView: { get: () => listView, set: (v) => { listView = cleanListView(v); applyListView(); } },
     typeImages: { el: "#type-images", type: "check", def: true },
     typeVideos: { el: "#type-videos", type: "check", def: true },
     typeAudio: { el: "#type-audio", type: "check", def: true },
@@ -75,12 +90,31 @@
     speedLimitMB: { el: "#speed-limit", type: "int", def: 0, min: 0, max: 1000 },
     connectionTimeout: { el: "#connect-timeout", type: "int", def: 15, min: 10, max: 30 },
     readTimeout: { el: "#read-timeout", type: "int", def: 60, min: 30, max: 300 },
+    retryMaxDelay: { el: "#retry-max-delay", type: "int", def: 20, min: 2, max: 120 },
+    retryAfterCap: { el: "#retry-after-cap", type: "int", def: 60, min: 5, max: 600 },
+    siteLimits: { el: "#site-limits", type: "text", def: "", max: 4000 },
     proxy: { el: "#proxy", type: "text", def: "", max: 500 },
     proxyScope: { el: "#proxy-scope", type: "text", def: "all", max: 20 },
     simpcityGap: { el: "#simpcity-gap", type: "int", def: 2, min: 1, max: 30 },
     scheduleOn: { el: "#schedule-on", type: "check", def: false },
     scheduleFrom: { el: "#schedule-from", type: "time", def: "01:00" },
     scheduleTo: { el: "#schedule-to", type: "time", def: "07:00" },
+    scheduleDays: {
+      get: () => $$("#schedule-days input[data-day]").filter((box) => box.checked).map((box) => Number(box.dataset.day)),
+      set: (v) => {
+        const days = Array.isArray(v) ? v.map(Number) : [0, 1, 2, 3, 4, 5, 6];
+        for (const box of $$("#schedule-days input[data-day]")) box.checked = days.includes(Number(box.dataset.day));
+      },
+    },
+    scheduleStop: { el: "#schedule-stop", type: "check", def: false },
+    retryLater: { el: "#retry-later", type: "int", def: 0, min: 0, max: 720 },
+    doneNotify: { el: "#done-notify", type: "check", def: true },
+    doneOpenFolder: { el: "#done-open-folder", type: "check", def: false },
+    doneVerify: { el: "#done-verify", type: "check", def: false },
+    doneManifest: { el: "#done-manifest", type: "check", def: false },
+    doneLibrary: { el: "#done-library", type: "check", def: false },
+    doneOrganize: { el: "#done-organize", type: "check", def: false },
+    doneOrganizeFolders: { el: "#done-organize-folders", type: "text", def: "{creator}/{album}", max: 200 },
     quietOn: { el: "#quiet-on", type: "check", def: false },
     quietFrom: { el: "#quiet-from", type: "time", def: "18:00" },
     quietTo: { el: "#quiet-to", type: "time", def: "23:00" },
@@ -158,7 +192,7 @@
     const mode = $("#download-mode").value;
     const custom = mode === "custom" || !fmt.DOWNLOAD_MODES[mode];
     const limits = custom ? null : fmt.modeLimits(mode);
-    for (const [key, id] of [["maxDownloads", "#max-downloads"], ["perHost", "#per-host"], ["serverSlots", "#server-slots"]]) {
+    for (const [key, id] of [["maxDownloads", "#max-downloads"], ["perHost", "#per-host"], ["serverSlots", "#server-slots"], ["segments", "#segments"]]) {
       const input = $(id);
       if (!custom) {
         if (input.disabled === false) input.dataset.custom = input.value;  // keep the user's own numbers
@@ -214,7 +248,14 @@
       if (file && file.error) log("warning", file.error);
       return;
     }
-    const { jobs, dropped, kind } = fmt.parseJobFile(file.name, file.text, file.knownDirs || []);
+    importText(file.name, file.text, file.knownDirs || []);
+  });
+
+  // A jobs export goes into the queue; a link list fills the links box. Links are checked and
+  // duplicates dropped by parseJobFile/parseLinks.
+  function importText(name, text, knownDirs) {
+    const file = { name };
+    const { jobs, dropped, kind } = fmt.parseJobFile(name, text, knownDirs);
     if (!jobs.length) return log("warning", `${file.name} has no links.`);
     if (kind === "links") {
       const added = addLinks(jobs[0].urls.concat(jobs[0].unsupported).join("\n"), false);
@@ -230,7 +271,7 @@
     const note = dropped ? ` ${dropped} job folder(s) or empty job(s) were left out (a folder must be chosen on this PC).` : "";
     const how = run.running ? "They start after the current run." : "Press Start with an empty links box to begin.";
     log("info", `Imported ${added} job(s) from ${file.name}${added < jobs.length ? `; ${jobs.length - added} were already queued` : ""}. ${how}${note}`);
-  });
+  }
   $("#import-file").addEventListener("change", async (event) => {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -239,18 +280,22 @@
     log(added ? "info" : "warning", added ? `Added ${added} links from ${file.name}.` : `${file.name} has no links.`);
   });
 
-  // Drop a .txt file or links anywhere on the window.
+  // Drop links, or a .txt, .csv, .json, .m3u or .m3u8 file with links (or a jobs export), anywhere on the window.
   document.addEventListener("dragover", (event) => event.preventDefault());
   document.addEventListener("drop", async (event) => {
     event.preventDefault();
     const file = event.dataTransfer?.files?.[0];
-    const text = file && /\.txt$/i.test(file.name) ? await file.text() : event.dataTransfer?.getData("text") || "";
-    if (addLinks(text, false)) urlsBox.focus();
+    if (file && /\.(txt|csv|json|m3u8?)$/i.test(file.name)) {
+      if (file.size > 20 * 1024 * 1024) return log("warning", `${file.name} is too large for a link list.`);
+      importText(file.name, await file.text(), []);
+      return urlsBox.focus();
+    }
+    if (addLinks(event.dataTransfer?.getData("text") || "", false)) urlsBox.focus();
   });
 
   // ─── jobs: one run of one or more links ────────────────────────────────────
   // A job is {id, urls, unsupported, label, startPage, endPage, redownload, watchId}.
-  // The queue, resume after pause, and watched threads all go through runJob().
+  // The queue, resume after pause, and watched links all go through runJob().
   let queue = [];
   let watches = [];
   let threadPosts = {};
@@ -284,6 +329,8 @@
       $("#end-page").focus();
       return null;
     }
+    const { duplicates } = fmt.parseLinks(urlsBox.value);
+    if (duplicates.length) log("info", `${duplicates.length} duplicate ${duplicates.length === 1 ? "link was" : "links were"} left out (the same link with other tracking parameters).`);
     return {
       id: newJobId(),
       urls,
@@ -319,7 +366,25 @@
     runJob(job);
   }
 
+  // A job with more links than one run reads runs in parts; the rest waits at the front of the queue.
+  function takePart(job) {
+    const [head, rest] = fmt.splitRun(job);
+    if (rest) {
+      // a name made from the links ("a.jpg + 449 more") is made again for each part
+      const base = String(job.label || "").replace(/ \(part \d+ of \d+\)$/, "");
+      if (base === jobLabel(job.urls)) {
+        for (const part of [head, rest]) part.label = part.label.replace(base, jobLabel(part.urls));
+      }
+      rest.id = newJobId();
+      queue.unshift(rest);
+      saveQueue();
+      if (!job.partDone) log("info", `${job.urls.length} links are more than one run reads (${fmt.RUN_URLS}), so this job runs in ${Math.ceil(job.urls.length / fmt.RUN_URLS)} parts, one after another. The other parts wait at the top of the queue.`);
+    }
+    return head;
+  }
+
   function runJob(job) {
+    job = takePart(job);
     prefs = collectPrefs();
     api.saveGuiSetting({ prefs });
     activeJob = job;
@@ -337,19 +402,33 @@
       log("phase", `Resuming: ${job.label}`);
       log("info", "Files saved before the pause are skipped and half-finished files continue where they stopped. The links are read again from the start to find the rest.");
     } else {
-      log("phase", job.watchId ? `Checking watched thread: ${job.label}` : `Starting: ${job.label}`);
+      log("phase", job.watchId ? `Checking watched link: ${job.label}` : `Starting: ${job.label}`);
     }
+    const config = pipelineConfig(job, log);
+    api.startPipeline(config);
+  }
+
+  // Settings for one job's run. With several jobs at once, each gets an equal share of the
+  // download limit and speed cap (3.1 scheduler).
+  function pipelineConfig(job, note) {
     const quiet = quietActive();
     // A job's own speed cap and download mode win over Settings (3.0 job manager).
     const capMB = Number.isFinite(job.speedMB) ? job.speedMB : prefs.speedLimitMB;
-    const speedMB = quiet ? (capMB ? Math.min(capMB, prefs.quietSpeedMB) : prefs.quietSpeedMB) : capMB;
-    if (quiet) log("info", `Quiet hours (${prefs.quietFrom}–${prefs.quietTo}): this run is capped at ${speedMB} MB/s.`);
+    let speedMB = quiet ? (capMB ? Math.min(capMB, prefs.quietSpeedMB) : prefs.quietSpeedMB) : capMB;
+    if (quiet) note("info", `Quiet hours (${prefs.quietFrom}–${prefs.quietTo}): this run is capped at ${speedMB} MB/s.`);
     const mode = job.mode || prefs.downloadMode;
     if (job.folder || job.mode || Number.isFinite(job.speedMB)) {
       const own = [job.folder && `folder ${job.folder}`, job.mode && `${job.mode} mode`, Number.isFinite(job.speedMB) && (job.speedMB ? `${job.speedMB} MB/s cap` : "no speed cap")];
-      log("info", `This job's own settings: ${own.filter(Boolean).join(", ")}.`);
+      note("info", `This job's own settings: ${own.filter(Boolean).join(", ")}.`);
     }
-    api.startPipeline({
+    const limits = fmt.modeLimits(mode, prefs);
+    const share = Math.max(1, prefs.jobsAtOnce || 1);
+    if (share > 1) {
+      limits.maxDownloads = Math.max(2, Math.ceil(limits.maxDownloads / share));
+      if (speedMB) speedMB = Math.max(1, Math.round(speedMB / share));
+    }
+    return {
+      label: job.label || "",
       urls: job.urls,
       unsupported: job.unsupported || [],
       downloadsDir: job.folder || downloadsDir,
@@ -378,11 +457,17 @@
       flareSolver: prefs.flareSolver,
       threadDepth: prefs.threadDepth,
       downloadMode: mode,
-      ...fmt.modeLimits(mode, prefs),
+      ...limits,
       tiktokAudio: prefs.tiktokAudio,
+      videoQuality: prefs.videoQuality,
+      tiktokOriginal: prefs.tiktokOriginal,
+      audioLossless: prefs.audioLossless,
+      subtitles: { on: Boolean(prefs.subtitlesOn), languages: String(prefs.subtitleLanguages || "").split(/[\s,;]+/).filter(Boolean).slice(0, 10) },
       attempts: prefs.attempts,
       autoRetry: prefs.autoRetry,
       typeFolders: prefs.typeFolders,
+      duplicateAction: prefs.duplicateAction,
+      rules: (prefs.rules || []).filter((rule) => rule.enabled && !fmt.ruleProblems(rule).length),
       fileTypes: { images: prefs.typeImages, videos: prefs.typeVideos, audio: prefs.typeAudio, other: prefs.typeOther },
       minImageKB: prefs.minImageKB,
       skipUrls: job.doneUrls || [],
@@ -392,7 +477,18 @@
       simpcityGap: prefs.simpcityGap,
       connectionTimeout: prefs.connectionTimeout,
       readTimeout: prefs.readTimeout,
-    });
+      retryMaxDelay: prefs.retryMaxDelay,
+      retryAfterCap: prefs.retryAfterCap,
+      siteLimits: fmt.parseSiteLimits(prefs.siteLimits).limits,
+      after: {
+        notify: prefs.doneNotify !== false,
+        openFolder: Boolean(prefs.doneOpenFolder) && !job.watchId, // a watched link's check doesn't open windows
+        verify: Boolean(prefs.doneVerify),
+        manifest: Boolean(prefs.doneManifest),
+        library: Boolean(prefs.doneLibrary),
+        organize: prefs.doneOrganize && prefs.doneOrganizeFolders ? { folders: prefs.doneOrganizeFolders } : null,
+      },
+    };
   }
 
   // Called when a run ends. Paused runs stay saved for Resume; finished ones start the next job.
@@ -412,7 +508,19 @@
     }
     api.saveGuiSetting({ active_run: null });
     if (job.watchId) watchFinished(job.watchId, event);
+    queueRetryLater(job, event);
     setTimeout(startNextInQueue, 1500);
+  }
+
+  // Settings > Downloads > "try the job again": failed files a later try can fix.
+  function queueRetryLater(job, event) {
+    if (job.watchId) return; // a watched link is checked again at its own interval
+    const retry = fmt.retryLaterJob(job, event, prefs.retryLater);
+    if (!retry) return;
+    queue = queue.filter((q) => q.urls.join("\n") !== retry.urls.join("\n") || !q.retryRound);
+    queue.push(retry);
+    saveQueue();
+    log("info", `${event.retryLater} file(s) failed for a reason that usually passes. ${retry.label} is queued for ${new Date(retry.startAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}; files already saved are skipped.`);
   }
 
   // ─── queue ────────────────────────────────────────────────────────────────
@@ -430,6 +538,7 @@
     }
     queue.push(item);
     saveQueue();
+    if (run.running) setTimeout(fillSlots, 300);
     if (!job) {
       urlsBox.value = "";
       autoGrow();
@@ -442,12 +551,540 @@
     if (run.running || !queue.length) return;
     if (!$("#resume").hidden) return; // a paused run waits for Resume, Queue it or Discard first
     if (!force && !scheduleAllows()) return;
-    const index = queue.findIndex((q) => !q.hold);
+    const busy = busySites(); // sites of jobs still running beside the window
+    const now = Date.now();
+    const index = queue.findIndex((q) => fmt.jobReady(q, now) && ![...jobSites(q)].some((site) => busy.has(site)));
     if (index < 0) return;
     const [next] = queue.splice(index, 1);
     saveQueue();
-    runJob(next.parked ? { ...next, resumed: true } : next);
+    // Started by hand outside the download hours: "Pause when the hours end" leaves it running.
+    const forced = force && !scheduleAllows() ? true : undefined;
+    runJob(next.parked ? { ...next, resumed: true, forced } : { ...next, forced });
+    setTimeout(() => fillSlots(force), 1000);
   }
+
+  // ─── jobs at once (3.1) ───────────────────────────────────────────────────
+  // Queued jobs start beside the window's own run, up to "Jobs at once" in total. A job whose
+  // sites overlap a running job's waits, so two jobs never hit the same site together.
+  const bgJobs = new Map(); // slot -> { job, counts, total, bytes, speed, phase, failed }
+
+  function siteKey(url) {
+    try {
+      return new URL(url).hostname.toLowerCase().replace(/^www\./, "").split(".").slice(-2).join(".");
+    } catch {
+      return "";
+    }
+  }
+
+  function jobSites(job) {
+    return new Set([...(job.urls || []), ...(job.unsupported || [])].map(siteKey).filter(Boolean));
+  }
+
+  function busySites() {
+    const sites = new Set();
+    const add = (job) => job && jobSites(job).forEach((site) => sites.add(site));
+    if (run.running) add(activeJob);
+    for (const entry of bgJobs.values()) add(entry.job);
+    return sites;
+  }
+
+  async function fillSlots(force = false) {
+    if (!run.running || (prefs.jobsAtOnce || 1) <= 1) return;
+    if (!force && !scheduleAllows()) return;
+    while (1 + bgJobs.size < (prefs.jobsAtOnce || 1)) {
+      const busy = busySites();
+      const now = Date.now();
+      const index = queue.findIndex((q) => fmt.jobReady(q, now) && ![...jobSites(q)].some((site) => busy.has(site)));
+      if (index < 0) return;
+      let [job] = queue.splice(index, 1);
+      if (force && !scheduleAllows()) job.forced = true;
+      saveQueue();
+      job = takePart(job);
+      const notes = [];
+      const config = pipelineConfig(job, (_level, text) => notes.push(text));
+      if (job.parked && job.doneUrls) config.skipUrls = job.doneUrls;
+      const result = await api.startJob(config).catch((error) => ({ ok: false, error: error.message }));
+      if (!result || !result.ok) {
+        queue.unshift(job);
+        saveQueue();
+        return;
+      }
+      bgJobs.set(result.slot, { job, counts: {}, total: 0, bytes: 0, speed: 0, phase: "Starting", failed: false });
+      log("phase", `Started beside this one: ${job.label}`);
+      renderBgJobs();
+    }
+  }
+
+  function bgEvent(slot, event) {
+    const entry = bgJobs.get(slot);
+    if (!entry) return;
+    switch (event.type) {
+      case "phase":
+        entry.phase = event.message || entry.phase;
+        break;
+      case "files":
+        entry.counts = event.counts || entry.counts;
+        entry.total = event.total || entry.total;
+        if (event.bytes) entry.bytes = event.bytes;
+        entry.speed = event.speed || 0;
+        break;
+      case "log":
+        if (event.level === "error") log("warning", `${entry.job.label}: ${event.message}`);
+        break;
+      case "error":
+        log("error", `${entry.job.label}: ${event.message}`);
+        break;
+      case "finished":
+        entry.done = true;
+        bgFinished(slot, entry, event);
+        return;
+      case "exit":
+        if (!entry.done) bgFinished(slot, entry, { stopped: true, crashed: Boolean(event.code) });
+        return;
+      default:
+        break;
+    }
+    renderBgJobs();
+  }
+
+  function bgFinished(slot, entry, event) {
+    bgJobs.delete(slot);
+    const { job } = entry;
+    if (event.stopped) {
+      // Back at the top of the queue; the engine's history skips what it already saved.
+      if (!queue.some((q) => q.id === job.id)) queue.unshift({ ...job, parked: true });
+      saveQueue();
+      log(event.crashed ? "error" : "info", event.crashed
+        ? `${job.label} stopped unexpectedly. It is back in the queue; its log is in engine\\appdata\\logs\\runs.`
+        : `${job.label} is paused in the queue. It continues where it stopped when its turn comes.`);
+    } else {
+      const result = fmt.finishText(event);
+      log(result.tone === "ok" ? "ok" : "warning", `${job.label}: ${result.message}`);
+      if (job.watchId) watchFinished(job.watchId, event);
+      queueRetryLater(job, event);
+      loadRecent();
+    }
+    renderBgJobs();
+    if (!entry.pausing) setTimeout(() => (run.running ? fillSlots() : startNextInQueue()), 1500);
+  }
+
+  function pauseBgJob(slot) {
+    const entry = bgJobs.get(slot);
+    if (!entry) return;
+    entry.pausing = true;
+    entry.phase = "Pausing";
+    api.stopJob(slot);
+    renderBgJobs();
+  }
+
+  function renderBgJobs() {
+    const box = $("#bg-jobs");
+    const list = $("#bg-list");
+    list.textContent = "";
+    for (const [slot, entry] of bgJobs) {
+      const li = document.createElement("li");
+      li.className = "bg-job";
+      li.classList.toggle("failed", Boolean(entry.counts && entry.counts.failed));
+      const name = document.createElement("span");
+      name.className = "bg-name";
+      name.textContent = entry.job.label;
+      name.title = entry.job.urls.join("\n");
+      const state = document.createElement("span");
+      state.className = "bg-state";
+      const c = entry.counts || {};
+      const parts = [];
+      if (entry.total) parts.push(`${(c.done || 0) + (c.skipped || 0)}/${entry.total}`);
+      if (c.failed) parts.push(`${c.failed} failed`);
+      if (entry.speed) parts.push(fmt.speed(entry.speed));
+      state.textContent = parts.length ? parts.join(" · ") : entry.phase;
+      const pause = document.createElement("button");
+      pause.className = "queue-remove";
+      pause.type = "button";
+      pause.title = `Pause ${entry.job.label}`;
+      pause.setAttribute("aria-label", pause.title);
+      pause.innerHTML = '<svg viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="3" width="3" height="10" rx="1"/><rect x="9" y="3" width="3" height="10" rx="1"/></svg>';
+      pause.disabled = Boolean(entry.pausing);
+      pause.addEventListener("click", () => pauseBgJob(slot));
+      li.append(name, state, pause);
+      list.appendChild(li);
+    }
+    box.hidden = bgJobs.size === 0;
+  }
+  $("#btn-bg-pause").addEventListener("click", () => [...bgJobs.keys()].forEach(pauseBgJob));
+
+  // ─── check links (3.1 URL analyzer, link preview, duplicate links) ────────
+  const HANDLER_TEXT = { builtin: "Supported", generic: "Supported (forum or family)", direct: "Direct file", none: "No handler" };
+  let checked = [];
+
+  function checkRow(item) {
+    const tr = document.createElement("tr");
+    tr.classList.toggle("dupe", item.duplicateOf !== null && item.duplicateOf !== undefined);
+    tr.classList.toggle("none", item.handler === "none");
+    const p = item.preview || null;
+    const details = [];
+    if (item.duplicateOf !== null && item.duplicateOf !== undefined) details.push(`Same as link ${item.duplicateOf + 1}`);
+    if (item.resolved) details.push(`Short link to ${item.resolved}`);
+    if (p) {
+      if (p.title) details.push(p.title);
+      if (p.author) details.push(`by ${p.author}`);
+      if (p.size !== null && p.size !== undefined) details.push(fmt.bytes(p.size));
+      if (p.fileLinks) details.push(`${p.fileLinks} file ${p.fileLinks === 1 ? "link" : "links"} on the page (the real count can differ)`);
+      if (p.note) details.push(p.note);
+    } else if (item.shortened) {
+      details.push("Short link: Preview follows it");
+    }
+    const cells = [
+      [item.url, item.url],
+      [item.site || item.host || "—"],
+      [item.kind === "page" ? "Page" : item.kind.charAt(0).toUpperCase() + item.kind.slice(1) + (item.media && item.kind !== item.media ? ` (${item.media})` : ""), item.pattern ? `Handler format: ${item.pattern}` : ""],
+      [HANDLER_TEXT[item.handler] || item.handler],
+      [item.signIn === "required" ? "Needed" : item.signIn === "optional" ? "Optional" : "—"],
+      [details.join(" · ") || "—"],
+    ];
+    for (const [text, title] of cells) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      if (title) td.title = title;
+      if (text === "—") td.className = "muted";
+      tr.appendChild(td);
+    }
+    return tr;
+  }
+
+  function renderChecked() {
+    const rows = $("#check-rows");
+    rows.textContent = "";
+    for (const item of checked) rows.appendChild(checkRow(item));
+    const dupes = checked.filter((i) => i.duplicateOf !== null && i.duplicateOf !== undefined).length;
+    const none = checked.filter((i) => i.handler === "none").length;
+    const signIn = checked.filter((i) => i.signIn === "required").length;
+    const parts = [`${checked.length} ${checked.length === 1 ? "link" : "links"}`];
+    if (dupes) parts.push(`${dupes} duplicate${dupes === 1 ? "" : "s"}`);
+    if (none) parts.push(`${none} without a handler (tried as plain pages or files)`);
+    if (signIn) parts.push(`${signIn} need a sign-in`);
+    $("#check-summary").textContent = `${parts.join(", ")}. Types come from each site handler's link formats; "Page" means the handler does not say.`;
+    $("#btn-check-dedupe").disabled = !dupes;
+  }
+
+  async function checkLinks(preview = false) {
+    const { urls, unsupported } = fmt.parseLinks(urlsBox.value);
+    const all = [...urls, ...unsupported];
+    // parseLinks already dropped repeats; the dialog shows them, so read the raw lines again
+    const raw = urlsBox.value.split(/\s+/).map((t) => t.trim()).filter((t) => /^(https?:\/\/|magnet:)/i.test(t));
+    const list = raw.length ? raw : all;
+    if (!list.length) {
+      urlsBox.focus();
+      flash(urlsBox);
+      return;
+    }
+    const dialog = $("#check-dialog");
+    $("#check-summary").textContent = preview ? "Opening each link once to read its details…" : "Checking…";
+    if (!dialog.open) dialog.showModal();
+    $("#btn-check-preview").disabled = true;
+    const result = await api.analyzeLinks({ urls: list, preview }).catch((error) => ({ ok: false, error: error.message }));
+    $("#btn-check-preview").disabled = false;
+    if (!result || !result.ok) {
+      $("#check-summary").textContent = (result && result.error) || "The links could not be checked.";
+      return;
+    }
+    checked = result.items || [];
+    renderChecked();
+  }
+
+  $("#btn-check").addEventListener("click", () => checkLinks(false));
+  $("#btn-check-preview").addEventListener("click", () => checkLinks(true));
+  $("#btn-check-dedupe").addEventListener("click", () => {
+    const keep = checked.filter((i) => i.duplicateOf === null || i.duplicateOf === undefined).map((i) => i.resolved || i.url);
+    urlsBox.value = keep.join("\n");
+    autoGrow();
+    log("info", `Removed ${checked.length - keep.length} duplicate ${checked.length - keep.length === 1 ? "link" : "links"}.`);
+    checkLinks(false);
+  });
+
+  // ─── download rules (3.1): "if a file ..., then ..." ───────────────────────
+  // Checked again by desktop/rules.py in the session; a rule with problems is kept but not used.
+  let rules = [];
+  const RULE_FIELD_LABEL = { type: "File type", ext: "Extension", site: "Site", creator: "Creator", name: "File name",
+    url: "Link", size: "Size", date: "Upload date" };
+  const RULE_OP_LABEL = { is: "is", in: "is one of", contains: "contains", "not-contains": "doesn't contain",
+    matches: "looks like", "not-matches": "doesn't look like", over: "is over (MB)", under: "is under (MB)", before: "is before", after: "is after" };
+  const RULE_ACTION_LABEL = { skip: "Skip it", only: "Only download files like this", folder: "Save it to a folder", single: "Download one at a time" };
+  const RULE_TYPE_LABEL = { image: "Images", video: "Videos", audio: "Audio", other: "Other files" };
+  const RULE_HINT = { ext: "jpg, png", site: "bunkr.cr", creator: "name", name: "*preview*", url: "/videos/", size: "500" };
+
+  function select(options, value, label) {
+    const el = document.createElement("select");
+    el.className = "select";
+    el.setAttribute("aria-label", label);
+    for (const [key, text] of Object.entries(options)) el.append(new Option(text, key));
+    el.value = value;
+    return el;
+  }
+
+  function iconButton(label, onClick) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn btn-icon btn-icon-small";
+    button.setAttribute("aria-label", label);
+    button.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 6l8 8M14 6l-8 8"/></svg>';
+    button.addEventListener("click", onClick);
+    return button;
+  }
+
+  function ruleChanged() {
+    $("#rules-preview").textContent = "";
+    savePrefsSoon();
+  }
+
+  function conditionRow(rule, cond, render) {
+    const row = document.createElement("div");
+    row.className = "rule-cond";
+    const field = select(RULE_FIELD_LABEL, cond.field, "Condition");
+    const ops = Object.fromEntries(fmt.RULE_FIELDS[cond.field].map((op) => [op, RULE_OP_LABEL[op]]));
+    if (!ops[cond.op]) cond.op = fmt.RULE_FIELDS[cond.field][0];
+    const op = select(ops, cond.op, "Comparison");
+    let value;
+    if (cond.field === "type") {
+      if (!RULE_TYPE_LABEL[cond.value]) cond.value = "video";
+      value = select(RULE_TYPE_LABEL, cond.value, "File type");
+    } else {
+      value = document.createElement("input");
+      value.type = cond.field === "date" ? "date" : cond.field === "size" ? "number" : "text";
+      if (cond.field === "size") { value.min = "0"; value.step = "any"; }
+      value.placeholder = RULE_HINT[cond.field] || "";
+      value.spellcheck = false;
+      value.value = cond.value;
+      value.setAttribute("aria-label", RULE_FIELD_LABEL[cond.field]);
+    }
+    field.addEventListener("change", () => {
+      cond.field = field.value;
+      cond.op = fmt.RULE_FIELDS[cond.field][0];
+      cond.value = "";
+      render();
+      ruleChanged();
+    });
+    op.addEventListener("change", () => { cond.op = op.value; render(); ruleChanged(); });
+    value.addEventListener("change", () => { cond.value = String(value.value).trim(); render(); ruleChanged(); });
+    const remove = iconButton("Remove condition", () => {
+      rule.when.splice(rule.when.indexOf(cond), 1);
+      render();
+      ruleChanged();
+    });
+    row.append(field, op, value, remove);
+    return row;
+  }
+
+  function renderRules() {
+    const list = $("#rule-list");
+    if (!list) return;
+    list.textContent = "";
+    rules.forEach((rule, index) => {
+      const li = document.createElement("li");
+      li.className = "rule-card";
+      const render = () => { renderRules(); };
+      const head = document.createElement("div");
+      head.className = "rule-head";
+      const toggle = document.createElement("input");
+      toggle.type = "checkbox";
+      toggle.checked = rule.enabled;
+      toggle.setAttribute("aria-label", "Use this rule");
+      toggle.addEventListener("change", () => { rule.enabled = toggle.checked; render(); ruleChanged(); });
+      const name = document.createElement("input");
+      name.type = "text";
+      name.className = "rule-name";
+      name.placeholder = `Rule ${index + 1}`;
+      name.value = rule.name;
+      name.setAttribute("aria-label", "Rule name");
+      name.addEventListener("change", () => { rule.name = name.value.trim().slice(0, 80); ruleChanged(); });
+      const up = document.createElement("button");
+      up.type = "button";
+      up.className = "btn btn-quiet btn-small";
+      up.textContent = "Move up";
+      up.disabled = index === 0;
+      up.addEventListener("click", () => { rules.splice(index - 1, 0, rules.splice(index, 1)[0]); render(); ruleChanged(); });
+      head.append(toggle, name, up, iconButton("Remove rule", () => { rules.splice(index, 1); render(); ruleChanged(); }));
+
+      const ifLine = document.createElement("div");
+      ifLine.className = "rule-label";
+      ifLine.textContent = "If a file";
+      const conds = document.createElement("div");
+      conds.className = "rule-conds";
+      for (const cond of rule.when) conds.append(conditionRow(rule, cond, render));
+      const add = document.createElement("button");
+      add.type = "button";
+      add.className = "btn btn-quiet btn-small";
+      add.textContent = rule.when.length ? "And also…" : "Add a condition";
+      add.addEventListener("click", () => {
+        rule.when.push({ field: "site", op: "is", value: "" });
+        render();
+        $(`#rule-list > li:nth-child(${index + 1}) .rule-cond:last-of-type input`)?.focus();
+      });
+      conds.append(add);
+
+      const thenLine = document.createElement("div");
+      thenLine.className = "rule-then";
+      const thenLabel = document.createElement("span");
+      thenLabel.className = "rule-label";
+      thenLabel.textContent = "then";
+      const action = select(RULE_ACTION_LABEL, rule.then, "What the rule does");
+      action.addEventListener("change", () => { rule.then = action.value; render(); ruleChanged(); });
+      thenLine.append(thenLabel, action);
+      if (rule.then === "folder") {
+        const folder = document.createElement("button");
+        folder.type = "button";
+        folder.className = "btn btn-quiet btn-small rule-folder";
+        folder.textContent = rule.folder || "Choose folder…";
+        folder.title = rule.folder || "";
+        folder.addEventListener("click", async () => {
+          const picked = await api.pickJobDir();
+          if (!picked?.ok) return;
+          rule.folder = picked.path;
+          render();
+          ruleChanged();
+        });
+        thenLine.append(folder);
+      }
+      li.append(head, ifLine, conds, thenLine);
+      const problems = fmt.ruleProblems(rule);
+      if (problems.length) {
+        const note = document.createElement("p");
+        note.className = "rule-problem";
+        note.textContent = `Not used yet: ${problems.join("; ")}.`;
+        li.append(note);
+      }
+      li.classList.toggle("is-off", !rule.enabled);
+      list.append(li);
+    });
+    $("#rules-empty").hidden = rules.length > 0;
+  }
+
+  $("#btn-rule-add").addEventListener("click", () => {
+    rules.push({ id: `r${Date.now().toString(36)}`, enabled: true, name: "", then: "skip", folder: "", when: [{ field: "name", op: "matches", value: "" }] });
+    renderRules();
+    $("#rule-list > li:last-child .rule-cond input")?.focus();
+  });
+
+  $("#btn-rules-preview").addEventListener("click", async () => {
+    const out = $("#rules-preview");
+    const usable = rules.filter((rule) => rule.enabled && !fmt.ruleProblems(rule).length);
+    if (!usable.length) {
+      out.textContent = "No rule is ready to use yet.";
+      return;
+    }
+    out.textContent = "Checking your Library…";
+    const result = await api.rulesPreview({ rules: usable });
+    if (!result?.ok) {
+      out.textContent = result?.error || "The rules could not be checked.";
+      return;
+    }
+    if (!result.total) {
+      out.textContent = "Your Library has no files yet. Open the Library once to index your downloads, then check again.";
+      return;
+    }
+    const parts = [`Of ${result.total.toLocaleString()} files in your Library, these rules would skip ${result.skipped.toLocaleString()}`];
+    if (result.folder) parts.push(`send ${result.folder.toLocaleString()} to a rule folder`);
+    if (result.single) parts.push(`download ${result.single.toLocaleString()} one at a time`);
+    let text = `${parts.join(", ")}.`;
+    const examples = result.examples?.skipped || [];
+    if (examples.length) text += ` Skipped, for example: ${examples.slice(0, 4).join(", ")}.`;
+    text += " Upload dates aren't in the Library, so date conditions are not checked here.";
+    out.textContent = text;
+  });
+
+  // ─── naming preview (3.1): proposed names before downloading ──────────────
+  const SOURCE_LABEL = { "original filename": "original name", "media title": "file title", "post title": "post title",
+    "album title": "album title", "thread title": "thread title", template: "template" };
+
+  async function previewNames() {
+    const job = jobFromInput();
+    if (!job) return;
+    const dialog = $("#names-dialog");
+    if (!dialog.open) {
+      $("#names-strategy").value = prefs.nameStrategy || "auto";
+      $("#names-numbering").value = prefs.numbering || "suffix";
+      $("#names-template").value = prefs.nameTemplate || "";
+      dialog.showModal();
+    }
+    const template = $("#names-template").value.trim();
+    const problem = fmt.templateProblem(template);
+    $("#names-template-problem").textContent = problem ? `This template can't be used: ${problem}. Automatic names are shown.` : "";
+    const config = pipelineConfig({ ...job, redownload: true }, () => {});
+    config.smartNames = true;
+    config.nameStrategy = $("#names-strategy").value;
+    config.numbering = $("#names-numbering").value;
+    config.sequencePrefix = config.numbering !== "off";
+    config.nameTemplate = problem ? "" : template;
+    $("#names-rows").textContent = "";
+    $("#names-summary").textContent = "Finding the files and naming them. Nothing is downloaded…";
+    $("#btn-names-stop").hidden = false;
+    $("#btn-names-again").disabled = true;
+    const result = await api.namingPreview(config).catch((error) => ({ ok: false, error: error.message }));
+    $("#btn-names-stop").hidden = true;
+    $("#btn-names-again").disabled = false;
+    if (!result?.ok) {
+      $("#names-summary").textContent = result?.error || "The preview did not finish.";
+      return;
+    }
+    const rows = $("#names-rows");
+    for (const item of result.items) {
+      const tr = document.createElement("tr");
+      const id = item.identity || {};
+      const confidence = Number(item.confidence) || 0;
+      const from = [id.creator && `creator ${id.creator}`, id.album && `album ${id.album}`, id.thread && `thread ${id.thread}`,
+        id.post_title && `post ${id.post_title}`, id.media_title && `title ${id.media_title}`].filter(Boolean);
+      const cells = [item.sequence, item.original || "", item.name || "", item.folder || "", from.join(" · ") || (item.parent ? `page ${item.parent}` : "–")];
+      for (const value of cells) {
+        const td = document.createElement("td");
+        td.textContent = String(value);
+        td.title = String(value);
+        tr.append(td);
+      }
+      const level = document.createElement("td");
+      level.className = `names-confidence ${confidence >= 0.7 ? "is-high" : confidence >= 0.4 ? "is-mid" : "is-low"}`;
+      level.textContent = `${Math.round(confidence * 100)}%`;
+      level.title = "How sure NEXDROP is that this name describes the file";
+      const strategy = document.createElement("td");
+      strategy.textContent = SOURCE_LABEL[item.source] || item.source || item.strategy || "";
+      tr.append(level, strategy);
+      if (item.name && item.original && item.name === item.original) tr.classList.add("same-name");
+      rows.append(tr);
+    }
+    const parts = [`${result.total.toLocaleString()} file${result.total === 1 ? "" : "s"}`];
+    if (result.total > result.items.length) parts.push(`the first ${result.items.length.toLocaleString()} shown`);
+    if (result.unsupported?.length) parts.push(`${result.unsupported.length} direct link(s) keep their own names`);
+    const low = result.items.filter((i) => Number(i.confidence) < 0.4).length;
+    if (low) parts.push(`${low} with a low-confidence name`);
+    $("#names-summary").textContent = `${parts.join(" · ")}. Nothing was downloaded.`;
+    if (!result.items.length) $("#names-summary").textContent = result.notes?.[0] || result.warnings?.[0] || "No files were found on these pages.";
+  }
+
+  $("#btn-check-names").addEventListener("click", () => {
+    $("#check-dialog").close();
+    previewNames();
+  });
+  $("#btn-names-again").addEventListener("click", previewNames);
+  $("#btn-names-stop").addEventListener("click", () => api.namingPreviewStop());
+  $("#names-dialog").addEventListener("close", () => api.namingPreviewStop());
+  $("#names-template").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      previewNames();
+    }
+  });
+  $("#btn-names-use").addEventListener("click", () => {
+    const template = $("#names-template").value.trim();
+    if (fmt.templateProblem(template)) {
+      $("#names-template-problem").textContent = `Not saved: ${fmt.templateProblem(template)}.`;
+      return;
+    }
+    $("#name-strategy").value = $("#names-strategy").value;
+    $("#numbering").value = $("#names-numbering").value;
+    $("#name-template").value = template;
+    $("#smart-names").checked = true;
+    showTemplateExample();
+    savePrefsSoon();
+    $("#names-summary").textContent = "Saved. New downloads use these naming settings.";
+  });
 
   function renderQueue() {
     const box = $("#queue");
@@ -465,6 +1102,15 @@
       name.title = [...item.urls.slice(0, 20), ...own.filter(Boolean), "Click to rename, reorder, hold or change this job's folder and speed."].join("\n");
       name.addEventListener("click", () => editJob(item.id));
       li.appendChild(name);
+      if (item.startAt || item.stopAt) {
+        const when = document.createElement("span");
+        when.className = "queue-when";
+        const parts = [];
+        if (item.startAt && Date.parse(item.startAt) > Date.now()) parts.push(`starts ${whenText(item.startAt)}`);
+        if (item.stopAt) parts.push(`pauses ${whenText(item.stopAt)}`);
+        when.textContent = parts.join(", ");
+        if (parts.length) li.appendChild(when);
+      }
       if (item.folder || item.mode || Number.isFinite(item.speedMB)) {
         const tag = document.createElement("span");
         tag.className = "queue-tag";
@@ -484,10 +1130,33 @@
       list.appendChild(li);
     }
     const held = queue.filter((q) => q.hold).length;
-    const waiting = queue.length === 1 ? "1 link waiting" : `${queue.length} waiting`;
+    const waiting = `${queue.length} waiting`;
     $("#queue-count").textContent = held ? `${waiting}, ${held} held` : waiting;
     box.hidden = !queue.length;
     $("#btn-queue").hidden = !run.running;
+  }
+
+  function whenText(iso) {
+    const date = new Date(iso);
+    const today = new Date();
+    const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    if (date.toDateString() === today.toDateString()) return time;
+    return `${date.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })} ${time}`;
+  }
+
+  // <input type="datetime-local"> works in local time without a zone.
+  function localInput(iso) {
+    if (!iso) return "";
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return "";
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+
+  function fromLocalInput(value) {
+    if (!value) return undefined;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
   }
 
   function newJobId() {
@@ -506,6 +1175,8 @@
     $("#job-mode").value = item.mode || "";
     $("#job-speed").value = Number.isFinite(item.speedMB) ? item.speedMB : "";
     $("#job-hold").checked = Boolean(item.hold);
+    $("#job-start-at").value = localInput(item.startAt);
+    $("#job-stop-at").value = localInput(item.stopAt);
     showJobFolder();
     $("#job-dialog").showModal();
   }
@@ -547,6 +1218,9 @@
     item.speedMB = Number.isFinite(speed) ? Math.max(0, Math.min(1000, speed)) : undefined;
     item.hold = $("#job-hold").checked || undefined;
     item.folder = state.folder || undefined;
+    item.startAt = fromLocalInput($("#job-start-at").value);
+    item.stopAt = fromLocalInput($("#job-stop-at").value);
+    if (item.stopAt && item.startAt && Date.parse(item.stopAt) <= Date.parse(item.startAt)) item.stopAt = undefined;
     if (action === "remove") queue.splice(index, 1);
     else if (action === "top") queue.unshift(...queue.splice(index, 1));
     else if (action === "bottom") queue.push(...queue.splice(index, 1));
@@ -564,6 +1238,46 @@
   });
 
   $("#btn-queue").addEventListener("click", () => addToQueue());
+
+  // "Later…": queue the links with a start time, and if wanted a time to pause.
+  let laterJob = null;
+  $("#btn-later").addEventListener("click", () => {
+    const job = jobFromInput();
+    if (!job) return;
+    laterJob = job;
+    $("#later-links").textContent = job.urls.length === 1 ? job.urls[0] : `${job.urls.length} links, starting with ${job.urls[0]}`;
+    const start = new Date(Date.now() + 60 * 60 * 1000);
+    start.setMinutes(0, 0, 0);
+    $("#later-start").value = localInput(start.toISOString());
+    $("#later-stop").value = "";
+    $("#later-status").textContent = "";
+    $("#later-dialog").showModal();
+  });
+  $("#btn-later-save").addEventListener("click", (event) => {
+    const startAt = fromLocalInput($("#later-start").value);
+    const stopAt = fromLocalInput($("#later-stop").value);
+    let problem = "";
+    if (!startAt) problem = "Choose when to start.";
+    else if (stopAt && Date.parse(stopAt) <= Date.parse(startAt)) problem = "The pause time must be after the start time.";
+    if (problem) {
+      event.preventDefault();
+      setStatus("#later-status", problem, "bad");
+    }
+  });
+  $("#later-dialog").addEventListener("close", () => {
+    const job = laterJob;
+    laterJob = null;
+    if (!job || $("#later-dialog").returnValue !== "save") return;
+    job.startAt = fromLocalInput($("#later-start").value);
+    job.stopAt = fromLocalInput($("#later-stop").value);
+    const before = queue.length;
+    addToQueue(job);
+    if (queue.length > before) {
+      urlsBox.value = "";
+      autoGrow();
+      log("info", `${job.label} starts at ${whenText(job.startAt)}${job.stopAt ? ` and pauses at ${whenText(job.stopAt)}` : ""}. NEXDROP has to be open then (the tray is enough).`);
+    }
+  });
   $("#btn-queue-clear").addEventListener("click", () => {
     queue = [];
     saveQueue();
@@ -617,7 +1331,7 @@
   $("#btn-start").addEventListener("click", startRun);
   $("#btn-stop").addEventListener("click", stopRun);
 
-  // ─── watched threads ──────────────────────────────────────────────────────
+  // ─── watched links (3.1: threads, albums, profiles, channels, playlists, …) ──
   const WATCH_TICK_MS = 60 * 1000;
 
   function threadKey(url) {
@@ -638,30 +1352,53 @@
     updateWatchButton();
   }
 
-  function addWatch(url, hours) {
-    const key = threadKey(url);
-    if (!key) {
-      setStatus("#watch-status", "Only forum thread links (with /threads/ in them) can be watched.", "bad");
+  // Same link for watching: a thread by its thread address, anything else without tracking parts.
+  function watchKey(url) {
+    return threadKey(url) || String(url).trim().replace(/[?#].*$/, "").replace(/\/+$/, "").toLowerCase().replace(/^http:/, "https:").replace("://www.", "://");
+  }
+
+  // Asks the URL analyzer (the engine's own handlers) what the link is; only links that list
+  // files which can grow are accepted.
+  async function addWatch(url, minutes) {
+    const value = String(url || "").trim();
+    if (!/^https?:\/\//i.test(value)) {
+      setStatus("#watch-status", "Paste a full link that starts with https://.", "bad");
       return false;
     }
-    if (watches.some((w) => threadKey(w.url) === key)) {
-      setStatus("#watch-status", "That thread is already watched.", null);
+    const key = watchKey(value);
+    if (watches.some((w) => watchKey(w.url) === key)) {
+      setStatus("#watch-status", "That link is already watched.", null);
       return false;
     }
-    watches.push({ id: `w${Date.now().toString(36)}`, url: key + "/", label: jobLabel([key]), everyHours: hours || 6, lastCheck: null, lastNew: null });
+    setStatus("#watch-status", "Checking what this link is…", null);
+    const result = await api.analyzeLinks({ urls: [value] }).catch((error) => ({ ok: false, error: error.message }));
+    const item = result && result.items && result.items[0];
+    const verdict = fmt.watchable(item);
+    if (!verdict.ok) {
+      setStatus("#watch-status", result && result.ok === false && result.error ? result.error : verdict.reason, "bad");
+      return false;
+    }
+    const thread = verdict.kind === "forum thread" && threadKey(value);
+    const watchUrl = thread ? `${thread}/` : value;
+    watches.push({ id: `w${Date.now().toString(36)}`, url: watchUrl, kind: verdict.kind, site: item.site || item.host || "",
+      label: jobLabel([watchUrl]), everyMinutes: Math.max(fmt.WATCH_MIN_MINUTES, minutes || 360), lastCheck: null, lastNew: null });
     saveWatches();
-    setStatus("#watch-status", `Watching ${jobLabel([key])}. NEXDROP checks it while it is open.`, "ok");
+    setStatus("#watch-status", `Watching ${jobLabel([watchUrl])} (${verdict.kind}). NEXDROP checks it while it is open.`, "ok");
     return true;
   }
 
   function watchJob(watch) {
-    // Start from the last post seen, so only newer posts are scanned.
-    const from = threadPosts[threadKey(watch.url)] || watch.url;
-    return { id: `j${Date.now().toString(36)}`, urls: [from], unsupported: [], label: watch.label, startPage: 1, endPage: null, redownload: false, watchId: watch.id };
+    // A thread starts from the last post seen, so only newer posts are scanned. Other links are
+    // read again and History skips every file saved before.
+    const thread = threadKey(watch.url);
+    const from = (thread && threadPosts[thread]) || watch.url;
+    return { id: `j${Date.now().toString(36)}`, urls: [from], unsupported: [], label: watch.label, startPage: 1, endPage: null,
+      redownload: false, watchId: watch.id, folder: watch.folder || undefined };
   }
 
   function checkWatch(watch) {
     if (queue.some((q) => q.watchId === watch.id) || (activeJob && activeJob.watchId === watch.id)) return;
+    if ([...bgJobs.values()].some((entry) => entry.job.watchId === watch.id)) return;
     addToQueue(watchJob(watch));
     if (!run.running) startNextInQueue();
   }
@@ -678,21 +1415,65 @@
     else log("info", `${watch.label}: no new files.`);
   }
 
-  function dueWatches() {
+  // Paused by "Pause downloads when the hours end" or a job's own pause time; continues by itself.
+  let schedulePaused = false;
+
+  function scheduleTick() {
+    showSchedule();
+    renderQueue(); // start times count down
     const now = Date.now();
-    return watches.filter((w) => !w.lastCheck || now - Date.parse(w.lastCheck) >= w.everyHours * 3600 * 1000);
+    const hoursOver = prefs.scheduleOn && prefs.scheduleStop && !scheduleAllows();
+    if (run.running && activeJob && !$("#btn-stop").disabled) {
+      if (activeJob.stopAt && Date.parse(activeJob.stopAt) <= now) {
+        log("info", `${activeJob.label}: its pause time has come. Resume continues where it stopped.`);
+        activeJob.stopAt = undefined; // Resume isn't paused again by the same time
+        stopRun();
+      } else if (hoursOver && !activeJob.forced) {
+        log("info", "The download hours are over. The run pauses and continues when they start again.");
+        schedulePaused = true;
+        stopRun();
+      }
+    }
+    for (const [slot, entry] of bgJobs) {
+      if (entry.pausing) continue;
+      if ((entry.job.stopAt && Date.parse(entry.job.stopAt) <= now) || (hoursOver && !entry.job.forced)) {
+        if (entry.job.stopAt && Date.parse(entry.job.stopAt) <= now) entry.job = { ...entry.job, stopAt: undefined };
+        pauseBgJob(slot);
+      }
+    }
+    if (run.running) return;
+    if (!$("#resume").hidden) {
+      if (schedulePaused && pausedJob && scheduleAllows()) {
+        schedulePaused = false;
+        log("info", "The download hours have started again. Continuing the paused run.");
+        runJob({ ...pausedJob, resumed: true });
+      }
+      return;
+    }
+    watches.filter((w) => fmt.watchDue(w, now)).forEach(checkWatch);
+    startNextInQueue(); // the download hours or a job's start time may have just come
   }
 
-  setInterval(() => {
-    showSchedule();
-    if (run.running || !$("#resume").hidden) return;
-    dueWatches().forEach(checkWatch);
-    startNextInQueue(); // the download hours may have just begun
-  }, WATCH_TICK_MS);
+  setInterval(scheduleTick, WATCH_TICK_MS);
+
+  $("#btn-broken-report").addEventListener("click", async () => {
+    setStatus("#broken-status", "Writing the report…", null);
+    const result = await api.brokenReport({ days: Number($("#health-days").value) || 30, links: $("#broken-links").checked });
+    if (result?.canceled) return setStatus("#broken-status", "", null);
+    if (!result?.ok) return setStatus("#broken-status", result?.error || "The report could not be written.", "bad");
+    setStatus("#broken-status", result.failed ? `Saved: ${result.failed} failed file(s) on ${result.groups} site/reason line(s). Read it before you share it.` : "Saved. There were no failed files in this period.", "ok");
+  });
+
+  function setDays(days) {
+    PREF_FIELDS.scheduleDays.set(days);
+    savePrefsSoon();
+  }
+  $("#btn-days-weekend").addEventListener("click", () => setDays([0, 6]));
+  $("#btn-days-all").addEventListener("click", () => setDays([0, 1, 2, 3, 4, 5, 6]));
 
   // ─── download hours and quiet hours ───────────────────────────────────────
   function scheduleAllows(now = new Date()) {
-    return !prefs.scheduleOn || fmt.inTimeWindow(now, prefs.scheduleFrom, prefs.scheduleTo);
+    return !prefs.scheduleOn || fmt.inSchedule(now, prefs.scheduleFrom, prefs.scheduleTo, prefs.scheduleDays);
   }
 
   function quietActive(now = new Date()) {
@@ -706,7 +1487,12 @@
       $$("input, select", row).forEach((input) => { input.disabled = !on; });
     }
     const parts = [];
-    if (prefs.scheduleOn) parts.push(scheduleAllows() ? `Download hours now (until ${prefs.scheduleTo}).` : `Outside download hours: queued links start at ${prefs.scheduleFrom}.`);
+    if (prefs.scheduleOn) {
+      const next = fmt.nextScheduleStart(new Date(), prefs.scheduleFrom, prefs.scheduleTo, prefs.scheduleDays);
+      if (scheduleAllows()) parts.push(`Download hours now (until ${prefs.scheduleTo}).`);
+      else if (next) parts.push(`Outside download hours: queued links start ${whenText(next.toISOString())}.`);
+      else parts.push("No day is chosen, so queued links only start when you press Start.");
+    }
     if (prefs.quietOn) parts.push(quietActive() ? `Quiet hours now: new runs are capped at ${prefs.quietSpeedMB} MB/s.` : `Quiet hours start at ${prefs.quietFrom}.`);
     setStatus("#schedule-status", parts.join(" "), null);
   }
@@ -717,37 +1503,48 @@
     if (!watches.length) {
       const li = document.createElement("li");
       li.className = "empty-note";
-      li.textContent = "No threads watched yet.";
+      li.textContent = "Nothing watched yet.";
       list.appendChild(li);
       return;
     }
     for (const watch of watches) {
       const li = document.createElement("li");
       li.className = "watch-item";
+      li.classList.toggle("is-paused", Boolean(watch.paused));
       const info = document.createElement("div");
       info.className = "watch-info";
       const name = document.createElement("strong");
       name.textContent = watch.label;
       name.title = watch.url;
+      const kind = document.createElement("span");
+      kind.className = "watch-kind";
+      kind.textContent = [watch.kind || "forum thread", watch.site].filter(Boolean).join(" · ");
       const meta = document.createElement("small");
-      meta.textContent = !watch.lastCheck
-        ? "Not checked yet"
-        : watch.lastFailed
-          ? `Check failed ${fmt.ago(watch.lastCheck)}`
-          : `Checked ${fmt.ago(watch.lastCheck)}, ${watch.lastNew ? `${watch.lastNew} new file(s)` : "nothing new"}`;
-      info.append(name, meta);
+      meta.textContent = watch.paused
+        ? "Paused"
+        : !watch.lastCheck
+          ? "Not checked yet"
+          : watch.lastFailed
+            ? `Check failed ${fmt.ago(watch.lastCheck)}`
+            : `Checked ${fmt.ago(watch.lastCheck)}, ${watch.lastNew ? `${watch.lastNew} new file(s)` : "nothing new"}`;
+      info.append(name, kind, meta);
       const every = document.createElement("select");
       every.className = "select";
       every.setAttribute("aria-label", `How often to check ${watch.label}`);
-      for (const h of [1, 3, 6, 12, 24]) {
-        const option = document.createElement("option");
-        option.value = String(h);
-        option.textContent = h === 1 ? "Every hour" : `Every ${h} hours`;
-        every.appendChild(option);
-      }
-      every.value = String(watch.everyHours);
+      const minutes = fmt.watchMinutes(watch);
+      for (const m of new Set([...fmt.WATCH_EVERY, minutes])) every.append(new Option(fmt.everyText(m), String(m)));
+      every.value = String(minutes);
       every.addEventListener("change", () => {
-        watch.everyHours = Number(every.value);
+        watch.everyMinutes = Number(every.value);
+        delete watch.everyHours;
+        saveWatches();
+      });
+      const pause = document.createElement("button");
+      pause.type = "button";
+      pause.className = "btn btn-quiet btn-small";
+      pause.textContent = watch.paused ? "Resume" : "Pause";
+      pause.addEventListener("click", () => {
+        watch.paused = !watch.paused || undefined;
         saveWatches();
       });
       const now = document.createElement("button");
@@ -759,31 +1556,42 @@
       remove.type = "button";
       remove.className = "btn btn-quiet btn-small btn-danger";
       remove.textContent = "Remove";
+      remove.title = "Stop watching. Files already downloaded stay where they are.";
       remove.addEventListener("click", () => {
         watches = watches.filter((w) => w.id !== watch.id);
         saveWatches();
       });
-      li.append(info, every, now, remove);
+      li.append(info, every, pause, now, remove);
       list.appendChild(li);
     }
   }
 
-  // "Watch this thread" appears after running a single forum thread.
+  // "Watch for new files" appears after running a single link that can be watched.
   let lastThread = "";
+  let lastWatchable = "";
+  async function noteWatchable(url) {
+    lastWatchable = "";
+    if (!url) return updateWatchButton();
+    const result = await api.analyzeLinks({ urls: [url] }).catch(() => null);
+    if (url === lastThread && fmt.watchable(result && result.items && result.items[0]).ok) lastWatchable = url;
+    updateWatchButton();
+  }
   function updateWatchButton() {
-    const key = threadKey(lastThread);
+    const key = lastWatchable && watchKey(lastWatchable);
     const button = $("#btn-watch");
     button.hidden = !key || run.running;
-    const watched = watches.some((w) => threadKey(w.url) === key);
-    button.textContent = watched ? "Watched" : "Watch for new posts";
+    const watched = watches.some((w) => watchKey(w.url) === key);
+    button.textContent = watched ? "Watched" : "Watch for new files";
     button.disabled = watched;
   }
-  $("#btn-watch").addEventListener("click", () => {
-    if (addWatch(lastThread, 6)) log("ok", "Watching this thread. New posts are downloaded every 6 hours while NEXDROP is open.");
+  $("#btn-watch").addEventListener("click", async () => {
+    if (await addWatch(lastWatchable, 360)) log("ok", "Watching this link. New files are downloaded every 6 hours while NEXDROP is open (Settings > Watched).");
   });
-  $("#btn-watch-add").addEventListener("click", () => {
+  for (const m of fmt.WATCH_EVERY) $("#watch-every").append(new Option(fmt.everyText(m), String(m)));
+  $("#watch-every").value = "360";
+  $("#btn-watch-add").addEventListener("click", async () => {
     const value = $("#watch-url").value.trim();
-    if (value && addWatch(value, Number($("#watch-every").value) || 6)) $("#watch-url").value = "";
+    if (value && (await addWatch(value, Number($("#watch-every").value) || 360))) $("#watch-url").value = "";
   });
 
   function askSeen(seen, total) {
@@ -836,6 +1644,8 @@
     run.order = [];
     run.arrival = 0;
     run.bytes = 0;
+    run.samples = [];
+    run.peak = 0;
     view.hosts.clear();
     view.filter = "all";
     view.host = "";
@@ -902,9 +1712,22 @@
         urlsBox.focus();
         break;
       }
+      case "job-event":
+        bgEvent(event.slot, event.event || {});
+        break;
+      case "moved": { // files organized after a job: the list's "Saved to", Open and Show in folder follow them
+        const to = new Map(event.moves || []);
+        for (const row of run.order) if (row.path && to.has(row.path)) row.path = to.get(row.path);
+        view.dirty = true;
+        scheduleRender();
+        break;
+      }
+      case "after":
+        log(event.level === "ok" ? "ok" : event.level === "warning" ? "warning" : "info", event.slot && event.label ? `${event.label}: ${event.message}` : event.message);
+        break;
       case "app-command":
         if (event.command === "pause") stopRun();
-        else if (event.command === "check-watches") watches.forEach(checkWatch);
+        else if (event.command === "check-watches") watches.filter((w) => !w.paused).forEach(checkWatch);
         else if (event.command === "open-folder") api.openPath(run.root || downloadsDir);
         break;
       case "error":
@@ -945,8 +1768,48 @@
     }
     if (event.bytes) run.bytes = run.bytesBefore + event.bytes;
     run.speed = event.speed || 0;
+    run.peak = Math.max(run.peak, run.speed);
+    const now = Date.now();
+    const last = run.samples[run.samples.length - 1];
+    if (!last || now - last.t >= 1000) {
+      const c = event.counts || {};
+      run.samples.push({ t: now, bytes: run.bytes, speed: run.speed, finished: (c.done || 0) + (c.skipped || 0) + (c.failed || 0) + (c.cancelled || 0) });
+      if (run.samples.length > 600) run.samples.splice(0, run.samples.length - 600);
+    }
     view.dirty = true;
     scheduleRender();
+  }
+
+  // Time left from how fast files finished in the last two minutes; nothing until that is known.
+  function timeLeft() {
+    if (!run.running || run.samples.length < 2) return "";
+    const now = run.samples[run.samples.length - 1];
+    const then = run.samples.find((s) => now.t - s.t <= 120000) || run.samples[0];
+    const seconds = (now.t - then.t) / 1000;
+    const rate = seconds >= 20 ? (now.finished - then.finished) / seconds : 0;
+    const remaining = run.order.length - now.finished;
+    if (rate <= 0 || remaining <= 0) return "";
+    return fmt.duration(remaining / rate);
+  }
+
+  function drawGraph() {
+    const canvas = $("#t-graph");
+    const ctx = canvas.getContext && canvas.getContext("2d");
+    if (!ctx) return;
+    const points = run.samples.slice(-72);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const top = Math.max(1, ...points.map((p) => p.speed));
+    if (points.length < 2) return;
+    ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--copper") || "#c8804e";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    points.forEach((p, i) => {
+      const x = (i / (points.length - 1)) * (canvas.width - 1);
+      const y = canvas.height - 1 - (p.speed / top) * (canvas.height - 3);
+      if (i) ctx.lineTo(x, y);
+      else ctx.moveTo(x, y);
+    });
+    ctx.stroke();
   }
 
   function finish(event) {
@@ -963,6 +1826,7 @@
     else if (event.stopped || anySaved) phases.classList.add("partial");
     else phases.classList.add("failed");
     lastThread = activeJob && activeJob.urls.length === 1 && !activeJob.watchId ? activeJob.urls[0] : "";
+    noteWatchable(lastThread);
     setRunning(false);
     view.dirty = true;
     scheduleRender();
@@ -983,6 +1847,7 @@
 
   function matches(row) {
     if (view.host && row.host !== view.host) return false;
+    if (view.text && !`${nameFor(row)} ${row.url} ${row.host || ""}`.toLowerCase().includes(view.text)) return false;
     switch (view.filter) {
       case "active": return ACTIVE_STATES.has(row.state);
       case "done": return row.state === "done";
@@ -1003,6 +1868,8 @@
     if (view.dirty) {
       if (run.needsSort) sortRows();
       view.list = run.order.filter(matches);
+      if (listView.sort !== "page") view.list.sort(LIST_SORT[listView.sort] ? (a, b) => LIST_SORT[listView.sort](a, b) * listView.dir : undefined);
+      else if (listView.dir < 0) view.list.reverse();
       updateCounts();
       updateTally();
       view.dirty = false;
@@ -1035,7 +1902,7 @@
       '<span class="row-seq"></span>' +
       '<span class="row-main"><span class="row-name"></span>' +
       '<span class="row-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"><span class="row-bar-fill"></span></span>' +
-      '<span class="row-sub"><span class="host"></span><span class="detail"></span></span></span>' +
+      '<span class="row-sub"><span class="host"></span><span class="detail"></span><span class="retries"></span><span class="dest"></span></span></span>' +
       '<span class="row-stats"><span class="row-size"></span><span class="row-speed"></span></span>' +
       '<span class="row-state"></span>' +
       '<button class="row-act" type="button" data-act="copy" title="Copy link" aria-label="Copy link"><svg viewBox="0 0 20 20"><rect x="7" y="7" width="9" height="9" rx="1.5"/><path d="M4 13V5.5A1.5 1.5 0 0 1 5.5 4H13"/></svg></button>';
@@ -1044,6 +1911,8 @@
       name: $(".row-name", el),
       host: $(".host", el),
       detail: $(".detail", el),
+      retries: $(".retries", el),
+      dest: $(".dest", el),
       size: $(".row-size", el),
       speed: $(".row-speed", el),
       state: $(".row-state", el),
@@ -1105,6 +1974,8 @@
     else if (row.state === "active" && total && row.speed > 0) detail = `${fmt.duration((total - read) / row.speed)} left`;
     else if (row.state === "retrying") detail = "Retrying";
     setText(p.detail, detail);
+    setText(p.retries, row.retries ? `${row.retries} ${row.retries === 1 ? "retry" : "retries"}` : "");
+    setText(p.dest, row.state === "done" && row.path ? row.path : "");
     p.detail.title = row.state === "failed" && row.action ? row.action : "";
 
     let size = "";
@@ -1125,6 +1996,115 @@
   function setText(node, text) {
     if (node.textContent !== text) node.textContent = text;
   }
+
+  // ─── file list header: sort, column widths, columns, search, row menu (3.1) ──
+  const STATE_ORDER = { active: 0, retrying: 1, queued: 2, failed: 3, cancelled: 4, done: 5, skipped: 6 };
+  const LIST_SORT = {
+    name: (a, b) => nameFor(a).localeCompare(nameFor(b), undefined, { numeric: true, sensitivity: "base" }),
+    size: (a, b) => (Number(a.total) || Number(a.read) || 0) - (Number(b.total) || Number(b.read) || 0),
+    state: (a, b) => (STATE_ORDER[a.state] ?? 9) - (STATE_ORDER[b.state] ?? 9) || (Number(b.speed) || 0) - (Number(a.speed) || 0),
+  };
+
+  function cleanListView(v) {
+    const out = JSON.parse(JSON.stringify(LIST_DEFAULT));
+    if (!v || typeof v !== "object") return out;
+    for (const key of Object.keys(out.cols)) if (v.cols && typeof v.cols[key] === "boolean") out.cols[key] = v.cols[key];
+    for (const key of Object.keys(out.widths)) {
+      const n = Number(v.widths && v.widths[key]);
+      if (Number.isFinite(n)) out.widths[key] = Math.max(40, Math.min(360, Math.round(n)));
+    }
+    if (v.sort === "page" || LIST_SORT[v.sort]) out.sort = v.sort;
+    out.dir = v.dir === -1 ? -1 : 1;
+    return out;
+  }
+
+  function applyListView() {
+    const ws = $(".workspace");
+    for (const key of ["seq", "site", "size", "speed"]) ws.classList.toggle(`no-${key}`, !listView.cols[key]);
+    ws.classList.toggle("show-dest", listView.cols.dest);
+    ws.classList.toggle("show-retries", listView.cols.retries);
+    ws.style.setProperty("--col-seq", listView.cols.seq ? "46px" : "0px");
+    ws.style.setProperty("--col-stats", `${listView.cols.size || listView.cols.speed ? listView.widths.stats : 0}px`);
+    ws.style.setProperty("--col-state", `${listView.widths.state}px`);
+    for (const box of $$("#col-pop input[data-col]")) box.checked = Boolean(listView.cols[box.dataset.col]);
+    for (const col of $$("#list-head [data-sort]")) {
+      if (col.dataset.sort === listView.sort) col.setAttribute("aria-sort", listView.dir > 0 ? "ascending" : "descending");
+      else col.removeAttribute("aria-sort");
+    }
+    view.dirty = true;
+    scheduleRender();
+  }
+
+  $("#list-head").addEventListener("click", (event) => {
+    if (event.target.closest(".col-grip, #col-pop, #btn-columns")) return;
+    const col = event.target.closest("[data-sort]");
+    if (!col) return;
+    const sort = col.dataset.sort;
+    listView.dir = listView.sort === sort ? -listView.dir : 1;
+    listView.sort = sort;
+    applyListView();
+    savePrefsSoon();
+  });
+  // Drag the left edge of Size · Speed or Status to make it wider or narrower.
+  for (const grip of $$("#list-head .col-grip")) {
+    grip.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const key = grip.dataset.grip;
+      const startX = event.clientX;
+      const startW = listView.widths[key];
+      grip.setPointerCapture(event.pointerId);
+      grip.classList.add("is-drag");
+      const move = (e) => {
+        listView.widths[key] = Math.max(40, Math.min(360, startW - (e.clientX - startX)));
+        applyListView();
+      };
+      const up = () => {
+        grip.classList.remove("is-drag");
+        grip.removeEventListener("pointermove", move);
+        savePrefsSoon();
+      };
+      grip.addEventListener("pointermove", move);
+      grip.addEventListener("pointerup", up, { once: true });
+    });
+    grip.addEventListener("click", (event) => event.stopPropagation());
+  }
+  $("#btn-columns").addEventListener("click", (event) => {
+    event.stopPropagation();
+    $("#col-pop").hidden = !$("#col-pop").hidden;
+  });
+  document.addEventListener("click", (event) => {
+    if (!$("#col-pop").hidden && !event.target.closest("#col-pop")) $("#col-pop").hidden = true;
+  });
+  $("#col-pop").addEventListener("change", (event) => {
+    const box = event.target.closest("input[data-col]");
+    if (!box) return;
+    listView.cols[box.dataset.col] = box.checked;
+    applyListView();
+    savePrefsSoon();
+  });
+  $("#btn-columns-reset").addEventListener("click", () => {
+    listView = JSON.parse(JSON.stringify(LIST_DEFAULT));
+    applyListView();
+    savePrefsSoon();
+  });
+  let listSearchTimer = 0;
+  $("#list-search").addEventListener("input", () => {
+    clearTimeout(listSearchTimer);
+    listSearchTimer = setTimeout(() => {
+      view.text = $("#list-search").value.trim().toLowerCase();
+      view.dirty = true;
+      scheduleRender();
+    }, 150);
+  });
+  // Right-click a file: copy its link or name, open it or show it in its folder (native menu).
+  rowsEl.addEventListener("contextmenu", (event) => {
+    const el = event.target.closest(".row");
+    const row = el && run.rows.get(el.dataset.url);
+    if (!row) return;
+    event.preventDefault();
+    api.rowMenu({ url: row.url, name: nameFor(row), path: row.state === "done" ? row.path || "" : "", reason: row.state === "failed" ? row.reason || "" : "" });
+  });
 
   rowsEl.addEventListener("click", async (event) => {
     const button = event.target.closest("[data-act]");
@@ -1161,6 +2141,20 @@
     setText($("#t-total"), String(run.order.length));
     setText($("#t-bytes"), fmt.bytes(run.bytes));
     setText($("#t-speed"), run.running ? fmt.mbps(run.speed) : "–");
+    setText($("#t-eta"), timeLeft() || "–");
+    const seconds = run.startedAt ? (Date.now() - run.startedAt) / 1000 : 0;
+    const average = seconds > 1 ? (run.bytes - run.bytesBefore) / seconds : 0;
+    let active = 0;
+    let finished = 0;
+    let failed = 0;
+    for (const row of run.order) {
+      if (ACTIVE_STATES.has(row.state)) active += 1;
+      if (row.state === "done") finished += 1;
+      if (row.state === "failed") failed += 1;
+    }
+    const errors = finished + failed ? Math.round((failed / (finished + failed)) * 100) : 0;
+    $("#t-speed-box").title = `Average ${fmt.mbps(average)} · peak ${fmt.mbps(run.peak)} · ${active} downloading now · ${errors}% of finished files failed`;
+    drawGraph();
   }
 
   function tickClock() {
@@ -1368,6 +2362,7 @@
     sheet.inert = false;
     sheet.setAttribute("aria-hidden", "false");
     sheet.classList.add("open");
+    markResettable();
     $("#btn-settings-close").focus();
   }
   function closeSheet() {
@@ -1385,6 +2380,250 @@
     if (name === "history") searchHistory();
     if (name === "sources") showHealth();
   }
+  // ─── settings search, defaults, reset, profiles (3.1) ──────────────────────
+  // Fields set through code have no element to look at; these say where they live and their default.
+  const CUSTOM_PANE = { rules: "downloads", scheduleDays: "network" };
+  const CUSTOM_DEFAULT = { rules: [], scheduleDays: [0, 1, 2, 3, 4, 5, 6] };
+  const CUSTOM_BOX = { rules: "#rule-list", scheduleDays: "#schedule-days" };
+
+  function prefPane(key, spec) {
+    if (CUSTOM_PANE[key]) return CUSTOM_PANE[key];
+    const node = spec.el && $(spec.el);
+    const pane = node && node.closest(".sheet .pane");
+    return pane ? pane.dataset.pane : "";
+  }
+
+  function prefDefault(key, spec) {
+    return key in CUSTOM_DEFAULT ? CUSTOM_DEFAULT[key] : spec.def;
+  }
+
+  function prefBox(key, spec) {
+    const node = $(CUSTOM_BOX[key] || spec.el);
+    return node ? node.closest(".switch, .field") : null;
+  }
+
+  function sameValue(a, b) {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+
+  // Everything that shows a value derived from settings.
+  function refreshAfterPrefs() {
+    for (const id of ["#max-downloads", "#per-host", "#server-slots"]) $(id).dataset.custom = $(id).value;
+    showDownloadMode();
+    showTemplateExample();
+    renderRules();
+    savePrefsSoon();
+    setTimeout(markResettable, 350);
+  }
+
+  // A limit field locked by a download mode keeps the user's own number in data-custom.
+  function writePref(spec, value) {
+    writeField(spec, value);
+    const node = spec.el && $(spec.el);
+    if (node && node.dataset.custom !== undefined) node.dataset.custom = node.value;
+  }
+
+  function resetPref(key) {
+    const spec = PREF_FIELDS[key];
+    writePref(spec, prefDefault(key, spec));
+  }
+
+  // A small "Reset" button beside each setting that differs from its default.
+  function markResettable() {
+    for (const [key, spec] of Object.entries(PREF_FIELDS)) {
+      if (!prefPane(key, spec)) continue;
+      const box = prefBox(key, spec);
+      if (!box) continue;
+      let button = box.querySelector(`:scope > .reset-one[data-key="${key}"]`);
+      const changed = !sameValue(readField(spec), prefDefault(key, spec));
+      if (!button && changed) {
+        button = document.createElement("button");
+        button.type = "button";
+        button.className = "reset-one";
+        button.dataset.key = key;
+        button.textContent = "Reset";
+        button.title = "Back to the default value";
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          resetPref(key);
+          refreshAfterPrefs();
+        });
+        box.append(button);
+      }
+      if (button) button.hidden = !changed;
+      box.classList.toggle("has-reset", changed);
+    }
+  }
+
+  for (const button of $$("[data-reset-pane]")) {
+    button.addEventListener("click", () => {
+      const pane = button.dataset.resetPane;
+      const keys = Object.entries(PREF_FIELDS).filter(([key, spec]) => prefPane(key, spec) === pane).map(([key]) => key);
+      const label = $(`#sheet-tabs [data-pane="${pane}"]`)?.textContent || pane;
+      if (!window.confirm(`Put every setting in ${label} back to its default? Sign-ins, the queue and History are not touched.`)) return;
+      keys.forEach(resetPref);
+      refreshAfterPrefs();
+      log("info", `${label} settings are back to their defaults.`);
+    });
+  }
+
+  // Search: shows every setting whose label or help text has all the words, across the tabs.
+  const SEARCH_PANES = ["downloads", "network", "accounts", "watched", "sources", "app"];
+  let paneBeforeSearch = "downloads";
+  function searchItems(pane) {
+    const out = [];
+    for (const child of pane.children) {
+      if (child.classList.contains("field-grid")) out.push(...child.children);
+      else out.push(child);
+    }
+    return out;
+  }
+  function runSettingsSearch() {
+    const words = $("#settings-search").value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const searching = words.length > 0;
+    if (searching && !sheet.classList.contains("is-searching")) paneBeforeSearch = $("#sheet-tabs [aria-selected=true]")?.dataset.pane || "downloads";
+    sheet.classList.toggle("is-searching", searching);
+    let any = false;
+    for (const pane of $$(".sheet .pane")) {
+      for (const item of $$(".search-hidden", pane)) item.classList.remove("search-hidden");
+      if (!searching) continue;
+      if (!SEARCH_PANES.includes(pane.dataset.pane)) {
+        pane.hidden = true;
+        continue;
+      }
+      let hits = 0;
+      for (const item of searchItems(pane)) {
+        const text = `${item.textContent} ${$$("input[placeholder]", item).map((i) => i.placeholder).join(" ")}`.toLowerCase();
+        const hit = !item.classList.contains("divider") && !item.classList.contains("pane-reset") && words.every((word) => text.includes(word));
+        item.classList.toggle("search-hidden", !hit);
+        if (hit) hits += 1;
+      }
+      pane.hidden = hits === 0;
+      any = any || hits > 0;
+    }
+    $("#settings-no-match").hidden = !searching || any;
+    if (!searching) selectPane(paneBeforeSearch);
+  }
+  $("#settings-search").addEventListener("input", runSettingsSearch);
+  $("#settings-search").addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && event.target.value) {
+      event.stopPropagation();
+      event.target.value = "";
+      runSettingsSearch();
+    }
+  });
+  $("#sheet-tabs").addEventListener("click", () => {
+    if (!$("#settings-search").value) return;
+    $("#settings-search").value = "";
+    sheet.classList.remove("is-searching");
+    for (const item of $$(".sheet .search-hidden")) item.classList.remove("search-hidden");
+    $("#settings-no-match").hidden = true;
+  }, true);
+
+  // Profiles: named copies of the settings in these tabs, kept with the other settings; export and
+  // import as a JSON file. Imports are checked field by field.
+  let profiles = {};
+  const PROFILE_SKIP = new Set(["version"]);
+
+  function renderProfiles() {
+    const list = $("#profile-list");
+    list.textContent = "";
+    const names = Object.keys(profiles).sort((a, b) => a.localeCompare(b));
+    if (!names.length) list.append(new Option("No saved profiles", ""));
+    for (const name of names) list.append(new Option(name, name));
+    $("#btn-profile-use").disabled = !names.length;
+    $("#btn-profile-delete").disabled = !names.length;
+  }
+
+  function saveProfiles() {
+    api.saveGuiSetting({ profiles });
+    renderProfiles();
+  }
+
+  /** Writes settings from a profile or a file; returns what was ignored or changed to fit. */
+  function applyProfile(raw) {
+    const ignored = [];
+    const adjusted = [];
+    const source = raw && typeof raw === "object" ? raw : {};
+    for (const [key, value] of Object.entries(source)) {
+      if (PROFILE_SKIP.has(key)) continue;
+      const spec = PREF_FIELDS[key];
+      if (!spec || APP_OPTION_KEYS.includes(key)) {
+        ignored.push(key);
+        continue;
+      }
+      writePref(spec, value);
+      if (!sameValue(readField(spec), value)) adjusted.push(key);
+    }
+    refreshAfterPrefs();
+    api.applyAppOptions();
+    return { ignored, adjusted };
+  }
+
+  function profileReport(prefix, result) {
+    const parts = [prefix];
+    if (result.adjusted.length) parts.push(`Brought into range: ${result.adjusted.slice(0, 8).join(", ")}${result.adjusted.length > 8 ? "…" : ""}.`);
+    if (result.ignored.length) parts.push(`Not used (unknown or set per PC): ${result.ignored.slice(0, 8).join(", ")}${result.ignored.length > 8 ? "…" : ""}.`);
+    setStatus("#profile-status", parts.join(" "), result.adjusted.length || result.ignored.length ? null : "ok");
+  }
+
+  // Start with Windows, the tray and similar are about this PC, so profiles leave them out.
+  function profilePrefs() {
+    const out = collectPrefs();
+    for (const key of [...APP_OPTION_KEYS, ...PROFILE_SKIP]) delete out[key];
+    return out;
+  }
+
+  $("#btn-profile-save").addEventListener("click", () => {
+    const name = $("#profile-name").value.trim().slice(0, 60);
+    if (!name) {
+      setStatus("#profile-status", "Type a name for the profile first.", "bad");
+      $("#profile-name").focus();
+      return;
+    }
+    if (!profiles[name] && Object.keys(profiles).length >= 20) {
+      setStatus("#profile-status", "Up to 20 profiles. Delete one first.", "bad");
+      return;
+    }
+    profiles[name] = profilePrefs();
+    saveProfiles();
+    $("#profile-list").value = name;
+    $("#profile-name").value = "";
+    setStatus("#profile-status", `Saved the current settings as "${name}".`, "ok");
+  });
+  $("#btn-profile-use").addEventListener("click", () => {
+    const name = $("#profile-list").value;
+    if (!profiles[name]) return;
+    profileReport(`Using "${name}".`, applyProfile(profiles[name]));
+  });
+  $("#btn-profile-delete").addEventListener("click", () => {
+    const name = $("#profile-list").value;
+    if (!profiles[name] || !window.confirm(`Delete the profile "${name}"? Your current settings stay as they are.`)) return;
+    delete profiles[name];
+    saveProfiles();
+    setStatus("#profile-status", `Deleted "${name}".`, null);
+  });
+  $("#btn-profile-export").addEventListener("click", async () => {
+    const result = await api.settingsExport({ prefs: profilePrefs(), profiles });
+    if (result?.ok) setStatus("#profile-status", `Exported to ${result.path}.`, "ok");
+    else if (!result?.canceled) setStatus("#profile-status", result?.error || "The file could not be written.", "bad");
+  });
+  $("#btn-profile-import").addEventListener("click", async () => {
+    const result = await api.settingsImport();
+    if (result?.canceled) return;
+    if (!result?.ok) return setStatus("#profile-status", result?.error || "The file could not be read.", "bad");
+    let added = 0;
+    for (const [name, value] of Object.entries(result.profiles || {})) {
+      if (value && typeof value === "object" && Object.keys(profiles).length < 20 && !profiles[name]) {
+        profiles[String(name).slice(0, 60)] = value;
+        added += 1;
+      }
+    }
+    if (added) saveProfiles();
+    profileReport(`Imported the settings${added ? ` and ${added} profile(s)` : ""}.`, applyProfile(result.prefs));
+  });
+
   $("#btn-settings").addEventListener("click", () => openSheet());
   $("#btn-settings-close").addEventListener("click", closeSheet);
   $("#sheet-scrim").addEventListener("click", closeSheet);
@@ -1402,7 +2641,10 @@
   $("#download-mode").addEventListener("change", showDownloadMode);
   $("#name-template").addEventListener("input", showTemplateExample);
   for (const id of ["#number-width", "#numbering"]) $(id).addEventListener("change", showTemplateExample);
-  sheet.addEventListener("change", savePrefsSoon);
+  sheet.addEventListener("change", () => {
+    savePrefsSoon();
+    setTimeout(markResettable, 350);
+  });
   $("#order-seg").addEventListener("click", (event) => {
     const button = event.target.closest("[data-order]");
     if (!button) return;
@@ -1715,6 +2957,8 @@
       $("#update-bar-fill").style.width = `${pct}%`;
     } else if (event.stage === "checksum") {
       text.textContent = "Getting the release's checksum…";
+    } else if (event.stage === "rollback") {
+      text.textContent = "Saving the files this update changes, so it can be undone…";
     } else if (event.stage === "unpack") {
       text.textContent = "Checksum matches. Unpacking the update…";
       bar.hidden = true;
@@ -1722,6 +2966,41 @@
       text.textContent = "Restarting NEXDROP to finish the update…";
     }
   }
+
+  $("#btn-net-check").addEventListener("click", async () => {
+    const list = $("#net-steps");
+    const url = $("#net-check-url").value.trim();
+    if (!url) return $("#net-check-url").focus();
+    list.textContent = "";
+    const pending = document.createElement("li");
+    pending.textContent = "Testing…";
+    list.appendChild(pending);
+    const result = await api.netCheck(url).catch((error) => ({ ok: false, error: error.message, steps: [] }));
+    list.textContent = "";
+    for (const step of result.steps || []) {
+      const li = document.createElement("li");
+      li.dataset.ok = String(Boolean(step.ok));
+      li.textContent = `${step.ok ? "✓" : "✗"} ${step.step}: ${step.detail} (${step.ms} ms)`;
+      list.appendChild(li);
+    }
+    if (result.error) {
+      const li = document.createElement("li");
+      li.dataset.ok = "false";
+      li.textContent = result.error;
+      list.appendChild(li);
+    }
+  });
+
+  async function showRollback() {
+    const info = await api.updateRollbackInfo().catch(() => null);
+    $("#rollback-row").hidden = !(info && info.ok);
+    if (info && info.ok) $("#rollback-text").textContent = `Go back to NEXDROP ${info.from} (${info.files} app files were saved before this update).`;
+  }
+  $("#btn-rollback").addEventListener("click", async () => {
+    const result = await api.updateRollback();
+    if (result && !result.ok && !result.cancelled) $("#update-status").textContent = result.error || "Could not go back.";
+  });
+  showRollback();
 
   $("#btn-update-install").addEventListener("click", async () => {
     if (!updateInfo) return;
@@ -2045,6 +3324,7 @@
     // 3.0: download modes. Settings left at the old defaults become Auto; changed ones stay as Custom.
     if (!prefs.downloadMode) prefs.downloadMode = fmt.guessMode(prefs);
     for (const [key, spec] of Object.entries(PREF_FIELDS)) writeField(spec, prefs[key]);
+    applyListView();
     for (const id of ["#max-downloads", "#per-host", "#server-slots"]) $(id).dataset.custom = $(id).value;
     showDownloadMode();
     showTemplateExample();
@@ -2054,6 +3334,8 @@
     queue = Array.isArray(defaults.queue) ? defaults.queue : [];
     watches = Array.isArray(defaults.watches) ? defaults.watches : [];
     threadPosts = defaults.threadPosts || {};
+    profiles = defaults.profiles && typeof defaults.profiles === "object" ? defaults.profiles : {};
+    renderProfiles();
     renderQueue();
     renderWatches();
     if (defaults.activeRun && Array.isArray(defaults.activeRun.urls)) {

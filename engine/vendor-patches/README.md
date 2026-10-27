@@ -154,3 +154,12 @@ Smart naming V2 (2.5.0):
   these settings are not at their defaults, so 2.5 jobs resume with the same names.
 - `cyberdrop_dl/source_order.py`: `NUMBER_WIDTH` and `padded()`; prefix, suffix and album numbering use them.
 - `cyberdrop_dl/crawlers/crawler.py`: passes the file's upload date to `name_file` for `{date}`.
+
+- `cyberdrop_dl/clients/segments.py` (new, 3.1) and `cyberdrop_dl/clients/downloads.py`: multi-segment downloads. A file of
+  `MIN_SIZE` (64 MB) or more whose server sends `Accept-Ranges: bytes` and a strong ETag or Last-Modified, uncompressed and not
+  impersonated, downloads in up to `MAX_PARTS` parts at once (set by the bridge from the download mode). The first answer fills
+  part 1 in the `.part` file; other parts are `If-Range` requests into `.part.segN`, each checked for exactly its range, size and
+  validators. The layout is kept in the `.nxmeta` sidecar so each part resumes from its own size. A wrong answer deletes the parts,
+  marks the link "one stream" for the run and retries it whole. Hosts that asked to slow down get one stream.
+- `cyberdrop_dl/clients/downloads.py` (3.1): a file a size rule skips before any byte is written no longer leaves its
+  `.part.nxmeta` sidecar behind (`resume_validators.forget`).

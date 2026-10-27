@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: nxlib:; media-src nxlib:; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NEXDROP</title>
   <link rel="stylesheet" href="style.css">
@@ -25,9 +25,12 @@
 
       <div class="command-actions">
         <button class="btn btn-quiet" id="btn-import" type="button" title="Load links from a .txt file">Import</button>
+        <button class="btn btn-quiet" id="btn-check" type="button" title="See what each link is before downloading: site, type, sign-in, duplicates">Check</button>
         <button class="btn btn-primary" id="btn-start" type="button">Start</button>
+        <button class="btn btn-quiet" id="btn-later" type="button" title="Queue these links to start, and if you like stop, at a time you choose">Later…</button>
         <button class="btn btn-quiet" id="btn-queue" type="button" hidden title="Download these links after the current run">Add to queue</button>
         <button class="btn btn-stop" id="btn-stop" type="button" hidden title="Stop for now. Resume continues where it left off, even after closing NEXDROP.">Pause</button>
+        <button class="btn btn-quiet" id="btn-library" type="button" title="Everything you downloaded: gallery, search, duplicates and storage">Library</button>
         <button class="btn btn-icon" id="btn-settings" type="button" aria-label="Settings" title="Settings">
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h9M15 5h2M3 10h3M9 10h8M3 15h7M13 15h4"/><circle cx="13.5" cy="5" r="1.6"/><circle cx="7.5" cy="10" r="1.6"/><circle cx="11.5" cy="15" r="1.6"/></svg>
         </button>
@@ -75,6 +78,11 @@
       <button class="btn btn-quiet btn-small" id="btn-park" type="button" title="Keep it paused in the queue and start the next job">Queue it</button>
       <button class="btn btn-quiet btn-small" id="btn-discard" type="button">Discard</button>
     </div>
+    <div class="queue" id="bg-jobs" hidden>
+      <span class="queue-title">Also running</span>
+      <ol class="queue-list" id="bg-list"></ol>
+      <button class="btn btn-quiet btn-small" id="btn-bg-pause" type="button" title="Pause every job running beside this one">Pause all</button>
+    </div>
     <div class="queue" id="queue" hidden>
       <span class="queue-title">Up next <span id="queue-count"></span></span>
       <ol class="queue-list" id="queue-list"></ol>
@@ -98,7 +106,8 @@
             <span class="tally-of">of <span id="t-total">0</span> files saved</span>
           </div>
           <dl class="tally-stats">
-            <div><dt>Speed</dt><dd id="t-speed">–</dd></div>
+            <div class="t-speed" id="t-speed-box"><dt>Speed</dt><dd><canvas id="t-graph" width="72" height="20" aria-hidden="true"></canvas><span id="t-speed">–</span></dd></div>
+            <div><dt>Left</dt><dd id="t-eta" title="Estimated from how fast files finished in the last two minutes">–</dd></div>
             <div><dt>Downloaded</dt><dd id="t-bytes">0 B</dd></div>
             <div><dt>Time</dt><dd id="t-time">0:00</dd></div>
           </dl>
@@ -115,8 +124,27 @@
           <select id="host-filter" class="select" aria-label="Filter by site">
             <option value="">All sites</option>
           </select>
-          <button class="btn btn-quiet btn-small" id="btn-watch" type="button" hidden title="Check this thread for new posts every few hours while NEXDROP is open">Watch for new posts</button>
+          <button class="btn btn-quiet btn-small" id="btn-watch" type="button" hidden title="Check this link for new files every few hours while NEXDROP is open">Watch for new files</button>
           <button class="btn btn-quiet btn-small" id="btn-retry-failed" type="button" hidden>Retry unfinished</button>
+          <input type="search" id="list-search" class="list-search" placeholder="Find a file" spellcheck="false" autocomplete="off" aria-label="Find a file in this run">
+        </div>
+        <div class="list-head" id="list-head" role="row">
+          <button type="button" class="col col-seq" data-sort="page" title="Page order">#</button>
+          <button type="button" class="col col-name" data-sort="name">File</button>
+          <button type="button" class="col col-stats" data-sort="size">Size · Speed<span class="col-grip" data-grip="stats" aria-hidden="true"></span></button>
+          <button type="button" class="col col-state" data-sort="state">Status<span class="col-grip" data-grip="state" aria-hidden="true"></span></button>
+          <button type="button" class="col col-menu" id="btn-columns" title="Columns" aria-label="Choose columns" aria-haspopup="true">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h12M4 10h12M4 14h12"/></svg>
+          </button>
+          <div class="col-pop" id="col-pop" hidden>
+            <label><input type="checkbox" data-col="seq"> Number</label>
+            <label><input type="checkbox" data-col="site"> Site</label>
+            <label><input type="checkbox" data-col="size"> Size</label>
+            <label><input type="checkbox" data-col="speed"> Speed and time left</label>
+            <label><input type="checkbox" data-col="dest"> Saved to</label>
+            <label><input type="checkbox" data-col="retries"> Retries</label>
+            <button type="button" class="btn btn-quiet btn-small" id="btn-columns-reset">Default columns and widths</button>
+          </div>
         </div>
 
         <div class="list" id="list" tabindex="0" aria-label="Files in this run">
@@ -168,6 +196,51 @@
     </form>
   </dialog>
 
+  <!-- What the links are, before downloading (3.1 URL analyzer and link preview) -->
+  <dialog class="dialog dialog-wide" id="check-dialog" aria-labelledby="check-title">
+    <form method="dialog">
+      <h2 id="check-title">Links</h2>
+      <p class="dialog-text" id="check-summary"></p>
+      <div class="check-wrap">
+        <table class="check-table">
+          <thead><tr><th>Link</th><th>Site</th><th>Type</th><th>Handler</th><th>Sign-in</th><th>Details</th></tr></thead>
+          <tbody id="check-rows"></tbody>
+        </table>
+      </div>
+      <div class="dialog-actions">
+        <button class="btn btn-quiet" id="btn-check-preview" type="button" title="Opens each link once (no download) to read its title, size and file links">Preview details</button>
+        <button class="btn btn-quiet" id="btn-check-dedupe" type="button">Remove duplicates</button>
+        <button class="btn btn-quiet" id="btn-check-names" type="button" title="Find every file and show the name it will get. Nothing is downloaded.">Preview file names</button>
+        <button class="btn btn-primary" value="close" type="submit">Close</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Proposed file names before downloading (3.1 naming preview) -->
+  <dialog class="dialog dialog-wide" id="names-dialog" aria-labelledby="names-title">
+    <form method="dialog">
+      <h2 id="names-title">File names</h2>
+      <p class="dialog-text" id="names-summary"></p>
+      <div class="names-controls">
+        <label class="field"><span class="field-label">Filename strategy</span><select id="names-strategy" class="select"><option value="auto">Automatic (recommended)</option><option value="original">Original filename</option><option value="media">Media title</option><option value="post">Post title</option><option value="album">Album/collection title</option></select></label>
+        <label class="field"><span class="field-label">Sequence numbering</span><select id="names-numbering" class="select"><option value="suffix">Suffix: filename-001.jpg</option><option value="prefix">Prefix: 001_filename.jpg</option><option value="off">Disabled</option></select></label>
+        <label class="field names-template"><span class="field-label">Filename template</span><input type="text" id="names-template" placeholder="Empty: automatic names. Example: {creator}-{title}-{number}" spellcheck="false" autocomplete="off" maxlength="150"><small class="field-help" id="names-template-problem" role="status"></small></label>
+      </div>
+      <div class="check-wrap">
+        <table class="check-table names-table">
+          <thead><tr><th>#</th><th>Original</th><th>Proposed name</th><th>Folder</th><th>Source details</th><th>Confidence</th><th>Name from</th></tr></thead>
+          <tbody id="names-rows"></tbody>
+        </table>
+      </div>
+      <div class="dialog-actions">
+        <button class="btn btn-quiet" id="btn-names-stop" type="button" hidden>Stop</button>
+        <button class="btn btn-quiet" id="btn-names-again" type="button" title="Name the files again with these settings">Preview again</button>
+        <button class="btn btn-quiet" id="btn-names-use" type="button" title="Save these naming settings for downloads">Use for downloads</button>
+        <button class="btn btn-primary" value="close" type="submit">Close</button>
+      </div>
+    </form>
+  </dialog>
+
   <!-- One queued job -->
   <dialog class="dialog dialog-job" id="job-dialog" aria-labelledby="job-title">
     <form method="dialog">
@@ -186,6 +259,10 @@
         <label class="field"><span class="field-label">Download mode</span><select id="job-mode" class="select"><option value="">As in Settings</option><option value="auto">Auto</option><option value="balanced">Balanced</option><option value="max">Maximum speed</option><option value="low">Low resource</option></select></label>
         <label class="field"><span class="field-label">Speed cap, MB/s</span><input type="number" id="job-speed" min="0" max="1000" placeholder="As in Settings"><small class="field-help">0 means no cap.</small></label>
       </div>
+      <div class="field-grid">
+        <label class="field"><span class="field-label">Start at</span><input type="datetime-local" id="job-start-at"><small class="field-help">Empty starts when its turn comes.</small></label>
+        <label class="field"><span class="field-label">Pause at</span><input type="datetime-local" id="job-stop-at"><small class="field-help">The job pauses then and can be resumed later.</small></label>
+      </div>
       <label class="switch"><input type="checkbox" id="job-hold"><span class="switch-text">Hold<small>Stays in the queue but doesn't start until you release it.</small></span></label>
       <div class="dialog-actions">
         <button class="btn btn-quiet btn-small" value="top" type="submit">Move to top</button>
@@ -200,11 +277,29 @@
     </form>
   </dialog>
 
+  <dialog class="dialog" id="later-dialog" aria-labelledby="later-title">
+    <form method="dialog">
+      <h2 id="later-title">Start later</h2>
+      <p class="dialog-text" id="later-links"></p>
+      <div class="field-grid">
+        <label class="field"><span class="field-label">Start at</span><input type="datetime-local" id="later-start" required></label>
+        <label class="field"><span class="field-label">Pause at (optional)</span><input type="datetime-local" id="later-stop"></label>
+      </div>
+      <p class="status-line" id="later-status" role="status"></p>
+      <small class="field-help">NEXDROP has to be open (it can wait in the tray) at that time. The job waits in the queue until then.</small>
+      <div class="dialog-actions">
+        <button class="btn btn-quiet" value="cancel" type="submit" formnovalidate>Cancel</button>
+        <button class="btn btn-primary" value="save" type="submit" id="btn-later-save">Queue</button>
+      </div>
+    </form>
+  </dialog>
+
   <!-- Settings -->
   <div class="sheet-scrim" id="sheet-scrim" hidden></div>
   <aside class="sheet" id="settings" aria-labelledby="settings-title" aria-hidden="true" inert>
     <header class="sheet-head">
       <h2 id="settings-title">Settings</h2>
+      <input type="search" id="settings-search" class="settings-search" placeholder="Search settings" spellcheck="false" autocomplete="off" aria-label="Search settings">
       <button class="btn btn-icon" id="btn-settings-close" type="button" aria-label="Close settings">
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>
       </button>
@@ -220,6 +315,7 @@
     </nav>
 
     <div class="sheet-body">
+      <p class="pane-intro" id="settings-no-match" hidden>No setting matches. Try another word, such as "speed", "folder" or "rule".</p>
       <section class="pane" data-pane="downloads">
         <div class="field">
           <span class="field-label">Save files to</span>
@@ -275,8 +371,70 @@
           <input type="number" id="min-image-kb" min="0" max="100000" value="0">
           <small class="field-help">Skips thumbnails and icons. 0 keeps every image.</small>
         </label>
+        <label class="field">
+          <span class="field-label">Same content as a file you already had</span>
+          <select id="duplicate-action" class="select">
+            <option value="keep">Keep both (nothing is touched)</option>
+            <option value="rename">Keep both, add "(duplicate)" to the new name</option>
+            <option value="skip">Skip: move the new copy to a _duplicates folder</option>
+            <option value="ask">Ask after the run</option>
+            <option value="replace">Ask, and offer to replace the older copy</option>
+          </select>
+          <small class="field-help">Found by content (same size and hash), even under another name or from another site. Nothing is ever deleted without asking; the Recycle Bin always asks first.</small>
+        </label>
+        <div class="field">
+          <span class="field-label">Download rules</span>
+          <p class="field-help" id="rules-empty">No rules. Rules can skip files, only download some, send some to their own folder, or download big ones one at a time.</p>
+          <ul class="rule-list" id="rule-list"></ul>
+          <div class="field-row">
+            <button class="btn btn-quiet btn-small" id="btn-rule-add" type="button">Add a rule</button>
+            <button class="btn btn-quiet btn-small" id="btn-rules-preview" type="button">Check against my Library</button>
+          </div>
+          <p class="status-line" id="rules-preview" role="status"></p>
+          <small class="field-help">Rules are checked in order. A skip rule wins over the others; when any "only download" rule is on, a file must fit one of them. The first folder rule that fits is used, and the file keeps its album folders. Size is known once the server answers, so size can only skip or limit downloads.</small>
+        </div>
+        <div class="field">
+          <span class="field-label">When a job finishes</span>
+          <label class="switch"><input type="checkbox" id="done-notify" checked><span class="switch-text">Show a notification<small>Only when NEXDROP is not the window in front.</small></span></label>
+          <label class="switch"><input type="checkbox" id="done-open-folder"><span class="switch-text">Open the download folder<small>When the job saved something. Not for watched-link checks.</small></span></label>
+          <label class="switch"><input type="checkbox" id="done-verify"><span class="switch-text">Verify the files<small>Checks that each saved file is there, has the size the server sent, and is not a web page saved under a media name. Sites don't publish checksums, so nothing is compared against one.</small></span></label>
+          <label class="switch"><input type="checkbox" id="done-manifest"><span class="switch-text">Save a manifest<small>A JSON file beside the downloads with each file's source link (without query strings), name, size, SHA-256, status, creator and album, and the time. No sign-ins or cookies.</small></span></label>
+          <label class="switch"><input type="checkbox" id="done-library"><span class="switch-text">Add the files to the Library, with thumbnails<small>Indexes the new files and makes thumbnails in the background, up to ten minutes per job.</small></span></label>
+          <label class="switch"><input type="checkbox" id="done-organize"><span class="switch-text">Organize the new files<small>Moves this job's files into folders by the pattern below, inside the job's download folder. Nothing is overwritten; a name clash leaves the file in place, and Library > Storage can undo it.</small></span></label>
+          <label class="field time-row" data-needs="done-organize"><span class="field-label">Folder pattern</span><input type="text" id="done-organize-folders" value="{creator}/{album}" spellcheck="false" autocomplete="off" maxlength="200"><small class="field-help">{creator} {album} {site} {type} {year} {month} {date} {title}</small></label>
+        </div>
         <label class="switch"><input type="checkbox" id="type-folders"><span class="switch-text">Sort into Images, Videos, Audio and Other folders<small>New files only. Files from earlier runs stay where they are.</small></span></label>
         <label class="switch"><input type="checkbox" id="auto-retry" checked><span class="switch-text">Retry temporary errors automatically<small>Files that fail because a server is busy or times out are tried once more, 45 seconds after the run.</small></span></label>
+        <label class="field">
+          <span class="field-label">If files still fail for a reason that passes, try the job again</span>
+          <select id="retry-later" class="select">
+            <option value="0">Don't</option>
+            <option value="30">30 minutes later</option>
+            <option value="120">2 hours later</option>
+            <option value="720">12 hours later</option>
+          </select>
+          <small class="field-help">Busy servers, rate limits, time-outs, dropped connections and used-up quotas. The job goes back in the queue with a start time; files already saved are skipped. Up to 3 tries, each waiting longer.</small>
+        </label>
+        <div class="field">
+          <span class="field-label">Quality, where the site offers a choice</span>
+          <label class="field"><span class="field-label">Video streams with several qualities</span>
+            <select id="video-quality" class="select">
+              <option value="best">Best available</option>
+              <option value="2160">Up to 2160p (4K)</option>
+              <option value="1440">Up to 1440p</option>
+              <option value="1080">Up to 1080p</option>
+              <option value="720">Up to 720p</option>
+              <option value="480">Up to 480p</option>
+              <option value="360">Up to 360p</option>
+              <option value="smallest">Smallest</option>
+            </select>
+            <small class="field-help">For streamed videos (HLS) that list several qualities. A video offered in one quality is saved as it is; the Activity log says which quality was picked.</small>
+          </label>
+          <label class="switch"><input type="checkbox" id="tiktok-original"><span class="switch-text">TikTok videos in original quality<small>Slower; the site handler asks for the original upload.</small></span></label>
+          <label class="switch"><input type="checkbox" id="audio-lossless"><span class="switch-text">Lossless audio when offered<small>Bandcamp and Octave give FLAC or WAV when the release has it; otherwise the usual MP3.</small></span></label>
+          <label class="switch"><input type="checkbox" id="subtitles-on"><span class="switch-text">Save subtitles<small>When a streamed video lists subtitles, they are saved beside it as "video name.language.vtt". The Activity log lists the languages a video offers even when this is off.</small></span></label>
+          <label class="field time-row" data-needs="subtitles-on"><span class="field-label">Languages, in order of preference</span><input type="text" id="subtitle-languages" placeholder="en, es (empty: the first one listed)" spellcheck="false" autocomplete="off" maxlength="80"></label>
+        </div>
         <label class="switch"><input type="checkbox" id="tiktok-audio"><span class="switch-text">TikTok sounds<small>Also saves each TikTok post's background sound as an .mp3. Off saves time; the videos keep their audio either way.</small></span></label>
         <label class="switch"><input type="checkbox" id="deep-scrape"><span class="switch-text">Deep scan<small>Makes extra requests per page to find more files. Slower.</small></span></label>
         <label class="switch"><input type="checkbox" id="flare" checked><span class="switch-text">Get past bot checks<small>Runs the bundled FlareSolverr in the background for sites behind DDoS-Guard or Cloudflare. Its first start takes a minute or two.</small></span></label>
@@ -286,9 +444,20 @@
           <input type="number" id="thread-depth" min="0" max="3" value="0">
           <small class="field-help">0 downloads only the thread you pasted. Up to 3 levels.</small>
         </label>
+        <div class="pane-reset"><button class="btn btn-quiet btn-small" type="button" data-reset-pane="downloads">Reset this tab to defaults</button></div>
       </section>
 
       <section class="pane" data-pane="network" hidden>
+        <label class="field">
+          <span class="field-label">Jobs at once</span>
+          <select id="jobs-at-once" class="select">
+            <option value="1">1 (one after another)</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+          </select>
+          <small class="field-help">Queued jobs start beside the running one, up to this many in total. The download limits and speed cap are shared equally between them, and two jobs from the same site never run at the same time.</small>
+        </label>
         <label class="field">
           <span class="field-label">Download mode</span>
           <select id="download-mode" class="select">
@@ -304,11 +473,19 @@
           <label class="field"><span class="field-label">Downloads at once</span><input type="number" id="max-downloads" min="1" max="32" value="16"><small class="field-help">Up to 32. Page order always uses 1.</small></label>
           <label class="field"><span class="field-label">Per site</span><input type="number" id="per-host" min="1" max="16" value="6"><small class="field-help">Up to 16. Lower it if a site starts refusing (429 errors).</small></label>
           <label class="field"><span class="field-label">Connections per server</span><input type="number" id="server-slots" min="1" max="6" value="3"><small class="field-help">For Bunkr and similar hosts that serve each file from one server. Drops to 1 by itself if a server says to slow down.</small></label>
+          <label class="field"><span class="field-label">Parts per large file</span><input type="number" id="segments" min="0" max="8" value="4"><small class="field-help">Files of 64 MB or more download over this many connections when the server supports it safely. 0 or 1 turns it off.</small></label>
           <label class="field"><span class="field-label">Attempts per file</span><input type="number" id="attempts" min="1" max="3" value="2"></label>
           <label class="field"><span class="field-label">Speed cap, MB/s</span><input type="number" id="speed-limit" min="0" max="1000" value="0"><small class="field-help">0 means no cap.</small></label>
           <label class="field"><span class="field-label">Connect timeout, s</span><input type="number" id="connect-timeout" min="10" max="30" value="15"></label>
           <label class="field"><span class="field-label">Read timeout, s</span><input type="number" id="read-timeout" min="30" max="300" value="60"></label>
+          <label class="field"><span class="field-label">Longest wait between attempts, s</span><input type="number" id="retry-max-delay" min="2" max="120" value="20"><small class="field-help">Waits grow 2 s, 4 s, 8 s… up to this, with a little randomness.</small></label>
+          <label class="field"><span class="field-label">Honour "retry after" up to, s</span><input type="number" id="retry-after-cap" min="5" max="600" value="60"><small class="field-help">When a server says how long to wait. Longer waits move the file to the retry pass.</small></label>
         </div>
+        <label class="field">
+          <span class="field-label">Per-site limits</span>
+          <textarea id="site-limits" rows="3" spellcheck="false" placeholder="bunkr.cr = 2&#10;gofile.io = 1"></textarea>
+          <small class="field-help">One site per line: at most this many downloads at once from it (1 to 32), on top of the limits above. A site also covers its servers (c3.bunkr.cr).</small>
+        </label>
         <label class="field">
           <span class="field-label">Proxy</span>
           <input type="text" id="proxy" placeholder="http://127.0.0.1:8080" spellcheck="false" autocomplete="off">
@@ -320,11 +497,21 @@
         </div>
 
         <div class="divider"></div>
-        <label class="switch"><input type="checkbox" id="schedule-on"><span class="switch-text">Only start downloads at certain times<small>Links you start outside these hours wait in the queue, and so do watched-thread checks. Press Start with an empty links box to start the queue now anyway.</small></span></label>
+        <label class="switch"><input type="checkbox" id="schedule-on"><span class="switch-text">Only download at certain times<small>Links you start outside these hours wait in the queue, and so do watched-link checks. Press Start with an empty links box to start the queue now anyway.</small></span></label>
         <div class="field-row time-row" data-needs="schedule-on">
           <label class="field"><span class="field-label">From</span><input type="time" id="schedule-from" value="01:00"></label>
           <label class="field"><span class="field-label">Until</span><input type="time" id="schedule-to" value="07:00"></label>
         </div>
+        <div class="field" data-needs="schedule-on">
+          <span class="field-label">On these days</span>
+          <div class="day-row" id="schedule-days">
+            <label><input type="checkbox" data-day="1" checked>Mon</label><label><input type="checkbox" data-day="2" checked>Tue</label><label><input type="checkbox" data-day="3" checked>Wed</label><label><input type="checkbox" data-day="4" checked>Thu</label><label><input type="checkbox" data-day="5" checked>Fri</label><label><input type="checkbox" data-day="6" checked>Sat</label><label><input type="checkbox" data-day="0" checked>Sun</label>
+            <button class="btn btn-quiet btn-small" type="button" id="btn-days-weekend">Weekends</button>
+            <button class="btn btn-quiet btn-small" type="button" id="btn-days-all">Every day</button>
+          </div>
+          <small class="field-help">Hours that pass midnight belong to the day they start: Friday 23:00 to 02:00 runs into Saturday morning.</small>
+        </div>
+        <label class="switch" data-needs="schedule-on"><input type="checkbox" id="schedule-stop"><span class="switch-text">Pause downloads when the hours end<small>Running jobs pause at the end time and continue by themselves when the hours start again. A job you started by hand outside the hours keeps going.</small></span></label>
         <label class="switch"><input type="checkbox" id="quiet-on"><span class="switch-text">Slower in quiet hours<small>Runs that start in these hours use the lower speed cap below. A run keeps its speed until it ends.</small></span></label>
         <div class="field-row time-row" data-needs="quiet-on">
           <label class="field"><span class="field-label">From</span><input type="time" id="quiet-from" value="18:00"></label>
@@ -332,6 +519,18 @@
           <label class="field"><span class="field-label">Speed cap, MB/s</span><input type="number" id="quiet-speed" min="1" max="1000" value="2"></label>
         </div>
         <p class="status-line" id="schedule-status" role="status"></p>
+
+        <div class="divider"></div>
+        <div class="field">
+          <span class="field-label">Test a site</span>
+          <div class="field-row">
+            <input type="text" id="net-check-url" placeholder="https://bunkr.cr" spellcheck="false" autocomplete="off">
+            <button class="btn btn-quiet" id="btn-net-check" type="button">Test</button>
+          </div>
+          <small class="field-help">Looks the site up, connects (through the proxy when one is set) and sends one small request. Nothing is downloaded.</small>
+          <ul class="net-steps" id="net-steps"></ul>
+        </div>
+        <div class="pane-reset"><button class="btn btn-quiet btn-small" type="button" data-reset-pane="network">Reset this tab to defaults</button></div>
       </section>
 
       <section class="pane" data-pane="accounts" hidden>
@@ -382,18 +581,12 @@
       </section>
 
       <section class="pane" data-pane="watched" hidden>
-        <p class="pane-intro">NEXDROP checks watched forum threads for new posts and downloads only what's new. Checks run while NEXDROP is open.</p>
+        <p class="pane-intro">NEXDROP checks watched links and downloads only what's new: threads continue from the last post read, and albums, profiles, channels, playlists, galleries, cloud folders and tags skip every file already in History. Checks run while NEXDROP is open, within the download hours and the per-site limits.</p>
         <div class="field">
-          <span class="field-label">Thread link</span>
+          <span class="field-label">Link to watch</span>
           <div class="field-row">
-            <input type="text" id="watch-url" placeholder="https://simpcity.cr/threads/…" spellcheck="false">
-            <select class="select" id="watch-every" aria-label="How often to check">
-              <option value="1">Every hour</option>
-              <option value="3">Every 3 hours</option>
-              <option value="6" selected>Every 6 hours</option>
-              <option value="12">Every 12 hours</option>
-              <option value="24">Every 24 hours</option>
-            </select>
+            <input type="text" id="watch-url" placeholder="A thread, album, profile, channel or playlist link" spellcheck="false">
+            <select class="select" id="watch-every" aria-label="How often to check"></select>
             <button class="btn btn-quiet" id="btn-watch-add" type="button">Watch</button>
           </div>
         </div>
@@ -447,6 +640,15 @@
         </div>
         <p class="pane-intro">How downloads from each site went, from your own history on this PC. Nothing is sent anywhere.</p>
         <ul class="health-list" id="health-list"></ul>
+        <div class="field">
+          <span class="field-label">Broken-link report</span>
+          <div class="field-row">
+            <label class="check"><input type="checkbox" id="broken-links"> Include link patterns (ids replaced by {id})</label>
+            <button class="btn btn-quiet btn-small" id="btn-broken-report" type="button">Save report…</button>
+          </div>
+          <small class="field-help">Failed files of the chosen period, grouped by site and reason, as a Markdown file you can attach to a GitHub issue. No sign-ins, cookies, file names or folders, and nothing is uploaded.</small>
+          <p class="status-line" id="broken-status" role="status"></p>
+        </div>
         <div class="divider"></div>
         <p class="pane-intro">NexDrop uses its bundled download engine. Links that no site handler accepts are logged here so you can see what is missing.</p>
         <p class="status-line" id="source-status">Not checked yet.</p>
@@ -467,11 +669,34 @@
             <button class="btn btn-quiet" id="btn-update-check" type="button">Check for updates</button>
           </div>
           <p class="status-line" id="update-status" role="status"></p>
+          <div class="field-row" id="rollback-row" hidden>
+            <button class="btn btn-quiet" id="btn-rollback" type="button">Go back</button>
+            <span class="field-help" id="rollback-text"></span>
+          </div>
         </div>
+        <div class="field" id="profiles-field">
+          <span class="field-label">Settings profiles</span>
+          <div class="field-row">
+            <select class="select" id="profile-list" aria-label="Saved profiles"></select>
+            <button class="btn btn-quiet btn-small" id="btn-profile-use" type="button">Use</button>
+            <button class="btn btn-quiet btn-small" id="btn-profile-delete" type="button">Delete</button>
+          </div>
+          <div class="field-row">
+            <input type="text" id="profile-name" placeholder="Name for the current settings, e.g. Night downloads" maxlength="60" spellcheck="false" autocomplete="off">
+            <button class="btn btn-quiet btn-small" id="btn-profile-save" type="button">Save as profile</button>
+          </div>
+          <div class="field-row">
+            <button class="btn btn-quiet btn-small" id="btn-profile-export" type="button">Export settings…</button>
+            <button class="btn btn-quiet btn-small" id="btn-profile-import" type="button">Import settings…</button>
+          </div>
+          <p class="status-line" id="profile-status" role="status"></p>
+          <small class="field-help">A profile holds the settings in these tabs, not sign-ins, cookies, the queue or History. Imported settings are checked: unknown ones are ignored and values out of range are brought into range, and you are told which.</small>
+        </div>
+        <div class="divider"></div>
         <label class="switch"><input type="checkbox" id="update-auto" checked><span class="switch-text">Check for updates automatically<small>Asks GitHub for the newest release when NEXDROP starts and twice a day. Nothing is downloaded until you press Update now.</small></span></label>
         <div class="divider"></div>
-        <label class="switch"><input type="checkbox" id="close-to-tray"><span class="switch-text">Keep running in the tray when closed<small>Closing the window keeps downloads and watched threads going. Quit from the tray icon to exit.</small></span></label>
-        <label class="switch"><input type="checkbox" id="start-with-windows"><span class="switch-text">Start with Windows<small>Opens NEXDROP when you sign in to Windows, in the tray if the option above is on, so watched threads keep being checked.</small></span></label>
+        <label class="switch"><input type="checkbox" id="close-to-tray"><span class="switch-text">Keep running in the tray when closed<small>Closing the window keeps downloads and watched links going. Quit from the tray icon to exit.</small></span></label>
+        <label class="switch"><input type="checkbox" id="start-with-windows"><span class="switch-text">Start with Windows<small>Opens NEXDROP when you sign in to Windows, in the tray if the option above is on, so watched links keep being checked.</small></span></label>
         <label class="switch"><input type="checkbox" id="clipboard-watch"><span class="switch-text">Add copied links automatically<small>Links you copy in other programs are added to the links box. Nothing starts until you press Start.</small></span></label>
         <div class="divider"></div>
         <label class="switch"><input type="checkbox" id="link-handler"><span class="switch-text">Open links sent from the browser<small>Lets the NEXDROP browser extension (in the browser-extension folder) send pages and links here with right-click &gt; Download with NEXDROP. Registers nexdrop:// links for this folder.</small></span></label>
@@ -483,14 +708,179 @@
           <button class="btn btn-quiet" id="btn-restore" type="button">Restore…</button>
           <button class="btn btn-quiet" id="btn-diagnostics" type="button">Save diagnostics…</button>
         </div>
-        <p class="field-help">A backup holds your settings, queue, watched threads, history and learned names, never sign-ins or cookies. Restoring keeps your current files as ".before-restore" copies. Diagnostics is a text file for bug reports with tokens, passwords, e-mail addresses and your user name removed; read it before you share it.</p>
+        <p class="field-help">A backup holds your settings, queue, watched links, history and learned names, never sign-ins or cookies. Restoring keeps your current files as ".before-restore" copies. Diagnostics is a text file for bug reports with tokens, passwords, e-mail addresses and your user name removed; read it before you share it.</p>
         <p class="status-line" id="backup-status" role="status"></p>
+        <div class="pane-reset"><button class="btn btn-quiet btn-small" type="button" data-reset-pane="app">Reset this tab to defaults</button></div>
       </section>
     </div>
   </aside>
 
+
+  <!-- Media library (3.1): an extra view over downloaded files, the download window stays as it is -->
+  <section class="library" id="library" aria-labelledby="library-title" hidden>
+    <header class="library-head">
+      <h2 id="library-title">Library</h2>
+      <nav class="sheet-tabs library-tabs" role="tablist" id="library-tabs">
+        <button role="tab" type="button" data-lib="files" aria-selected="true">Files</button>
+        <button role="tab" type="button" data-lib="dupes" aria-selected="false">Duplicates</button>
+        <button role="tab" type="button" data-lib="storage" aria-selected="false">Storage</button>
+        <button role="tab" type="button" data-lib="stats" aria-selected="false">Statistics</button>
+      </nav>
+      <span class="library-index" id="lib-index" role="status"></span>
+      <button class="btn btn-quiet btn-small" id="btn-lib-folders" type="button" title="Folders the library looks in">Folders…</button>
+      <button class="btn btn-quiet btn-small" id="btn-lib-refresh" type="button" title="Look for new, moved, renamed and missing files">Refresh</button>
+      <button class="btn btn-icon" id="btn-library-close" type="button" aria-label="Close the library">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>
+      </button>
+    </header>
+
+    <div class="lib-pane" data-lib="files">
+      <div class="lib-toolbar">
+        <input type="text" id="lib-text" class="history-search" placeholder="Search names, titles, creators, albums, sites…" spellcheck="false" autocomplete="off" aria-label="Search the library">
+        <select class="select" id="lib-kind" aria-label="Type"><option value="">All types</option><option value="image">Images</option><option value="video">Videos</option><option value="audio">Audio</option><option value="archive">Archives</option><option value="other">Other</option></select>
+        <select class="select" id="lib-host" aria-label="Site"><option value="">All sites</option></select>
+        <select class="select" id="lib-creator" aria-label="Creator"><option value="">All creators</option></select>
+        <select class="select" id="lib-album" aria-label="Album"><option value="">All albums</option></select>
+        <select class="select" id="lib-sort" aria-label="Sort"><option value="newest">Newest</option><option value="oldest">Oldest</option><option value="name">Name</option><option value="largest">Largest</option><option value="smallest">Smallest</option><option value="longest">Longest</option></select>
+        <select class="select" id="lib-group" aria-label="Browse by"><option value="">No groups</option><option value="creator">By creator</option><option value="album">By album</option><option value="host">By site</option><option value="date">By date</option><option value="kind">By type</option><option value="folder">By folder</option></select>
+        <select class="select" id="lib-missing" aria-label="Missing files"><option value="">Files on disk</option><option value="only">Missing files</option></select>
+        <div class="mini-seg" role="radiogroup" aria-label="View" id="lib-view">
+          <button type="button" role="radio" data-view="grid" aria-checked="true">Grid</button>
+          <button type="button" role="radio" data-view="list" aria-checked="false">List</button>
+        </div>
+      </div>
+      <div class="lib-groups" id="lib-groups" hidden></div>
+      <p class="status-line" id="lib-status" role="status"></p>
+      <div class="lib-scroll" id="lib-scroll" tabindex="0" aria-label="Files">
+        <div class="lib-spacer" id="lib-spacer"></div>
+        <div class="lib-items" id="lib-items"></div>
+      </div>
+    </div>
+
+    <div class="lib-pane" data-lib="dupes" hidden>
+      <div class="lib-toolbar">
+        <div class="mini-seg" role="radiogroup" aria-label="Kind of duplicate" id="dupe-kind">
+          <button type="button" role="radio" data-kind="exact" aria-checked="true" title="Same size, then the same SHA-256: identical content under any name or site">Identical</button>
+          <button type="button" role="radio" data-kind="similar" aria-checked="false" title="Images that look the same after resizing or re-encoding, the same video at another quality, the same recording in another format">Similar</button>
+        </div>
+        <label class="opt" id="dupe-threshold-box" hidden title="How many of the 64 picture bits may differ. Lower is stricter.">Closeness
+          <input type="range" id="dupe-threshold" min="0" max="12" value="6"><span id="dupe-threshold-text">6</span>
+        </label>
+        <input type="text" id="dupe-text" class="history-search" placeholder="Search groups…" spellcheck="false" autocomplete="off" aria-label="Search duplicate groups">
+        <button class="btn btn-primary btn-small" id="btn-dupe-find" type="button">Find duplicates</button>
+      </div>
+      <p class="status-line" id="dupe-status" role="status">Nothing is deleted. Set aside moves a copy to the _duplicates folder; the Recycle Bin always asks first.</p>
+      <div class="lib-scroll lib-dupes" id="dupe-list"></div>
+    </div>
+
+    <div class="lib-pane" data-lib="storage" hidden>
+      <div class="lib-scroll storage">
+        <section class="storage-block organize" aria-labelledby="organize-title">
+          <h3 id="organize-title">Organize and rename</h3>
+          <div class="organize-grid">
+            <label class="field"><span class="field-label">Files</span><select class="select" id="org-scope"><option value="all">Every file in the library</option><option value="filters">Files matching the Files tab filters</option></select></label>
+            <label class="field"><span class="field-label">Into</span><select class="select" id="org-root"></select></label>
+            <label class="field"><span class="field-label">Folders</span>
+              <select class="select" id="org-preset">
+                <option value="">Keep folders as they are</option>
+                <option value="{creator}/{album}">Creator / Album</option>
+                <option value="{site}/{creator}">Site / Creator</option>
+                <option value="{type}/{creator}">Type / Creator</option>
+                <option value="{year}/{month}">Year / Month saved</option>
+                <option value="{site}/{date}">Site / Date saved</option>
+                <option value="custom">Custom pattern…</option>
+              </select>
+            </label>
+            <label class="field" id="org-folders-box" hidden><span class="field-label">Folder pattern</span><input type="text" id="org-folders" spellcheck="false" autocomplete="off" maxlength="200" placeholder="{creator}/{album}"></label>
+            <label class="field"><span class="field-label">Rename files (optional)</span><input type="text" id="org-names" spellcheck="false" autocomplete="off" maxlength="200" placeholder="Empty keeps names. Example: {creator} - {album} {number}"></label>
+          </div>
+          <small class="field-help">Variables: {creator} {album} {site} {type} {year} {month} {date} {title} {name} {number}. The extension is kept. Nothing is overwritten or deleted, and every change can be undone.</small>
+          <div class="field-row">
+            <button class="btn btn-quiet btn-small" id="btn-org-preview" type="button">Preview</button>
+            <button class="btn btn-primary btn-small" id="btn-org-apply" type="button" disabled>Move files</button>
+            <span class="status-line" id="org-status" role="status"></span>
+          </div>
+          <div class="check-wrap org-wrap" id="org-plan" hidden>
+            <table class="check-table"><thead><tr><th>File</th><th>Now</th><th>After</th><th></th></tr></thead><tbody id="org-rows"></tbody></table>
+          </div>
+          <ul class="storage-list" id="org-batches"></ul>
+        </section>
+        <p class="status-line" id="storage-status" role="status"></p>
+        <div class="storage" id="storage-body"></div>
+      </div>
+    </div>
+    <div class="lib-pane" data-lib="stats" hidden>
+      <div class="lib-toolbar">
+        <select class="select" id="stats-days" aria-label="Period">
+          <option value="7">Last 7 days</option>
+          <option value="30" selected>Last 30 days</option>
+          <option value="90">Last 90 days</option>
+          <option value="365">Last year</option>
+          <option value="0">All time</option>
+        </select>
+        <button class="btn btn-quiet btn-small" id="btn-stats-export" type="button">Export CSV…</button>
+        <span class="status-line" id="stats-status" role="status"></span>
+      </div>
+      <div class="lib-scroll storage" id="stats-body">
+        <div class="stat-tiles" id="stats-tiles"></div>
+        <section class="storage-block" aria-labelledby="stats-activity-title">
+          <div class="stats-head">
+            <h3 id="stats-activity-title">Files saved</h3>
+            <div class="mini-seg" role="radiogroup" aria-label="Activity by" id="stats-span">
+              <button type="button" role="radio" data-span="daily" aria-checked="true">Daily</button>
+              <button type="button" role="radio" data-span="weekly" aria-checked="false">Weekly</button>
+              <button type="button" role="radio" data-span="monthly" aria-checked="false">Monthly</button>
+            </div>
+          </div>
+          <div class="stats-chart" id="stats-chart"></div>
+          <details class="stats-table-toggle"><summary>Show as a table</summary><table class="check-table" id="stats-activity-table"></table></details>
+        </section>
+        <div class="stats-split">
+          <section class="storage-block" aria-labelledby="stats-sites-title"><h3 id="stats-sites-title">By site</h3><div id="stats-sites"></div></section>
+          <section class="storage-block" aria-labelledby="stats-types-title"><h3 id="stats-types-title">By type</h3><div id="stats-types"></div></section>
+        </div>
+        <p class="field-help">From your History and the runs NexDrop recorded on this PC. Nothing is sent anywhere. Speeds count the time runs were going; the first runs after updating to 3.1 start the speed and time figures.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- One file from the library -->
+  <dialog class="dialog dialog-wide lib-preview" id="lib-preview" aria-labelledby="lib-preview-title">
+    <form method="dialog">
+      <h2 id="lib-preview-title">File</h2>
+      <div class="lib-preview-body">
+        <div class="lib-preview-media" id="lib-preview-media"></div>
+        <dl class="lib-preview-meta" id="lib-preview-meta"></dl>
+      </div>
+      <div class="lib-archive" id="lib-archive" hidden></div>
+      <p class="status-line" id="lib-preview-status" role="status"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-quiet" id="btn-prev-inspect" type="button" hidden>Look inside</button>
+        <button class="btn btn-quiet" id="btn-prev-test" type="button" hidden title="Read every file in the archive and check its checksum">Check archive</button>
+        <button class="btn btn-quiet" id="btn-prev-extract" type="button" hidden title="Into a new folder you choose. Nothing inside is run.">Extract…</button>
+        <button class="btn btn-quiet" id="btn-prev-reveal" type="button">Show in folder</button>
+        <button class="btn btn-quiet" id="btn-prev-open" type="button">Open</button>
+        <button class="btn btn-primary" value="close" type="submit">Close</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- After a run with "Ask" or "Replace after confirmation" -->
+  <dialog class="dialog dialog-wide" id="dupes-dialog" aria-labelledby="dupes-title">
+    <form method="dialog">
+      <h2 id="dupes-title">Files you already had</h2>
+      <p class="dialog-text" id="dupes-text"></p>
+      <ul class="dupes-pairs" id="dupes-pairs"></ul>
+      <div class="dialog-actions">
+        <button class="btn btn-quiet" id="btn-dupes-aside-all" type="button" title="Move every new copy to the _duplicates folder">Set all new copies aside</button>
+        <button class="btn btn-primary" value="close" type="submit">Done</button>
+      </div>
+    </form>
+  </dialog>
+
   <input type="file" id="import-file" accept=".txt,text/plain" hidden>
   <script src="format.js"></script>
   <script src="app.js"></script>
+  <script src="library.js"></script>
 </body>
 </html>

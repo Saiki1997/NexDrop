@@ -4,6 +4,9 @@
 // versions. Install (Windows only): download NexDrop-windows-x64.zip, check it against the
 // release's SHA256SUMS.txt, unpack it next to the app, then quit and let a small script copy
 // the new files over this folder. engine\appdata, downloads and logs are never touched.
+// Rollback (3.1): before the copy, every app file the update changes is saved in
+// engine\appdata\updates\rollback. A copy that fails is undone from there by the script, and
+// Settings > App can go back to the previous version until the next update.
 
 const { net } = require("electron");
 const { spawn } = require("child_process");
@@ -22,6 +25,9 @@ const FOLDER_IN_ZIP = "NexDrop-windows-x64";
 function createUpdater({ root, appdata, version, send, log, isBusy, quit }) {
   const workDir = path.join(appdata, "updates");
   const resultFile = path.join(workDir, "last-result.txt");
+  const rollbackDir = path.join(workDir, "rollback");
+  const rollbackInfo = path.join(rollbackDir, "rollback.json");
+  const SKIP_DIRS = [path.join("engine", "appdata"), "downloads", "logs"];
   let latest = null;
   let installing = false;
 
@@ -129,6 +135,56 @@ function createUpdater({ root, appdata, version, send, log, isBusy, quit }) {
     if (code !== 0) throw new Error("The update could not be unpacked.");
   }
 
+  function sameFile(a, b) {
+    return new Promise((resolve) => {
+      const digest = (file) => new Promise((done) => {
+        const hash = crypto.createHash("sha256");
+        fs.createReadStream(file).on("data", (chunk) => hash.update(chunk)).on("error", () => done("")).on("end", () => done(hash.digest("hex")));
+      });
+      Promise.all([digest(a), digest(b)]).then(([x, y]) => resolve(Boolean(x) && x === y));
+    });
+  }
+
+  /** Save each app file the update would replace (only those whose content changes). */
+  async function prepareRollback(source, target, toVersion) {
+    fs.rmSync(rollbackDir, { recursive: true, force: true });
+    fs.mkdirSync(rollbackDir, { recursive: true });
+    const saved = [];
+    const walk = async (rel) => {
+      for (const entry of fs.readdirSync(path.join(source, rel), { withFileTypes: true })) {
+        const child = path.join(rel, entry.name);
+        if (entry.isDirectory()) {
+          if (!SKIP_DIRS.includes(child)) await walk(child);
+          continue;
+        }
+        const old = path.join(target, child);
+        let oldStat;
+        try {
+          oldStat = fs.statSync(old);
+        } catch {
+          continue; // a new file: nothing to save
+        }
+        const newStat = fs.statSync(path.join(source, child));
+        if (oldStat.size === newStat.size && (await sameFile(old, path.join(source, child)))) continue;
+        fs.mkdirSync(path.dirname(path.join(rollbackDir, "files", child)), { recursive: true });
+        fs.copyFileSync(old, path.join(rollbackDir, "files", child));
+        saved.push(child);
+      }
+    };
+    await walk("");
+    fs.writeFileSync(rollbackInfo, JSON.stringify({ from: version, to: toVersion, files: saved, created: new Date().toISOString() }, null, 2));
+    return saved.length;
+  }
+
+  function rollbackAvailable() {
+    try {
+      const info = JSON.parse(fs.readFileSync(rollbackInfo, "utf8"));
+      return info && info.from && info.to === version && fs.existsSync(path.join(rollbackDir, "files")) ? info : null;
+    } catch {
+      return null;
+    }
+  }
+
   // cmd.exe expands %NAME%, so a literal % in a folder name has to be doubled.
   const cmdPath = (p) => `"${String(p).replace(/%/g, "%%")}"`;
 
@@ -146,7 +202,8 @@ function createUpdater({ root, appdata, version, send, log, isBusy, quit }) {
       `echo %DATE% %TIME% copying ${latest.version} >> ${cmdPath(log)}`,
       // /E copies every folder; nothing in the NEXDROP folder is deleted, and user data folders are skipped.
       `robocopy ${cmdPath(source)} ${cmdPath(target)} /E /R:5 /W:2 /NP /NFL /NDL /XD ${cmdPath(path.join(source, "engine", "appdata"))} ${cmdPath(path.join(source, "downloads"))} ${cmdPath(path.join(source, "logs"))} >> ${cmdPath(log)}`,
-      `if %ERRORLEVEL% GEQ 8 (echo failed ${latest.version} > ${cmdPath(resultFile)}) else (echo updated ${latest.version} > ${cmdPath(resultFile)})`,
+      // A failed copy is undone from the rollback folder, so the old version still starts.
+      `if %ERRORLEVEL% GEQ 8 (robocopy ${cmdPath(path.join(rollbackDir, "files"))} ${cmdPath(target)} /E /R:5 /W:2 /NP /NFL /NDL >> ${cmdPath(log)} & echo rolledback ${latest.version} > ${cmdPath(resultFile)}) else (echo updated ${latest.version} > ${cmdPath(resultFile)})`,
       `rmdir /s /q ${cmdPath(path.dirname(source))}`,
       `del /q ${cmdPath(path.join(workDir, ZIP_NAME))}`,
       `start "" ${cmdPath(exe)}`,
@@ -189,6 +246,9 @@ function createUpdater({ root, appdata, version, send, log, isBusy, quit }) {
       const source = path.join(staging, FOLDER_IN_ZIP);
       if (!fs.existsSync(path.join(source, "NexDrop.exe"))) throw new Error("The update zip does not contain NexDrop-windows-x64\\NexDrop.exe.");
 
+      send({ type: "update-progress", stage: "rollback", read: 0, total: 0 });
+      const kept = await prepareRollback(source, root, latest.version);
+      log(`Update ${latest.version}: ${kept} changed app files saved for a rollback.`);
       const script = writeScript(source, root);
       send({ type: "update-progress", stage: "restart", read: 0, total: 0 });
       log(`Update ${latest.version}: restarting to finish.`);
@@ -202,6 +262,35 @@ function createUpdater({ root, appdata, version, send, log, isBusy, quit }) {
     }
   }
 
+  /** Go back to the version saved before the last update (Settings > App). */
+  function rollback() {
+    if (process.platform !== "win32") return { ok: false, error: "Rollback works on Windows." };
+    if (isBusy()) return { ok: false, error: "Pause or finish the current download first. Going back restarts NEXDROP." };
+    const info = rollbackAvailable();
+    if (!info) return { ok: false, error: "There is no earlier version saved to go back to." };
+    const exe = path.join(root, "NexDrop.exe");
+    const log = path.join(workDir, "update.log");
+    const lines = [
+      "@echo off",
+      "setlocal",
+      `set PID=${process.pid}`,
+      ":wait",
+      'tasklist /FI "PID eq %PID%" /NH 2>nul | find " %PID% " >nul && (ping -n 2 127.0.0.1 >nul & goto wait)',
+      "ping -n 3 127.0.0.1 >nul",
+      `echo %DATE% %TIME% going back to ${info.from} >> ${cmdPath(log)}`,
+      `robocopy ${cmdPath(path.join(rollbackDir, "files"))} ${cmdPath(root)} /E /R:5 /W:2 /NP /NFL /NDL >> ${cmdPath(log)}`,
+      `if %ERRORLEVEL% GEQ 8 (echo rollbackfailed ${info.from} > ${cmdPath(resultFile)}) else (echo restored ${info.from} > ${cmdPath(resultFile)})`,
+      `start "" ${cmdPath(exe)}`,
+      "endlocal",
+    ];
+    const script = path.join(workDir, "rollback.cmd");
+    fs.writeFileSync(script, `${lines.join("\r\n")}\r\n`);
+    const child = spawn("cmd.exe", ["/d", "/c", script], { detached: true, stdio: "ignore", windowsHide: true });
+    child.unref();
+    setTimeout(quit, 800);
+    return { ok: true };
+  }
+
   /** What the last update script reported, once, after the restart. */
   function lastResult() {
     try {
@@ -209,6 +298,9 @@ function createUpdater({ root, appdata, version, send, log, isBusy, quit }) {
       fs.rmSync(resultFile, { force: true });
       const [state, ver] = text.split(/\s+/);
       if (state === "updated") return { ok: true, message: `Updated to NEXDROP ${ver}. Settings, sign-ins and downloads were kept.` };
+      if (state === "rolledback") return { ok: false, message: `The update to ${ver} could not copy every file, so the files it changed were put back. This version still works; see engine\\appdata\\updates\\update.log.` };
+      if (state === "restored") return { ok: true, message: `Went back to NEXDROP ${ver}. Settings, sign-ins and downloads were kept.` };
+      if (state === "rollbackfailed") return { ok: false, message: `Going back to ${ver} could not copy every file (see engine\\appdata\\updates\\update.log). Extract that version's zip from the release page over this folder.` };
       if (state === "failed") return { ok: false, message: `The update to ${ver} could not copy every file (see engine\\appdata\\updates\\update.log). Close NEXDROP and extract the zip from the release page over this folder.` };
     } catch {
       /* no update happened */
@@ -216,7 +308,7 @@ function createUpdater({ root, appdata, version, send, log, isBusy, quit }) {
     return null;
   }
 
-  return { check, install, lastResult, releasesPage: RELEASES_PAGE };
+  return { check, install, rollback, rollbackAvailable, prepareRollback, lastResult, releasesPage: RELEASES_PAGE };
 }
 
 module.exports = { createUpdater };

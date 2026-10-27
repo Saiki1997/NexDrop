@@ -1,6 +1,7 @@
 "use strict";
 
-const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell, session, safeStorage, nativeImage, Notification, Tray } = require("electron");
+const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, net, protocol, shell, session, safeStorage, nativeImage, Notification, Tray } = require("electron");
+const { pathToFileURL } = require("url");
 const { spawn, spawnSync } = require("child_process");
 const { StringDecoder } = require("string_decoder");
 const fs = require("fs");
@@ -34,7 +35,7 @@ const PYTHON = [
   path.join(ROOT, "engine", ".venv", "Scripts", "python.exe"),
   path.join(ROOT, "engine", ".venv", "bin", "python"),
 ].find((item) => fs.existsSync(item)) || (process.platform === "win32" ? "python.exe" : "python3");
-const SETTING_KEYS = new Set(["downloads_dir", "cookie_files", "prefs", "window", "queue", "watches", "active_run", "thread_posts", "update_skip"]);
+const SETTING_KEYS = new Set(["downloads_dir", "cookie_files", "prefs", "window", "queue", "watches", "active_run", "thread_posts", "update_skip", "profiles"]);
 const LOG_DIR = path.join(APPDATA, "logs");
 const FLARE_BIN = ["flaresolverr.exe", "flaresolverr"].map((n) => path.join(ROOT, "runtime", "flaresolverr", n)).find((f) => fs.existsSync(f)) || "";
 const FLARE_URL = "http://127.0.0.1:8191/v1";
@@ -112,6 +113,13 @@ function samePath(a, b) {
   return process.platform === "win32" ? x.toLowerCase() === y.toLowerCase() : x === y;
 }
 
+/** Rules (3.1) whose folder, when they have one, was chosen in a folder dialog on this PC. */
+function trustedRules(rules) {
+  if (!Array.isArray(rules)) return [];
+  const known = [downloadsDir(), ...jobDirs()];
+  return rules.filter((rule) => rule && typeof rule === "object" && (rule.then !== "folder" || (typeof rule.folder === "string" && known.some((dir) => samePath(dir, rule.folder))))).slice(0, 50);
+}
+
 function runFolder(requested) {
   const main = downloadsDir();
   if (!requested || typeof requested !== "string") return main;
@@ -157,6 +165,17 @@ function appIcon() {
   return undefined;
 }
 
+function onSomeDisplay(bounds) {
+  try {
+    const { screen } = require("electron");
+    // at least a 120 x 60 corner of the title bar area must be on a display's work area
+    return screen.getAllDisplays().some(({ workArea: w }) => bounds.x + bounds.width - 120 > w.x && bounds.x + 120 < w.x + w.width
+      && bounds.y >= w.y - 10 && bounds.y + 60 < w.y + w.height);
+  } catch {
+    return false;
+  }
+}
+
 function createWindow() {
   const saved = readSettings().window || {};
   const options = {
@@ -178,7 +197,9 @@ function createWindow() {
       spellcheck: false,
     },
   };
-  if (Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+  // The saved place is used only when it is still on a connected monitor (multi-monitor setups
+  // change); otherwise Windows centres the window on the main display.
+  if (Number.isFinite(saved.x) && Number.isFinite(saved.y) && onSomeDisplay({ x: saved.x, y: saved.y, width: options.width, height: options.height })) {
     options.x = saved.x;
     options.y = saved.y;
   }
@@ -199,13 +220,13 @@ function createWindow() {
       /* window position is a convenience */
     }
     if (!quitting && tray && appOptions().closeToTray) {
-      // Keep downloads and watched threads going; Quit in the tray menu really exits.
+      // Keep downloads and watched links going; Quit in the tray menu really exits.
       event.preventDefault();
       mainWindow.hide();
       if (!trayHinted) {
         trayHinted = true;
         if (Notification.isSupported()) {
-          new Notification({ title: "NEXDROP is still running", body: "Downloads and watched threads continue. Use the tray icon to open NEXDROP or quit.", icon: appIcon(), silent: true }).show();
+          new Notification({ title: "NEXDROP is still running", body: "Downloads and watched links continue. Use the tray icon to open NEXDROP or quit.", icon: appIcon(), silent: true }).show();
         }
       }
     }
@@ -402,16 +423,16 @@ function taskbar(event) {
   } else if (event.type === "finished") {
     mainWindow.setProgressBar(-1);
     setTrayTip("");
-    notifyFinished(event);
   }
 }
 
-function notifyFinished(event) {
+function notifyFinished(event, background = false, label = progress.label) {
+  if (background && mainWindow.isFocused()) return;
   const parts = [`${event.saved || 0} saved`];
   if (event.skipped) parts.push(`${event.skipped} already saved`);
   if (event.failed) parts.push(`${event.failed} failed`);
   const title = event.stopped ? "Download paused" : event.failed ? "Download finished with errors" : "Download finished";
-  const body = `${progress.label ? `${progress.label}: ` : ""}${parts.join(", ")}.`;
+  const body = `${label ? `${label}: ` : ""}${parts.join(", ")}.`;
   if (!mainWindow.isFocused()) mainWindow.flashFrame(true);
   if (Notification.isSupported() && !mainWindow.isFocused()) {
     const note = new Notification({ title, body, icon: appIcon(), silent: false });
@@ -422,15 +443,19 @@ function notifyFinished(event) {
 
 // ─── download session ───────────────────────────────────────────────────────
 
-let current = null; // { id, child, stopTimer }
+// Slot 0 is the job shown in the window; slots 1..MAX_BACKGROUND run other queued jobs beside it (3.1).
+const MAX_BACKGROUND = 3;
+const sessions = new Map(); // slot -> { id, slot, child, stopTimer }
 let sessionCounter = 0;
+let current = null; // the window's own run (slot 0)
 
-function killSession(force) {
-  const run = current;
+function killSession(force, slot = 0) {
+  const run = sessions.get(slot);
   if (!run) return;
   clearTimeout(run.stopTimer);
   if (force) {
-    current = null;
+    sessions.delete(slot);
+    if (slot === 0) current = null;
     killTree(run.child.pid, true);
     return;
   }
@@ -441,8 +466,13 @@ function killSession(force) {
     /* pipe already closed */
   }
   run.stopTimer = setTimeout(() => {
-    if (current === run && run.child.exitCode === null) killTree(run.child.pid, true);
+    if (sessions.get(slot) === run && run.child.exitCode === null) killTree(run.child.pid, true);
   }, STOP_GRACE_MS);
+}
+
+function freeSlot() {
+  for (let slot = 1; slot <= MAX_BACKGROUND; slot += 1) if (!sessions.has(slot)) return slot;
+  return 0;
 }
 
 function accountVault() {
@@ -458,81 +488,11 @@ function accountVault() {
   );
 }
 
-function startSession(config) {
-  if (current) killSession(true);
-  const script = path.join(ROOT, "desktop", "cairn_session.py");
-  if (!fs.existsSync(script)) {
-    sendLog("desktop/cairn_session.py is missing. Keep the desktop folder beside NexDrop.exe.", "error");
-    send({ type: "error", message: "The download engine adapter is missing." });
-    send({ type: "exit", code: 1 });
-    return;
-  }
-  const id = ++sessionCounter;
-  const child = spawn(PYTHON, ["-u", script], {
-    cwd: ROOT,
-    env: {
-      ...process.env,
-      PYTHONUNBUFFERED: "1",
-      PYTHONIOENCODING: "utf-8",
-      NEXDROP_PYTHON: PYTHON,
-      NEXDROP_FLARE_MANAGED: flare.child || flare.state === "ready" ? "1" : "0",
-    },
-    stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
-    detached: process.platform !== "win32",
-  });
-  const run = { id, child, stopTimer: null };
-  current = run;
-  const live = () => current === run;
-
-  // UTF-8 safe line splitting: a multi-byte character can straddle two chunks.
-  const decoder = new StringDecoder("utf8");
-  let buffer = "";
-  const handleLines = (text) => {
-    buffer += text;
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
-    if (!live()) return;
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        const event = JSON.parse(trimmed);
-        if (event.type === "log" && event.level !== "info") logFile.write(`[${event.level}] ${event.message}`);
-        taskbar(event);
-        send(event);
-      } catch {
-        sendLog(trimmed.slice(0, 300), "warning");
-      }
-    }
-  };
-  child.stdout.on("data", (chunk) => handleLines(decoder.write(chunk)));
-  child.stdout.on("end", () => handleLines(decoder.end() + "\n"));
-  const errDecoder = new StringDecoder("utf8");
-  child.stderr.on("data", (chunk) => {
-    const text = errDecoder.write(chunk).trim();
-    if (!text || !live()) return;
-    if (text.includes("DeprecationWarning")) return;
-    logFile.write(`[stderr] ${text.slice(0, 2000)}`);
-    send({ type: "log", level: "error", message: text.slice(0, 500) });
-  });
-  let reported = false;
-  const reportExit = (code) => {
-    if (reported) return;
-    reported = true;
-    clearTimeout(run.stopTimer);
-    if (!live()) return;
-    current = null;
-    send({ type: "exit", code });
-  };
-  child.on("error", (error) => {
-    if (live()) sendLog(`Could not start the bundled Python (${error.message}).`, "error");
-    reportExit(1);
-  });
-  child.on("close", (code) => reportExit(code));
-
+/** What a session gets: folders checked, accounts and cookies from the vault, never from the window. */
+function runConfig(config) {
   const outgoing = { ...(config || {}) };
   outgoing.downloadsDir = runFolder(outgoing.downloadsDir);
+  outgoing.rules = trustedRules(outgoing.rules);
   for (const key of ["auth", "apiKey", "password", "cookieFolder", "accountCookies"]) delete outgoing[key];
   try {
     const saved = accountVault().engineAuth();
@@ -552,6 +512,103 @@ function startSession(config) {
   } catch (error) {
     logFile.write(`[security] saved site cookies could not be read: ${error.message}`);
   }
+  return outgoing;
+}
+
+function startSession(config, slot = 0) {
+  if (sessions.has(slot)) killSession(true, slot);
+  const script = path.join(ROOT, "desktop", "cairn_session.py");
+  if (!fs.existsSync(script)) {
+    sendLog("desktop/cairn_session.py is missing. Keep the desktop folder beside NexDrop.exe.", "error");
+    send({ type: "error", message: "The download engine adapter is missing." });
+    send({ type: "exit", code: 1 });
+    return;
+  }
+  const id = ++sessionCounter;
+  const child = spawn(PYTHON, ["-u", script], {
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      PYTHONUNBUFFERED: "1",
+      PYTHONIOENCODING: "utf-8",
+      NEXDROP_PYTHON: PYTHON,
+      NEXDROP_FLARE_MANAGED: flare.child || flare.state === "ready" ? "1" : "0",
+      NEXDROP_SLOT: String(slot),
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+    detached: process.platform !== "win32",
+  });
+  const run = { id, slot, child, stopTimer: null };
+  sessions.set(slot, run);
+  if (slot === 0) current = run;
+  const live = () => sessions.get(slot) === run;
+  // A job running beside the window's own sends a summary of its events, tagged with its slot.
+  const deliver = (event) => {
+    if (event.type === "finished") {
+      const after = (config && config.after) || {};
+      if (after.notify !== false) notifyFinished(event, slot !== 0, slot === 0 ? progress.label : String((config && config.label) || "").slice(0, 80));
+      afterRun(after, event, slot, config).catch((error) => logFile.write(`[after] ${error.message}`));
+    }
+    if (slot === 0) {
+      taskbar(event);
+      send(event);
+      return;
+    }
+    if (event.type === "files") {
+      send({ type: "job-event", slot, event: { type: "files", counts: event.counts, total: event.total, bytes: event.bytes, speed: event.speed } });
+    } else if (["run", "phase", "finished", "error", "exit", "duplicates"].includes(event.type) || (event.type === "log" && event.level !== "info")) {
+      send({ type: "job-event", slot, event });
+    }
+  };
+
+  // UTF-8 safe line splitting: a multi-byte character can straddle two chunks.
+  const decoder = new StringDecoder("utf8");
+  let buffer = "";
+  const handleLines = (text) => {
+    buffer += text;
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    if (!live()) return;
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const event = JSON.parse(trimmed);
+        if (event.type === "log" && event.level !== "info") logFile.write(`${slot ? `[job ${slot}] ` : ""}[${event.level}] ${event.message}`);
+        deliver(event);
+      } catch {
+        sendLog(trimmed.slice(0, 300), "warning");
+      }
+    }
+  };
+  child.stdout.on("data", (chunk) => handleLines(decoder.write(chunk)));
+  child.stdout.on("end", () => handleLines(decoder.end() + "\n"));
+  const errDecoder = new StringDecoder("utf8");
+  child.stderr.on("data", (chunk) => {
+    const text = errDecoder.write(chunk).trim();
+    if (!text || !live()) return;
+    if (text.includes("DeprecationWarning")) return;
+    logFile.write(`[stderr] ${text.slice(0, 2000)}`);
+    deliver({ type: "log", level: "error", message: text.slice(0, 500) });
+  });
+  let reported = false;
+  const reportExit = (code) => {
+    if (reported) return;
+    reported = true;
+    clearTimeout(run.stopTimer);
+    if (!live()) return;
+    sessions.delete(slot);
+    if (slot === 0) current = null;
+    deliver({ type: "exit", code });
+  };
+  child.on("error", (error) => {
+    if (live()) deliver({ type: "log", level: "error", message: `Could not start the bundled Python (${error.message}).` });
+    reportExit(1);
+  });
+  child.on("close", (code) => reportExit(code));
+
+  const outgoing = runConfig(config);
   // stdin stays open so "stop" can be sent later.
   child.stdin.on("error", () => {});
   child.stdin.write(`${JSON.stringify(outgoing)}\n`);
@@ -569,6 +626,21 @@ ipcMain.handle("stop-pipeline", () => {
   return { ok: true };
 });
 
+// Jobs at once (3.1): a queued job started beside the window's own run.
+ipcMain.handle("start-job", (_event, config) => {
+  const slot = freeSlot();
+  if (!slot) return { ok: false, error: "No free job slot." };
+  startSession(config && typeof config === "object" ? config : {}, slot);
+  return { ok: true, slot };
+});
+
+ipcMain.handle("stop-job", (_event, slot) => {
+  const n = Number(slot);
+  if (!Number.isInteger(n) || n < 1 || n > MAX_BACKGROUND) return { ok: false };
+  killSession(false, n);
+  return { ok: true };
+});
+
 function allowedRoots() {
   const roots = [ROOT, downloadsDir(), ...jobDirs()];
   return roots.map((dir) => path.resolve(dir));
@@ -579,6 +651,30 @@ function isInside(target, dir) {
   const b = process.platform === "win32" ? dir.toLowerCase() : dir;
   return a === b || a.startsWith(b.endsWith(path.sep) ? b : b + path.sep);
 }
+
+// Right-click on a file in the list (3.1). Files are opened only inside the download folders, and
+// only media and documents; anything else is shown in its folder, so a downloaded program never starts.
+ipcMain.handle("row-menu", (_event, body) => {
+  if (!mainWindow || mainWindow.isDestroyed() || !body || typeof body !== "object") return;
+  const url = String(body.url || "").slice(0, 4000);
+  const name = String(body.name || "").slice(0, 400);
+  const reason = String(body.reason || "").slice(0, 400);
+  let file = "";
+  if (typeof body.path === "string" && body.path) {
+    const resolved = path.resolve(body.path);
+    if (allowedRoots().some((dir) => isInside(resolved, dir)) && existingFile(resolved)) file = resolved;
+  }
+  const ext = path.extname(file).slice(1).toLowerCase();
+  const items = [
+    { label: "Copy link", enabled: /^https?:\/\//i.test(url), click: () => clipboard.writeText(url) },
+    { label: "Copy file name", enabled: Boolean(name), click: () => clipboard.writeText(name) },
+  ];
+  if (reason) items.push({ label: "Copy the reason it failed", click: () => clipboard.writeText(reason) });
+  items.push({ type: "separator" });
+  items.push({ label: "Open", enabled: Boolean(file) && MEDIA_OPEN.has(ext), click: () => shell.openPath(file) });
+  items.push({ label: "Show in folder", enabled: Boolean(file), click: () => shell.showItemInFolder(file) });
+  Menu.buildFromTemplate(items).popup({ window: mainWindow });
+});
 
 ipcMain.handle("open-path", async (_event, targetPath) => {
   if (!targetPath || typeof targetPath !== "string") return { ok: false };
@@ -638,6 +734,7 @@ ipcMain.handle("get-defaults", () => {
     watches: Array.isArray(settings.watches) ? settings.watches : [],
     activeRun: settings.active_run && typeof settings.active_run === "object" ? settings.active_run : null,
     threadPosts: settings.thread_posts && typeof settings.thread_posts === "object" ? settings.thread_posts : {},
+    profiles: settings.profiles && typeof settings.profiles === "object" && !Array.isArray(settings.profiles) ? settings.profiles : {},
     platform: process.platform,
     version: app.getVersion(),
   };
@@ -709,6 +806,42 @@ ipcMain.handle("jobs-export", async (_event, jobs) => {
   const body = { format: "nexdrop-jobs", version: 1, exported: new Date().toISOString(), jobs: jobs.slice(0, 500) };
   fs.writeFileSync(result.filePath, JSON.stringify(body, null, 2));
   return { ok: true, path: result.filePath, count: body.jobs.length };
+});
+
+// Settings > App > profiles (3.1): the settings in the tabs as a JSON file. No sign-ins or cookies
+// are in prefs; the window checks every field again when importing.
+ipcMain.handle("settings-export", async (_event, body) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: "Export settings",
+    defaultPath: path.join(app.getPath("documents"), "nexdrop-settings.json"),
+    filters: [{ name: "NexDrop settings", extensions: ["json"] }],
+  });
+  if (result.canceled || !result.filePath) return { ok: false, canceled: true };
+  const prefs = body && typeof body.prefs === "object" ? body.prefs : {};
+  const profiles = body && typeof body.profiles === "object" ? body.profiles : {};
+  try {
+    fs.writeFileSync(result.filePath, JSON.stringify({ format: "nexdrop-settings", version: 1, app: app.getVersion(), exported: new Date().toISOString(), prefs, profiles }, null, 2));
+  } catch (error) {
+    return { ok: false, error: `Could not write the file: ${error.message}` };
+  }
+  return { ok: true, path: result.filePath };
+});
+
+ipcMain.handle("settings-import", async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Import settings", properties: ["openFile"], filters: [{ name: "NexDrop settings", extensions: ["json"] }],
+  });
+  if (result.canceled || !result.filePaths.length) return { ok: false, canceled: true };
+  try {
+    if (fs.statSync(result.filePaths[0]).size > 2_000_000) return { ok: false, error: "That file is too large to be a settings file." };
+    const data = JSON.parse(fs.readFileSync(result.filePaths[0], "utf8"));
+    if (!data || data.format !== "nexdrop-settings" || typeof data.prefs !== "object") return { ok: false, error: "This is not a NexDrop settings file." };
+    return { ok: true, prefs: data.prefs, profiles: data.profiles && typeof data.profiles === "object" ? data.profiles : {} };
+  } catch (error) {
+    return { ok: false, error: `The file could not be read: ${error.message}` };
+  }
 });
 
 ipcMain.handle("jobs-import", async () => {
@@ -807,7 +940,7 @@ ipcMain.handle("backup-create", async () => {
 
 ipcMain.handle("backup-restore", async () => {
   if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
-  if (current) return { ok: false, error: "Pause or finish the running download before restoring." };
+  if (sessions.size) return { ok: false, error: "Pause or finish the running downloads before restoring." };
   const picked = await dialog.showOpenDialog(mainWindow, {
     title: "Restore a NexDrop backup",
     properties: ["openFile"],
@@ -1208,7 +1341,7 @@ function ensureTray(on) {
     { label: "Open NEXDROP", click: showWindow },
     { type: "separator" },
     { label: "Pause downloads", click: () => command("pause") },
-    { label: "Check watched threads now", click: () => command("check-watches") },
+    { label: "Check watched links now", click: () => command("check-watches") },
     { label: "Open download folder", click: () => command("open-folder") },
     { type: "separator" },
     { label: "Quit NEXDROP", click: () => { quitting = true; app.quit(); } },
@@ -1309,7 +1442,7 @@ const updater = createUpdater({
   version: app.getVersion(),
   send,
   log: (message) => sendLog(message, "info"),
-  isBusy: () => Boolean(current),
+  isBusy: () => sessions.size > 0,
   quit: () => { quitting = true; app.quit(); },
 });
 const UPDATE_EVERY_MS = 12 * 3600 * 1000;
@@ -1333,6 +1466,25 @@ function scheduleUpdateChecks(on) {
 
 ipcMain.handle("update-check", () => checkForUpdate(true));
 ipcMain.handle("update-install", () => updater.install());
+ipcMain.handle("update-rollback-info", () => {
+  const info = updater.rollbackAvailable();
+  return info ? { ok: true, from: info.from, files: (info.files || []).length, created: info.created } : { ok: false };
+});
+ipcMain.handle("update-rollback", async () => {
+  const info = updater.rollbackAvailable();
+  if (!info) return { ok: false, error: "There is no earlier version saved to go back to." };
+  const answer = await dialog.showMessageBox(mainWindow, {
+    type: "question",
+    buttons: ["Go back and restart", "Cancel"],
+    defaultId: 1,
+    cancelId: 1,
+    title: "Go back to the previous version",
+    message: `Go back to NEXDROP ${info.from}?`,
+    detail: `The ${(info.files || []).length} app files the update changed are put back and NEXDROP restarts. Settings, sign-ins, history and downloads are not touched.`,
+  });
+  if (answer.response !== 0) return { ok: false, cancelled: true };
+  return updater.rollback();
+});
 ipcMain.handle("update-skip", (_event, version) => {
   writeSettings({ update_skip: String(version || "") });
   return { ok: true };
@@ -1381,6 +1533,23 @@ ipcMain.handle("history-export", async (_event, body) => {
 });
 
 // 3.0: per-site results from the history database (nothing is sent anywhere).
+// 3.1 network diagnostics: DNS, connect and one HEAD request to a site.
+ipcMain.handle("net-check", async (_event, url) => {
+  const input = `${JSON.stringify({ url: String(url || "").slice(0, 500), proxy: String(readSettings().prefs?.proxy || "") })}\n`;
+  const result = await runPython([path.join(ROOT, "desktop", "net_check.py")], { input, timeout: 45000 });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "The test could not run.").slice(-300), steps: [] };
+});
+
+// 3.1 URL analyzer: what each link is (offline, from the engine's handlers), and with `preview`
+// one request per link for its title, size or the reason it can't be read.
+ipcMain.handle("analyze-links", async (_event, body) => {
+  const urls = (Array.isArray(body?.urls) ? body.urls : []).map(String).filter((u) => u.length < 4000).slice(0, 500);
+  const preview = Boolean(body?.preview);
+  const input = `${JSON.stringify({ urls, proxy: preview ? String(readSettings().prefs?.proxy || "") : "" })}\n`;
+  const result = await runPython([path.join(ROOT, "desktop", "url_analyzer.py"), preview ? "preview" : "analyze"], { input, timeout: preview ? 120000 : 30000 });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "The links could not be checked.").slice(-300), items: [] };
+});
+
 ipcMain.handle("site-health", async (_event, days) => {
   if (!fs.existsSync(JOBS_DB)) return { ok: true, sites: [] };
   const span = String(Math.max(1, Math.min(365, Number(days) || 30)));
@@ -1426,6 +1595,435 @@ ipcMain.handle("history-reveal", async (_event, id) => {
   return { ok: false, error: "The file and its folder are no longer on this computer." };
 });
 
+// ─── naming preview (3.1) ───────────────────────────────────────────────────
+// The engine crawls the links and names every file without downloading anything. It runs in its
+// own slot, so it can run beside a download.
+const PREVIEW_SLOT = 8;
+let previewChild = null;
+
+ipcMain.handle("naming-preview", (_event, config) => new Promise((resolve) => {
+  if (previewChild) killTree(previewChild.pid, true);
+  const script = path.join(ROOT, "desktop", "cairn_session.py");
+  const child = spawn(PYTHON, ["-u", script], {
+    cwd: ROOT,
+    env: { ...process.env, PYTHONUNBUFFERED: "1", PYTHONIOENCODING: "utf-8", NEXDROP_PYTHON: PYTHON,
+      NEXDROP_FLARE_MANAGED: flare.child || flare.state === "ready" ? "1" : "0", NEXDROP_SLOT: String(PREVIEW_SLOT) },
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+    detached: process.platform !== "win32",
+  });
+  previewChild = child;
+  const body = { ...runConfig(config && typeof config === "object" ? config : {}), previewNames: true, redownload: true };
+  let result = null;
+  const notes = [];
+  const decoder = new StringDecoder("utf8");
+  let buffer = "";
+  child.stdout.on("data", (chunk) => {
+    buffer += decoder.write(chunk);
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      const event = parseJson(line.trim(), null);
+      if (!event) continue;
+      if (event.type === "naming-preview") result = event;
+      else if ((event.type === "log" && event.level !== "info") || event.type === "error") notes.push(String(event.message || "").slice(0, 300));
+      else if (event.type === "files" || event.type === "phase") send({ type: "preview-progress", total: event.total, message: event.message });
+    }
+  });
+  child.stderr.on("data", () => {});
+  child.on("error", (error) => resolve({ ok: false, error: String(error) }));
+  child.on("close", () => {
+    if (previewChild === child) previewChild = null;
+    if (result) resolve({ ok: true, ...result, warnings: notes.slice(0, 20) });
+    else resolve({ ok: false, stopped: true, error: notes[0] || "The preview stopped before it finished." });
+  });
+  child.stdin.write(`${JSON.stringify(body)}\n`);
+}));
+
+ipcMain.handle("naming-preview-stop", () => {
+  if (previewChild) {
+    try {
+      previewChild.stdin.end(); // the session takes a closed stdin as "stop"
+    } catch {
+      killTree(previewChild.pid, true);
+    }
+  }
+  return { ok: true };
+});
+
+// ─── media library (3.1) ────────────────────────────────────────────────────
+// One catalog of downloaded files (desktop/library.py). Thumbnails come from a cache folder and
+// previews only from files in the catalog, both through the nxlib: scheme, so the window never
+// gets general file access.
+
+const LIBRARY_DB = path.join(APPDATA, "library.sqlite");
+const THUMBS = path.join(APPDATA, "thumbs");
+const LIBRARY_SCRIPT = path.join(ROOT, "desktop", "library.py");
+const MEDIA_OPEN = new Set(["jpg", "jpeg", "png", "gif", "webp", "avif", "bmp", "heic", "heif", "tif", "tiff", "jxl", "mp4", "m4v",
+  "mov", "mkv", "webm", "avi", "wmv", "flv", "mpg", "mpeg", "3gp", "ts", "mp3", "m4a", "aac", "flac", "wav", "ogg", "opus", "wma", "txt", "pdf"]);
+const libraryPaths = new Map(); // id -> path, for files the window has been shown
+let libraryBusy = false;
+
+protocol.registerSchemesAsPrivileged([{ scheme: "nxlib", privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } }]);
+
+function libraryDirs() {
+  const saved = readSettings().library_dirs;
+  return Array.isArray(saved) ? saved.filter((dir) => typeof dir === "string" && dir).slice(0, 50) : [];
+}
+
+function libraryRoots() {
+  const roots = [downloadsDir(), ...jobDirs(), ...libraryDirs()].map((dir) => path.resolve(dir));
+  return roots.filter((dir, index) => roots.findIndex((other) => samePath(other, dir)) === index);
+}
+
+async function library(command, body = {}, timeout = 120000) {
+  if (!fs.existsSync(LIBRARY_SCRIPT)) return { ok: false, error: "The library is not part of this build." };
+  const result = await runPython([LIBRARY_SCRIPT, command, LIBRARY_DB], { input: `${JSON.stringify(body)}\n`, timeout });
+  const parsed = parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "The library could not be read.").slice(-300) };
+  for (const item of parsed.items || []) if (item && item.id && item.path) libraryPaths.set(Number(item.id), item.path);
+  for (const group of parsed.groups || []) for (const item of group.files || []) if (item.id && item.path) libraryPaths.set(Number(item.id), item.path);
+  if (parsed.file?.id && parsed.file.path) libraryPaths.set(Number(parsed.file.id), parsed.file.path);
+  return parsed;
+}
+
+function registerLibraryScheme() {
+  protocol.handle("nxlib", async (request) => {
+    const url = new URL(request.url);
+    if (url.hostname === "thumb") {
+      const name = path.basename(decodeURIComponent(url.pathname));
+      if (!/^\d+\.jpg$/.test(name)) return new Response("", { status: 404 });
+      const file = path.join(THUMBS, name);
+      if (!existingFile(file)) return new Response("", { status: 404 });
+      return net.fetch(pathToFileURL(file).toString());
+    }
+    if (url.hostname === "file") {
+      const id = Number(path.basename(url.pathname));
+      let target = libraryPaths.get(id);
+      if (!target) target = (await library("file", { id }))?.file?.path;
+      if (!target) return new Response("", { status: 404 });
+      const resolved = path.resolve(target);
+      const ext = path.extname(resolved).slice(1).toLowerCase();
+      if (!MEDIA_OPEN.has(ext) || !libraryRoots().some((dir) => isInside(resolved, dir)) || !existingFile(resolved)) {
+        return new Response("", { status: 404 });
+      }
+      return net.fetch(pathToFileURL(resolved).toString(), { headers: request.headers });
+    }
+    return new Response("", { status: 404 });
+  });
+}
+
+ipcMain.handle("library-sync", async () => {
+  if (libraryBusy) return { ok: true, busy: true };
+  libraryBusy = true;
+  try {
+    return await library("sync", { jobs: JOBS_DB, roots: libraryRoots() }, 600000);
+  } finally {
+    libraryBusy = false;
+  }
+});
+
+// Metadata, fingerprints and thumbnails for a few seconds at a time; the window calls it again
+// while the Library is open and files are left.
+ipcMain.handle("library-work", async (_event, body) => {
+  if (libraryBusy) return { ok: true, busy: true, left: -1 };
+  libraryBusy = true;
+  try {
+    const seconds = Math.max(2, Math.min(60, Number(body?.seconds) || 15));
+    return await library("work", { seconds, thumbs: THUMBS, fingerprints: body?.fingerprints !== false }, (seconds + 90) * 1000);
+  } finally {
+    libraryBusy = false;
+  }
+});
+
+ipcMain.handle("library-query", (_event, body) => library("query", body && typeof body === "object" ? body : {}));
+ipcMain.handle("library-facets", () => library("facets"));
+ipcMain.handle("library-groups", (_event, body) => library("groups", {
+  kind: body?.kind === "similar" ? "similar" : "exact",
+  text: String(body?.text || "").slice(0, 200),
+  threshold: Math.max(0, Math.min(12, Number(body?.threshold) || 6)),
+  seconds: 90,
+}, 300000));
+ipcMain.handle("library-storage", () => library("storage", { roots: libraryRoots() }, 300000));
+ipcMain.handle("library-folders", () => ({ ok: true, roots: libraryRoots(), extra: libraryDirs() }));
+ipcMain.handle("library-add-folder", async () => {
+  if (!mainWindow) return { ok: false };
+  const picked = await dialog.showOpenDialog(mainWindow, { title: "Add a folder to the library", properties: ["openDirectory"] });
+  if (picked.canceled || !picked.filePaths[0]) return { ok: false, canceled: true };
+  const dirs = [...libraryDirs().filter((dir) => !samePath(dir, picked.filePaths[0])), picked.filePaths[0]];
+  writeSettings({ library_dirs: dirs });
+  return { ok: true, extra: dirs };
+});
+ipcMain.handle("library-remove-folder", (_event, dir) => {
+  const dirs = libraryDirs().filter((item) => !samePath(item, String(dir || "")));
+  writeSettings({ library_dirs: dirs });
+  return { ok: true, extra: dirs };
+});
+
+async function libraryFile(id) {
+  const n = Number(id);
+  if (!Number.isInteger(n) || n < 1) return null;
+  const found = (await library("file", { id: n }))?.file;
+  if (!found?.path) return null;
+  const resolved = path.resolve(found.path);
+  if (!libraryRoots().some((dir) => isInside(resolved, dir))) return null;
+  return { ...found, path: resolved, root: libraryRoots().find((dir) => isInside(resolved, dir)) };
+}
+
+/** Move a file to the Recycle Bin, only after the person confirms it. */
+async function confirmTrash(target, reason) {
+  if (!mainWindow || !existingFile(target)) return { ok: false, error: "The file is not there any more." };
+  const answer = await dialog.showMessageBox(mainWindow, {
+    type: "warning",
+    buttons: ["Move to Recycle Bin", "Cancel"],
+    defaultId: 1,
+    cancelId: 1,
+    title: "Move to Recycle Bin",
+    message: `Move ${path.basename(target)} to the Recycle Bin?`,
+    detail: `${reason}\n\n${target}\n\nYou can restore it from the Recycle Bin.`,
+  });
+  if (answer.response !== 0) return { ok: false, canceled: true };
+  try {
+    await shell.trashItem(target);
+    return { ok: true, trashed: true };
+  } catch (error) {
+    return { ok: false, error: `Could not move it to the Recycle Bin: ${error.message || error}` };
+  }
+}
+
+async function dupMove(command, target, root) {
+  const result = await runPython([path.join(ROOT, "desktop", "dup_actions.py"), command, JOBS_DB],
+    { input: `${JSON.stringify({ path: target, root })}\n`, timeout: 60000 });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "The file could not be moved.").slice(-300) };
+}
+
+// Settings > Rules: what the rules would do to the files already in the Library (read only).
+ipcMain.handle("rules-preview", async (_event, body) => {
+  if (!fs.existsSync(LIBRARY_DB)) return { ok: true, total: 0, skipped: 0, folder: 0, single: 0, byRule: {}, examples: {}, empty: true };
+  const rules = Array.isArray(body?.rules) ? body.rules.slice(0, 50) : [];
+  const result = await runPython([path.join(ROOT, "desktop", "rules.py"), "preview", LIBRARY_DB], { input: `${JSON.stringify({ rules })}\n`, timeout: 120000 });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "The rules could not be checked.").slice(-300) };
+});
+
+async function archiveCall(command, body, timeout = 600000) {
+  const result = await runPython([path.join(ROOT, "desktop", "archives.py"), command], { input: `${JSON.stringify(body)}\n`, timeout });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "The archive could not be read.").slice(-300) };
+}
+
+ipcMain.handle("library-action", async (_event, body) => {
+  const file = await libraryFile(body?.id);
+  if (!file) return { ok: false, error: "That file is not in the library." };
+  const action = String(body?.action || "");
+  if (action === "reveal") {
+    shell.showItemInFolder(file.path);
+    return { ok: true };
+  }
+  if (action === "open") {
+    // Media and documents open in their usual app; anything else is only shown in its folder,
+    // so a downloaded program is never started from here.
+    const ext = path.extname(file.path).slice(1).toLowerCase();
+    if (!MEDIA_OPEN.has(ext)) {
+      shell.showItemInFolder(file.path);
+      return { ok: true, revealed: true };
+    }
+    const error = await shell.openPath(file.path);
+    return { ok: !error, error: error || null };
+  }
+  if (action === "aside" || action === "rename") {
+    const result = await dupMove(action, file.path, file.root);
+    if (result.ok) await library("moved", { id: file.id, path: result.path });
+    return result;
+  }
+  if (action === "trash") {
+    const result = await confirmTrash(file.path, String(body?.reason || "It has the same content as another file in the library."));
+    if (result.ok) await library("moved", { id: file.id, path: file.path });
+    return result;
+  }
+  if (action === "inspect" || action === "test") return archiveCall(action, { path: file.path });
+  if (action === "extract") {
+    if (!mainWindow) return { ok: false };
+    const stem = path.basename(file.path).replace(/(\.tar)?\.[^.]+$/i, "");
+    const picked = await dialog.showSaveDialog(mainWindow, {
+      title: "Extract to a new folder",
+      defaultPath: path.join(path.dirname(file.path), stem),
+      buttonLabel: "Extract here",
+      properties: ["createDirectory", "showOverwriteConfirmation"],
+    });
+    if (picked.canceled || !picked.filePath) return { ok: false, canceled: true };
+    const result = await archiveCall("extract", { path: file.path, dest: picked.filePath });
+    if (result.ok) shell.openPath(result.dest);
+    return result;
+  }
+  return { ok: false, error: "Unknown action." };
+});
+
+// Organize and rename (3.1, Library > Storage). The plan stays here between preview and apply,
+// so what is moved is exactly what was shown.
+const ORGANIZE_JOURNAL = path.join(APPDATA, "organize-journal.jsonl");
+let organizePlan = null;
+
+// ─── when a job finishes (3.1 completion actions, Settings > Downloads) ──────
+// Each action is off unless chosen. Nothing here deletes a file or runs a downloaded file.
+async function waitLibrary(limitMs = 600000) {
+  const until = Date.now() + limitMs;
+  while (libraryBusy && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 1000));
+  return !libraryBusy;
+}
+
+async function afterRun(after, event, slot, config) {
+  if (!event || event.stopped) return;
+  const report = (message, level = "info") => send({ type: "after", slot, level, message, label: String((config && config.label) || "") });
+  const jobReport = async (body) => {
+    const result = await runPython([path.join(ROOT, "desktop", "job_report.py"), "after", JOBS_DB],
+      { input: `${JSON.stringify({ job: event.jobId, version: app.getVersion(), ...body })}\n`, timeout: 3600000 });
+    const parsed = parseJson((result.stdout || "").trim(), null);
+    if (!parsed || !parsed.ok) report(`The finished job could not be checked: ${(parsed && parsed.error) || (result.stderr || "").slice(-200)}`, "warning");
+    return parsed && parsed.ok ? parsed : null;
+  };
+  if (after.openFolder && event.saved && event.root && fs.existsSync(event.root)) shell.openPath(event.root);
+  const libraryOn = fs.existsSync(LIBRARY_SCRIPT) && event.saved;
+  // 1. organize first, so the manifest and the Library see the files where they end up
+  const folders = after.organize ? String(after.organize.folders || "").slice(0, 200) : "";
+  if (folders && event.jobId && libraryOn && (await waitLibrary())) {
+    const files = await jobReport({});
+    libraryBusy = true;
+    try {
+      await library("sync", { jobs: JOBS_DB, roots: libraryRoots() }, 600000);
+      const paths = (files && files.paths) || [];
+      const root = runFolder((config && config.downloadsDir) || "");
+      const plan = paths.length ? await organizer("plan", { filters: { paths, missing: "" }, root, folders, roots: libraryRoots() }) : null;
+      if (plan && !plan.ok) report(`Organize: ${plan.error}`, "warning");
+      else if (plan && plan.count - plan.conflicts > 0) {
+        const label = `After ${String((config && config.label) || "a job").slice(0, 60)}`;
+        const done = await organizer("apply", { plan, jobs: JOBS_DB, journal: ORGANIZE_JOURNAL, roots: libraryRoots(), label });
+        if (done.ok) send({ type: "moved", slot, moves: plan.moves.filter((m) => !m.conflict).slice(0, 20000).map((m) => [m.from, m.to]) });
+        if (done.ok) report(`Organized ${done.moved} file(s)${plan.conflicts ? `, ${plan.conflicts} left in place because of a name conflict` : ""}. Undo it in Library > Storage.`, "ok");
+        else report(`Organize: ${done.error}`, "warning");
+      }
+    } finally {
+      libraryBusy = false;
+    }
+  }
+  // 2. verify and manifest
+  if (event.jobId && (after.verify || after.manifest)) {
+    const parsed = await jobReport({ verify: Boolean(after.verify), manifest: Boolean(after.manifest) });
+    if (parsed && parsed.verify) {
+      const v = parsed.verify;
+      if (v.problems.length) report(`Checked ${v.checked} file(s): ${v.problems.length} look incomplete, for example ${v.problems[0].name} (${v.problems[0].problem}). Retry them from History.`, "warning");
+      else if (v.checked) report(`Checked ${v.checked} file(s): all complete.`, "ok");
+    }
+    if (parsed && parsed.manifest) report(`Manifest saved: ${parsed.manifest}`);
+    if (parsed && parsed.manifestError) report(parsed.manifestError, "warning");
+  }
+  // 3. the Library, with thumbnails
+  if (after.library && libraryOn && (await waitLibrary())) {
+    libraryBusy = true;
+    try {
+      await library("sync", { jobs: JOBS_DB, roots: libraryRoots() }, 600000);
+      for (let round = 0; round < 10; round += 1) { // a minute at a time, at most ten minutes
+        const work = await library("work", { seconds: 60, thumbs: THUMBS, fingerprints: true }, 150000);
+        if (!work || !work.ok || !work.left) break;
+      }
+      report("The Library is up to date with this job's files, thumbnails included.");
+    } finally {
+      libraryBusy = false;
+    }
+  }
+}
+
+// Library > Statistics (3.1): read from History and the per-run log, nothing collected during a run.
+const STATS_RUNS = path.join(APPDATA, "stats-runs.jsonl");
+ipcMain.handle("stats-summary", async (_event, body) => {
+  const days = Math.max(0, Math.min(36500, Number(body?.days) || 0));
+  const result = await runPython([path.join(ROOT, "desktop", "stats.py"), "summary", JOBS_DB, STATS_RUNS], { input: `${JSON.stringify({ days })}\n`, timeout: 120000 });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "Statistics could not be read.").slice(-300) };
+});
+ipcMain.handle("stats-export", async (_event, body) => {
+  const days = Math.max(0, Math.min(36500, Number(body?.days) || 0));
+  const picked = await dialog.showSaveDialog(mainWindow, {
+    title: "Export statistics",
+    defaultPath: path.join(app.getPath("documents"), `NexDrop statistics ${new Date().toISOString().slice(0, 10)}.csv`),
+    filters: [{ name: "CSV", extensions: ["csv"] }],
+  });
+  if (picked.canceled || !picked.filePath) return { ok: false, canceled: true };
+  const result = await runPython([path.join(ROOT, "desktop", "stats.py"), "csv", JOBS_DB, STATS_RUNS], { input: `${JSON.stringify({ days, dest: picked.filePath })}\n`, timeout: 120000 });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "The file could not be written.").slice(-300) };
+});
+
+// Settings > Sites: failed files of the last days as a Markdown report for a GitHub issue.
+ipcMain.handle("broken-report", async (_event, body) => {
+  const days = Math.max(1, Math.min(365, Number(body?.days) || 30));
+  const picked = await dialog.showSaveDialog(mainWindow, {
+    title: "Save broken-link report",
+    defaultPath: path.join(app.getPath("documents"), `NexDrop broken links ${new Date().toISOString().slice(0, 10)}.md`),
+    filters: [{ name: "Markdown", extensions: ["md"] }, { name: "Text", extensions: ["txt"] }],
+  });
+  if (picked.canceled || !picked.filePath) return { ok: false, canceled: true };
+  const result = await runPython([path.join(ROOT, "desktop", "job_report.py"), "broken", JOBS_DB],
+    { input: `${JSON.stringify({ days, links: Boolean(body?.links), dest: picked.filePath, version: app.getVersion() })}\n`, timeout: 120000 });
+  const parsed = parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "The report could not be written.").slice(-300) };
+  if (parsed.ok) shell.showItemInFolder(picked.filePath);
+  return parsed;
+});
+
+async function organizer(command, body, timeout = 600000) {
+  const result = await runPython([path.join(ROOT, "desktop", "organizer.py"), command, LIBRARY_DB], { input: `${JSON.stringify(body)}\n`, timeout });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "The organizer did not answer.").slice(-300) };
+}
+
+ipcMain.handle("organize-plan", async (_event, body) => {
+  const plan = await organizer("plan", {
+    filters: body?.filters && typeof body.filters === "object" ? body.filters : {},
+    root: String(body?.root || ""),
+    folders: String(body?.folders || "").slice(0, 200),
+    names: String(body?.names || "").slice(0, 200),
+    roots: libraryRoots(),
+  });
+  organizePlan = plan.ok ? plan : null;
+  if (!plan.ok) return plan;
+  return { ...plan, moves: plan.moves.slice(0, 500) };
+});
+
+ipcMain.handle("organize-apply", async (_event, id) => {
+  if (!organizePlan || organizePlan.id !== id) return { ok: false, error: "Preview again first." };
+  const ready = organizePlan.count - organizePlan.conflicts;
+  if (!ready) return { ok: false, error: "Nothing to move." };
+  const answer = await dialog.showMessageBox(mainWindow, {
+    type: "question", buttons: [`Move ${ready} file${ready === 1 ? "" : "s"}`, "Cancel"], defaultId: 0, cancelId: 1,
+    title: "Organize files", message: `Move or rename ${ready} file${ready === 1 ? "" : "s"}?`,
+    detail: `${organizePlan.conflicts ? `${organizePlan.conflicts} with a conflict are left where they are. ` : ""}Nothing is overwritten or deleted, and you can undo this from Storage.`,
+  });
+  if (answer.response !== 0) return { ok: false, canceled: true };
+  const plan = organizePlan;
+  organizePlan = null;
+  return organizer("apply", { plan, jobs: JOBS_DB, journal: ORGANIZE_JOURNAL, roots: libraryRoots(), label: String(plan.label || "") });
+});
+
+ipcMain.handle("organize-batches", () => organizer("batches", { journal: ORGANIZE_JOURNAL }, 30000));
+
+ipcMain.handle("organize-undo", async (_event, batch) => {
+  const answer = await dialog.showMessageBox(mainWindow, {
+    type: "question", buttons: ["Undo", "Cancel"], defaultId: 0, cancelId: 1, title: "Undo organize",
+    message: "Move these files back to where they were?", detail: "Files that were moved again or replaced in the meantime are left alone.",
+  });
+  if (answer.response !== 0) return { ok: false, canceled: true };
+  return organizer("undo", { batch: String(batch || ""), jobs: JOBS_DB, journal: ORGANIZE_JOURNAL });
+});
+
+// After a run with "Ask" or "Replace after confirmation": one pair at a time from the list.
+ipcMain.handle("duplicate-action", async (_event, body) => {
+  const target = path.resolve(String(body?.path || ""));
+  const root = allowedRoots().find((dir) => dir !== path.resolve(ROOT) && isInside(target, dir));
+  if (!root || !existingFile(target)) return { ok: false, error: "That file is not in a download folder any more." };
+  const action = String(body?.action || "");
+  if (action === "aside" || action === "rename") return dupMove(action, target, root);
+  if (action === "trash") return confirmTrash(target, String(body?.reason || "Another file has the same content."));
+  if (action === "reveal") {
+    shell.showItemInFolder(target);
+    return { ok: true };
+  }
+  return { ok: false, error: "Unknown action." };
+});
+
 // ─── app lifecycle ──────────────────────────────────────────────────────────
 
 try {
@@ -1450,6 +2048,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(async () => {
+    registerLibraryScheme();
     session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
       callback(permission === "clipboard-sanitized-write" || permission === "clipboard-read");
     });
@@ -1483,24 +2082,31 @@ if (!app.requestSingleInstanceLock()) {
 let quitWaiting = false;
 app.on("before-quit", (event) => {
   quitting = true;
-  if (current && current.child.exitCode === null && !quitWaiting) {
+  const live = [...sessions.values()].filter((run) => run.child.exitCode === null);
+  if (live.length && !quitWaiting) {
     event.preventDefault();
     quitWaiting = true;
-    const run = current;
-    killSession(false);
+    for (const run of live) killSession(false, run.slot);
+    let left = live.length;
     const done = () => {
       clearTimeout(timer);
       app.quit();
     };
     const timer = setTimeout(() => {
-      if (run.child.exitCode === null) killTree(run.child.pid, true);
+      for (const run of live) if (run.child.exitCode === null) killTree(run.child.pid, true);
       done();
     }, STOP_GRACE_MS + 500);
-    run.child.once("close", done);
+    for (const run of live) {
+      run.child.once("close", () => {
+        left -= 1;
+        if (!left) done();
+      });
+    }
     return;
   }
   clearInterval(clip.timer);
-  killSession(true);
+  for (const slot of [...sessions.keys()]) killSession(true, slot);
+  if (previewChild) killTree(previewChild.pid, true);
   stopFlare();
   stopTelegramLogin();
   logFile.close();

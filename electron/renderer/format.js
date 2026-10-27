@@ -52,10 +52,48 @@
   }
 
   /** Split pasted text into downloadable links, rejected torrent links, and anything else. */
+  // Query parameters that only track where a click came from (3.1 duplicate link detection).
+  const TRACKING = /^(utm_[a-z]+|fbclid|gclid|dclid|msclkid|mc_cid|mc_eid|igshid|ref_src|ref_url|_ga|yclid|share_id)$/i;
+  // Share trackers that mean nothing else only on these sites ("s" is a real search on others).
+  const SITE_TRACKING = { "x.com": ["s", "t"], "twitter.com": ["s", "t"], "youtube.com": ["si", "pp", "feature"], "youtu.be": ["si", "feature"], "open.spotify.com": ["si"], "instagram.com": ["igsh", "img_index"] };
+
+  /** The same link without tracking parameters, fragment, "www." or a trailing slash. */
+  function normalizeUrl(raw) {
+    let u;
+    try {
+      u = new URL(String(raw).trim());
+    } catch {
+      return String(raw || "").trim();
+    }
+    const hostName = u.hostname.toLowerCase().replace(/^www\./, "");
+    const drop = SITE_TRACKING[hostName] || [];
+    const params = [...u.searchParams].filter(([k]) => !TRACKING.test(k) && !drop.includes(k));
+    const query = params.length ? `?${new URLSearchParams(params).toString()}` : "";
+    const fragment = u.hash.startsWith("#!") ? u.hash : "";
+    const pathName = u.pathname.replace(/\/+$/, "") || "/";
+    return `${u.protocol}//${hostName}${u.port ? `:${u.port}` : ""}${pathName}${query}${fragment}`;
+  }
+
+  /** "host = N" lines (Settings > Speed > Per-site limits) to { limits: {host: N}, bad: [line] }. */
+  function parseSiteLimits(text) {
+    const limits = {};
+    const bad = [];
+    for (const raw of String(text || "").split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith("#")) continue;
+      const match = /^(?:https?:\/\/)?(?:www\.)?([a-z0-9.-]+\.[a-z]{2,})\/?\s*[=:]\s*(\d+)$/i.exec(line);
+      const n = match ? parseInt(match[2], 10) : NaN;
+      if (match && n >= 1 && n <= 32) limits[match[1].toLowerCase()] = n;
+      else bad.push(line);
+    }
+    return { limits, bad };
+  }
+
   function parseLinks(text) {
     const urls = [];
     const unsupported = [];
     const ignored = [];
+    const duplicates = [];
     const seen = new Set();
     for (const raw of String(text || "").split(/[\r\n]+/)) {
       if (raw.trim().startsWith("#")) continue; // comment line in an imported .txt
@@ -69,16 +107,19 @@
         if (/^magnet:/i.test(line) || /^https?:\/\/\S+\.torrent(?:$|\?)/i.test(line)) {
           unsupported.push(line);
         } else if (/^https?:\/\/[^\s/]+\.[^\s]+/i.test(line)) {
-          if (!seen.has(line)) {
-            seen.add(line);
+          const key = normalizeUrl(line);
+          if (!seen.has(key)) {
+            seen.add(key);
             urls.push(line);
+          } else if (line !== urls.find((u) => normalizeUrl(u) === key)) {
+            duplicates.push(line); // same link with other tracking parameters
           }
         } else if (line.length > 1) {
           ignored.push(line);
         }
       }
     }
-    return { urls, unsupported, ignored };
+    return { urls, unsupported, ignored, duplicates };
   }
 
   function host(url) {
@@ -174,10 +215,10 @@
 
   /* Download modes: how many files at once, per site and per server. "custom" keeps the user's own numbers. */
   const DOWNLOAD_MODES = {
-    auto: { maxDownloads: 16, perHost: 6, serverSlots: 3 },
-    balanced: { maxDownloads: 8, perHost: 4, serverSlots: 2 },
-    max: { maxDownloads: 24, perHost: 10, serverSlots: 4 },
-    low: { maxDownloads: 3, perHost: 2, serverSlots: 1 },
+    auto: { maxDownloads: 16, perHost: 6, serverSlots: 3, segments: 4 },
+    balanced: { maxDownloads: 8, perHost: 4, serverSlots: 2, segments: 2 },
+    max: { maxDownloads: 24, perHost: 10, serverSlots: 4, segments: 6 },
+    low: { maxDownloads: 3, perHost: 2, serverSlots: 1, segments: 0 },
   };
 
   /** The limits a run uses for `mode`; custom (or an unknown mode) uses the numbers in `custom`. */
@@ -189,7 +230,9 @@
       return Number.isFinite(n) ? Math.max(1, Math.min(max, n)) : def;
     };
     const own = custom || {};
-    return { maxDownloads: pick(own.maxDownloads, 16, 32), perHost: pick(own.perHost, 6, 16), serverSlots: pick(own.serverSlots, 3, 6) };
+    const parts = parseInt(own.segments, 10);
+    return { maxDownloads: pick(own.maxDownloads, 16, 32), perHost: pick(own.perHost, 6, 16), serverSlots: pick(own.serverSlots, 3, 6),
+      segments: Number.isFinite(parts) ? Math.max(0, Math.min(8, parts)) : 4 };
   }
 
   /** The mode for settings saved before 3.0: the old defaults are Auto, anything changed is Custom. */
@@ -243,9 +286,26 @@
   }
 
   /* Jobs (3.0 job manager): what is kept in an export, and reading an export or a link list back. */
-  const JOB_FIELDS = ["label", "urls", "unsupported", "startPage", "endPage", "redownload", "folder", "mode", "speedMB", "hold", "named"];
+  const JOB_FIELDS = ["label", "urls", "unsupported", "startPage", "endPage", "redownload", "folder", "mode", "speedMB", "hold", "named", "startAt", "stopAt", "partDone"];
   const MAX_JOBS = 500;
   const MAX_JOB_URLS = 20000;
+  // One run reads at most this many links (MAX_URLS in desktop/cairn_session.py); a bigger job
+  // is run in parts, the rest waiting at the front of the queue.
+  const RUN_URLS = 200;
+
+  /** [the part to run now, the rest as a queued job or null]. Labels say "part 2 of 5". */
+  function splitRun(job, max = RUN_URLS) {
+    const urls = Array.isArray(job.urls) ? job.urls : [];
+    if (urls.length <= max) return [job, null];
+    const base = String(job.label || "").replace(/ \(part \d+ of \d+\)$/, "");
+    const done = Number(job.partDone) || 0;
+    const parts = done + Math.ceil(urls.length / max);
+    const head = { ...job, urls: urls.slice(0, max), label: `${base} (part ${done + 1} of ${parts})`, partDone: done + 1 };
+    const rest = { ...job, urls: urls.slice(max), unsupported: [], label: `${base} (part ${done + 2} of ${parts})`, partDone: done + 1 };
+    delete rest.parked;
+    delete rest.doneUrls;
+    return [head, rest];
+  }
 
   function sameFolder(a, b) {
     const norm = (p) => String(p || "").replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
@@ -274,6 +334,13 @@
     if (speed !== null && raw.speedMB !== "" && raw.speedMB !== null) job.speedMB = speed;
     if (raw.hold) job.hold = true;
     if (raw.named) job.named = true;
+    const partDone = int(raw.partDone, 1, 1000);
+    if (partDone) job.partDone = partDone;
+    for (const key of ["startAt", "stopAt"]) {
+      const when = typeof raw[key] === "string" ? Date.parse(raw[key]) : NaN;
+      if (Number.isFinite(when)) job[key] = new Date(when).toISOString();
+    }
+    if (job.startAt && job.stopAt && job.stopAt <= job.startAt) delete job.stopAt;
     return job;
   }
 
@@ -336,5 +403,142 @@
     return out;
   }
 
-  return { redact, cleanJob, parseJobFile, exportJob, TEMPLATE_VARS, templateProblem, renderTemplate, DOWNLOAD_MODES, modeLimits, guessMode, bytes, speed, mbps, duration, ago, parseLinks, host, finishText, compareVersions, clockMinutes, inTimeWindow, appLinkUrls, checksumFor };
+
+  // Download rules (3.1). The same checks as desktop/rules.py problems(), so the editor can say
+  // what is wrong before the rule is saved; the session checks again and ignores unusable rules.
+  const RULE_FIELDS = {
+    type: ["is"], ext: ["in"], site: ["is"], creator: ["is", "contains"], name: ["matches", "not-matches"],
+    url: ["contains", "not-contains"], size: ["over", "under"], date: ["before", "after"],
+  };
+  const RULE_ACTIONS = ["skip", "only", "folder", "single"];
+  const RULE_TYPES = ["image", "video", "audio", "other"];
+
+  function ruleSite(text) {
+    let value = String(text || "").trim().toLowerCase();
+    if (value.includes("://")) value = host(value);
+    return value.replace(/^www\./, "").replace(/^\/+|\/+$/g, "");
+  }
+
+  function ruleProblems(rule) {
+    const out = [];
+    const when = Array.isArray(rule && rule.when) ? rule.when : [];
+    const action = rule && rule.then;
+    if (!RULE_ACTIONS.includes(action)) out.push("choose what the rule does");
+    if (!when.length) out.push("add at least one condition");
+    for (const cond of when) {
+      const field = cond && cond.field;
+      const value = String((cond && cond.value) ?? "").trim();
+      if (!RULE_FIELDS[field] || !RULE_FIELDS[field].includes(cond.op)) { out.push("a condition is incomplete"); continue; }
+      if (!value) out.push(`the ${field} condition has no value`);
+      else if (field === "type" && !RULE_TYPES.includes(value)) out.push("the type must be images, videos, audio or other files");
+      else if (field === "site" && !/^[a-z0-9.-]+\.[a-z]{2,}$/.test(ruleSite(value))) out.push(`"${value}" is not a site such as bunkr.cr`);
+      else if (field === "size") {
+        if (!(Number(value) > 0)) out.push("the size must be a number of MB above 0");
+        if (action !== "skip" && action !== "only") out.push("size can only be used to skip or to only download files (the size is known after the folder is chosen)");
+      } else if (field === "date" && !(/^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value)))) out.push("the date must look like 2024-01-31");
+      else if (field === "name" && value.length > 200) out.push("the name pattern is too long");
+    }
+    if (action === "folder" && !String((rule && rule.folder) || "").trim()) out.push("choose the folder");
+    return [...new Set(out)];
+  }
+
+  /** Rules as saved in settings: known keys only, at most 50, 10 conditions each. */
+  function cleanRuleList(value) {
+    return (Array.isArray(value) ? value : []).filter((rule) => rule && typeof rule === "object").slice(0, 50).map((rule, index) => ({
+      id: String(rule.id || `r${Date.now().toString(36)}${index}`).slice(0, 40),
+      enabled: rule.enabled !== false,
+      name: String(rule.name || "").slice(0, 80),
+      then: RULE_ACTIONS.includes(rule.then) ? rule.then : "skip",
+      folder: String(rule.folder || "").slice(0, 500),
+      when: (Array.isArray(rule.when) ? rule.when : []).slice(0, 10).map((cond) => ({
+        field: RULE_FIELDS[cond && cond.field] ? cond.field : "type",
+        op: String((cond && cond.op) || ""), value: String((cond && cond.value) ?? "").slice(0, 300),
+      })),
+    }));
+  }
+
+
+  /**
+   * Download hours on chosen weekdays (0 = Sunday). A window that crosses midnight belongs to the
+   * day it starts: Friday 23:00-02:00 includes Saturday 01:00. No days chosen means every day.
+   */
+  function inSchedule(date, from, to, days) {
+    const allowed = Array.isArray(days) && days.length ? new Set(days.map(Number)) : null;
+    const start = clockMinutes(from);
+    const end = clockMinutes(to);
+    const today = date.getDay();
+    const yesterday = (today + 6) % 7;
+    if (start === null || end === null || start === end) return !allowed || allowed.has(today);
+    const now = date.getHours() * 60 + date.getMinutes();
+    if (start < end) return now >= start && now < end && (!allowed || allowed.has(today));
+    if (now >= start) return !allowed || allowed.has(today);
+    if (now < end) return !allowed || allowed.has(yesterday);
+    return false;
+  }
+
+  /** When the download hours next begin, or null when no day is chosen. */
+  function nextScheduleStart(date, from, to, days) {
+    const allowed = Array.isArray(days) && days.length ? new Set(days.map(Number)) : null;
+    const start = clockMinutes(from);
+    if (start === null || (allowed && !allowed.size)) return null;
+    for (let add = 0; add <= 7; add += 1) {
+      const day = new Date(date.getFullYear(), date.getMonth(), date.getDate() + add, Math.floor(start / 60), start % 60);
+      if (day > date && (!allowed || allowed.has(day.getDay()))) return day;
+    }
+    return null;
+  }
+
+  // Watched sources (3.1): links whose handler lists files that can grow. A single file, post or
+  // video doesn't get new files, and a page no handler describes can't be checked honestly.
+  const WATCH_KINDS = ["forum thread", "forum post", "album", "gallery", "profile", "playlist", "cloud folder", "tag"];
+  const WATCH_EVERY = [30, 60, 180, 360, 720, 1440, 4320, 10080]; // minutes
+  const WATCH_MIN_MINUTES = 30;
+
+  function watchable(item) {
+    if (!item) return { ok: false, reason: "The link could not be read." };
+    if (item.handler === "none" || item.handler === "direct") return { ok: false, reason: "NexDrop has no handler that lists files for this link, so it can't tell when something new appears." };
+    if (WATCH_KINDS.includes(item.kind)) return { ok: true, kind: item.kind === "forum post" ? "forum thread" : item.kind };
+    const what = item.kind ? `a ${item.kind}` : "a page whose handler doesn't say what it lists";
+    return { ok: false, reason: `This is ${what}. Only threads, albums, galleries, profiles, channels, playlists, cloud folders and tags can be watched.` };
+  }
+
+  /** Minutes between checks; watches from 3.0 kept hours. */
+  function watchMinutes(watch) {
+    const minutes = Number(watch && watch.everyMinutes) || Number(watch && watch.everyHours) * 60 || 360;
+    return Math.max(WATCH_MIN_MINUTES, Math.min(10080, minutes));
+  }
+
+  function watchDue(watch, nowMs) {
+    if (!watch || watch.paused) return false;
+    if (!watch.lastCheck) return true;
+    return nowMs - Date.parse(watch.lastCheck) >= watchMinutes(watch) * 60 * 1000;
+  }
+
+  function everyText(minutes) {
+    if (minutes < 60) return `Every ${minutes} minutes`;
+    if (minutes === 60) return "Every hour";
+    if (minutes < 1440) return `Every ${minutes / 60} hours`;
+    if (minutes === 1440) return "Every day";
+    if (minutes === 10080) return "Every week";
+    return `Every ${minutes / 1440} days`;
+  }
+
+  // "Retry later" (3.1): a job whose files failed for reasons that pass (busy server, rate limit,
+  // time-out) runs again later; its saved files are skipped by History. At most 3 rounds.
+  const RETRY_LATER_ROUNDS = 3;
+  function retryLaterJob(job, event, delayMinutes, now = Date.now()) {
+    const round = (Number(job && job.retryRound) || 0) + 1;
+    if (!job || !delayMinutes || !event || event.stopped || !(event.retryLater > 0) || round > RETRY_LATER_ROUNDS || !(job.urls || []).length) return null;
+    const base = String(job.label || "").replace(/^Retry \d: /, "");
+    return { ...job, id: `j${now.toString(36)}r${round}`, label: `Retry ${round}: ${base}`, named: true, retryRound: round,
+      startAt: new Date(now + delayMinutes * 60 * 1000 * round).toISOString(), redownload: false,
+      parked: undefined, resumed: undefined, doneUrls: undefined, watchId: undefined, hold: undefined };
+  }
+
+  /** A queued job waits for its own start time. */
+  function jobReady(job, nowMs) {
+    return Boolean(job) && !job.hold && (!job.startAt || Date.parse(job.startAt) <= nowMs);
+  }
+
+  return { RUN_URLS, splitRun, inSchedule, nextScheduleStart, WATCH_KINDS, WATCH_EVERY, WATCH_MIN_MINUTES, watchable, watchMinutes, watchDue, everyText, RETRY_LATER_ROUNDS, retryLaterJob, jobReady, RULE_FIELDS, RULE_ACTIONS, RULE_TYPES, ruleProblems, cleanRuleList, parseSiteLimits, normalizeUrl, redact, cleanJob, parseJobFile, exportJob, TEMPLATE_VARS, templateProblem, renderTemplate, DOWNLOAD_MODES, modeLimits, guessMode, bytes, speed, mbps, duration, ago, parseLinks, host, finishText, compareVersions, clockMinutes, inTimeWindow, appLinkUrls, checksumFor };
 });

@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-PORTABLE = ROOT / "appdata"
+PORTABLE = Path(os.environ.get("NEXDROP_APPDATA") or ROOT / "appdata")  # the override is for tests
 PORTABLE.mkdir(parents=True, exist_ok=True)
 # Windows ignores XDG_* and otherwise writes to %APPDATA%\cyberdrop-dl.
 os.environ["CDL_APPDATA_FOLDER"] = str(PORTABLE)
@@ -26,6 +26,11 @@ if _ffmpeg.is_dir():
     os.environ["PATH"] = str(_ffmpeg) + os.pathsep + os.environ.get("PATH", "")
 _template = ROOT / "user-config.yaml"
 _installed = PORTABLE / "config.yaml"
+try:  # 0: the job shown in the window; 1 and up: jobs running beside it, with their own cookies and logs
+    SLOT = max(0, min(8, int(os.environ.get("NEXDROP_SLOT", "0"))))
+except ValueError:
+    SLOT = 0
+ENGINE_COOKIES = PORTABLE / "cookies" / ("engine" if SLOT == 0 else f"engine-{SLOT}")
 
 
 def _config_version(text: str) -> int:
@@ -151,6 +156,8 @@ class _LogBridge(logging.Handler):
                         identity = None
                     if isinstance(identity, dict):
                         event["identity"] = identity
+                        if identity.get("creator"):
+                            RULE_CREATORS[parts[2]] = str(identity["creator"])
                 emit(event)
             return
         if raw.startswith("Telegram needs sign-in\t"):
@@ -171,6 +178,8 @@ class _LogBridge(logging.Handler):
             return
         if message.startswith("Download skipped "):
             url = _http_url(message) or ""
+            if url in RULE_SKIPPED:
+                return  # already reported with the rule's name
             lower = message.lower()
             reason = ("already downloaded" if "before the pause" in lower
                       else "file type turned off in Settings" if "extension" in lower or "ignored by config" in lower
@@ -904,6 +913,54 @@ class _ServerSlots:
 SERVER_SLOTS = _ServerSlots()
 
 
+class _SiteLimits:
+    """Settings > Speed > Per-site limits: at most N downloads at once from one site (3.1).
+    "bunkr.cr = 2" also covers its CDN hosts (c3.bunkr.cr, ...)."""
+
+    def __init__(self) -> None:
+        self.limits: dict[str, int] = {}
+        self.gates: dict[str, object] = {}
+
+    def configure(self, raw: object) -> None:
+        self.limits = {}
+        if isinstance(raw, dict):
+            for key, value in raw.items():
+                site = str(key).strip().lower().removeprefix("www.")
+                try:
+                    number = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if site and 1 <= number <= 32:
+                    self.limits[site] = number
+
+    def get(self, host: str):
+        import asyncio
+        import contextlib
+
+        host = host.lower().removeprefix("www.")
+        site = next((s for s in sorted(self.limits, key=len, reverse=True) if host == s or host.endswith("." + s)), "")
+        if not site:
+            return contextlib.nullcontext()
+        gate = self.gates.get(site)
+        if gate is None:
+            gate = self.gates[site] = asyncio.Semaphore(self.limits[site])
+        return gate
+
+
+SITE_LIMITS = _SiteLimits()
+
+
+def _install_retry_policy(max_delay: int, retry_after_cap: int) -> None:
+    """Settings > Speed > Retries: the longest wait between attempts, and how long a server's
+    Retry-After is honoured before the file gives its slot to others."""
+    try:
+        from cyberdrop_dl.downloader import http as downloader_http
+    except Exception:  # noqa: BLE001
+        return
+    downloader_http.RETRY_MAX_DELAY = float(max_delay)
+    downloader_http.RETRY_AFTER_CAP = float(retry_after_cap)
+
+
 def _install_server_slots(per_server: int) -> None:
     import contextlib
 
@@ -916,10 +973,30 @@ def _install_server_slots(per_server: int) -> None:
     @contextlib.asynccontextmanager
     async def lock(self, url):
         server = SERVER_SLOTS.get(url.host or "") if self.use_server_lock else contextlib.nullcontext()
-        async with server, self._semaphore, self.manager.http_client.limiter.downloads:
+        site = SITE_LIMITS.get(url.host or "")
+        async with site, server, self._semaphore, self.manager.http_client.limiter.downloads:
             yield
 
     Downloader.lock = lock
+
+
+def _install_segments(parts: int, min_mb: int) -> None:
+    """Multi-segment downloads (engine patch clients/segments.py): how many parts per large file,
+    from the download mode. A host that asked to slow down, or a paused site, gets one stream."""
+    try:
+        from cyberdrop_dl.clients import segments
+    except Exception:  # noqa: BLE001
+        return
+    segments.MAX_PARTS = max(0, min(int(parts), segments.SEG_FILES_MAX))
+    segments.MIN_SIZE = min_mb * 1024 * 1024
+    segments.MIN_PART = max(256 * 1024, segments.MIN_SIZE // 4)
+
+    def host_ok(host: str) -> bool:
+        if host in SERVER_SLOTS.reduced:
+            return False
+        return not any(site and site in host and BREAKER.blocked_for(site) for site in list(BREAKER.until))
+
+    segments.host_ok = host_ok
 
 
 TYPE_FOLDERS = {"image": "Images", "video": "Videos", "audio": "Audio", "other": "Other"}
@@ -949,6 +1026,206 @@ def _install_type_folders(enabled: bool) -> None:
         return await original(self, domain, media_item)
 
     dl.DownloadClient._download = download
+
+
+RULE_CREATORS: dict[str, str] = {}  # media link -> creator, from the naming record (for creator rules)
+RULE_SKIPPED: set[str] = set()  # links a rule skipped; the engine's own "skipped" line for them is not repeated
+
+
+def _install_rules(raw: object, root: Path) -> None:
+    """Settings > Downloads > Rules (3.1, desktop/rules.py): skip, only download, save to a folder,
+    one at a time. Checked when a file is found (site, type, name, link, creator, date), and again
+    when the server has said how big it is (size rules)."""
+    sys.path.append(str(ROOT.parent / "desktop"))
+    try:
+        import rules as rule_engine
+        from cyberdrop_dl.clients import downloads as dl
+        from cyberdrop_dl.crawlers import crawler as crawler_module
+    except Exception:  # noqa: BLE001
+        return
+    active = rule_engine.clean(raw)
+    if not active:
+        return
+    root = root.resolve()
+
+    def fact_for(media_item, size=None):
+        url = str(getattr(media_item, "url", "") or "")
+        name = str(getattr(media_item, "filename", "") or getattr(media_item, "original_filename", "") or "")
+        return rule_engine.facts(url, name, creator=RULE_CREATORS.get(url, ""), uploaded=getattr(media_item, "uploaded_at", None), size=size)
+
+    def skip(media_item, reason: str) -> None:
+        url = str(media_item.url)
+        RULE_SKIPPED.add(url)
+        emit({"type": "skipped", "url": url, "reason": reason})
+
+    original_skip = crawler_module._should_skip_by_config
+
+    def should_skip(media_item, config):
+        verdict = rule_engine.decide(active, fact_for(media_item))
+        if verdict["skip"]:
+            skip(media_item, verdict["skip"])
+            return True
+        return original_skip(media_item, config)
+
+    crawler_module._should_skip_by_config = should_skip
+
+    original_size = dl._check_filesize_limits
+
+    def size_allowed(media, config):
+        if not original_size(media, config):
+            return False
+        verdict = rule_engine.decide(active, fact_for(media, size=int(getattr(media, "size", 0) or 0)))
+        if verdict["skip"]:
+            skip(media, verdict["skip"])
+            return False
+        return True
+
+    dl._check_filesize_limits = size_allowed
+
+    import asyncio
+
+    single = asyncio.Semaphore(1)
+    original_download = dl.DownloadClient._download
+
+    async def download(self, domain, media_item):
+        verdict = rule_engine.decide(active, fact_for(media_item))
+        folder = getattr(media_item, "download_folder", None)
+        if verdict["folder"] and folder is not None and not getattr(media_item, "is_segment", False):
+            try:
+                relative = Path(folder).resolve().relative_to(root)
+            except ValueError:
+                relative = None
+            if relative is not None and ".." not in relative.parts:
+                media_item.download_folder = Path(verdict["folder"]).resolve() / relative
+        if verdict["single"] and not getattr(media_item, "is_segment", False):
+            async with single:
+                return await original_download(self, domain, media_item)
+        return await original_download(self, domain, media_item)
+
+    dl.DownloadClient._download = download
+
+
+QUALITY_CAPS = {"2160": 2160, "1440": 1440, "1080": 1080, "720": 720, "480": 480, "360": 360}
+
+
+def pick_rendition(groups: list, quality: str):
+    """From stream variants sorted best to worst: the best at or below the chosen height, or the
+    smallest when "smallest" is chosen or every variant is above the cap. Variants without a known
+    height only win when nothing else is there."""
+    if not groups:
+        raise StopIteration
+    if quality == "smallest":
+        known = [g for g in groups if getattr(g.resolution, "height", 0) > 0]
+        return (known or groups)[-1]
+    cap = QUALITY_CAPS.get(str(quality))
+    if not cap:
+        return groups[0]
+    for group in groups:
+        if 0 < getattr(group.resolution, "height", 0) <= cap:
+            return group
+    known = [g for g in groups if getattr(g.resolution, "height", 0) > 0]
+    return (known or groups)[-1]
+
+
+SUB_LANGUAGE: dict[str, str] = {}  # subtitle playlist URL -> language, for the saved file's name
+SUB_SEEN: set[str] = set()
+
+
+def _install_quality(payload: dict) -> None:
+    """Settings > Downloads > Quality (3.1). Only where the source itself offers a choice:
+
+    - streams (HLS) that list several qualities: the best at or below the chosen height;
+    - subtitles that a stream lists: saved beside the video as <video name>.<language>.vtt, in the
+      chosen languages; off by default (then they are not downloaded at all).
+
+    A source with one quality or no subtitles is downloaded as it is, and nothing is claimed."""
+    SUB_SEEN.clear()
+    quality = str(payload.get("videoQuality") or "best")
+    subs = payload.get("subtitles") if isinstance(payload.get("subtitles"), dict) else {}
+    subs_on = bool(subs.get("on"))
+    languages = [str(x).strip().lower() for x in subs.get("languages") or [] if str(x).strip()][:10]
+    try:
+        import dataclasses
+
+        from cyberdrop_dl.downloader import hls
+        from cyberdrop_dl.utils import m3u8 as m3u8_module
+    except Exception:  # noqa: BLE001
+        return
+    parser = m3u8_module.VariantM3U8Parser
+    original_best = parser.get_best_group
+
+    def get_best_group(self, only=(), *, exclude=()):
+        groups = list(self.get_rendition_groups(only=only, exclude=exclude))
+        if quality == "best" or len(groups) < 2:
+            return original_best(self, only=only, exclude=exclude)
+        chosen = pick_rendition(groups, quality)
+        names = ", ".join(dict.fromkeys(g.resolution.name for g in groups if getattr(g.resolution, "height", 0) > 0))
+        emit({"type": "log", "level": "info", "message": f"Stream quality: {chosen.resolution.name} of {names}."})
+        return chosen
+
+    parser.get_best_group = get_best_group
+
+    details = m3u8_module.RenditionDetails
+    original_new = details.new
+
+    def new(playlist):
+        made = original_new(playlist)
+        try:
+            listed = [m for m in made.media if str(getattr(m, "type", "")).lower().endswith("subtitles")]
+        except Exception:  # noqa: BLE001
+            listed = []
+        if listed:
+            found = sorted({str(getattr(m, "language", "") or "?").lower() for m in listed})
+            key = ",".join(found)
+            if key not in SUB_SEEN:
+                SUB_SEEN.add(key)
+                emit({"type": "log", "level": "info", "message": f"Subtitles offered: {', '.join(found)}" + ("" if subs_on else " (not saved; turn on subtitles in Settings > Downloads)")})
+        if not subs_on:
+            return dataclasses.replace(made, urls=made.urls._replace(subtitle=None)) if made.urls.subtitle else made
+        pick = None
+        for lang in languages or [None]:
+            for media in listed:
+                media_lang = str(getattr(media, "language", "") or "").lower()
+                if lang is None or media_lang == lang or media_lang.split("-")[0] == lang:
+                    pick = media
+                    break
+            if pick is not None:
+                break
+        if pick is None:
+            return dataclasses.replace(made, urls=made.urls._replace(subtitle=None)) if made.urls.subtitle else made
+        url = m3u8_module.parse_url(pick.absolute_uri, trim=False)
+        SUB_LANGUAGE[str(url)] = re.sub(r"[^a-z0-9-]", "", str(getattr(pick, "language", "") or "").lower())[:12] or "subtitles"
+        return dataclasses.replace(made, urls=made.urls._replace(subtitle=url))
+
+    details.new = staticmethod(new)
+
+    original_download = hls.download
+
+    async def download(media_item, rendition, download_fn, client):
+        streams = await original_download(media_item, rendition, download_fn, client)
+        sub = getattr(streams, "subs", None)
+        if sub and Path(sub).is_file():
+            source = str(getattr(rendition.subtitle, "source", "") or "")
+            lang = SUB_LANGUAGE.get(source, "subtitles")
+            video = Path(media_item.path)
+            target = video.with_name(f"{video.stem}.{lang}{Path(sub).suffix or '.vtt'}")
+            number = 2
+            while target.exists():  # never overwrite
+                target = video.with_name(f"{video.stem}.{lang} ({number}){Path(sub).suffix or '.vtt'}")
+                number += 1
+            try:
+                Path(sub).replace(target)
+                emit({"type": "log", "level": "info", "message": f"Subtitles saved: {target.name}"})
+                streams = streams._replace(subs=target)
+                try:
+                    Path(sub).parent.rmdir()  # the stream's temporary folder, now empty
+                except OSError:
+                    pass
+            except OSError as error:
+                emit({"type": "log", "level": "warning", "message": f"Subtitles could not be moved beside the video: {error}"})
+        return streams
+
+    hls.download = download
 
 
 def _install_last_post_report() -> None:
@@ -1022,6 +1299,75 @@ def _install_db_reserve() -> None:
     for module in (common, _db):
         if hasattr(module, "pre_allocate_250mb"):
             module.pre_allocate_250mb = pre_allocate_small
+
+
+def _file_lock(path: Path, timeout: float = 60.0):
+    """An OS file lock on `path` (msvcrt on Windows, fcntl elsewhere); released when the process dies."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def held():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(path, "a+b")  # noqa: SIM115
+        deadline = time.monotonic() + timeout
+        locked = False
+        try:
+            while not locked:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = True
+                except OSError:
+                    if time.monotonic() > deadline:
+                        break
+                    time.sleep(0.05)
+            yield locked
+        finally:
+            if locked:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            handle.close()
+
+    return held()
+
+
+def _install_db_open_lock() -> None:
+    """With several jobs at once, two engines can open the database together. Creating or
+    upgrading it is done by one engine at a time; reading and writing afterwards is SQLite's job."""
+    try:
+        from cyberdrop_dl.database._db import Database
+    except Exception:  # noqa: BLE001
+        return
+    original = Database.__aenter__
+
+    async def aenter(self):
+        import asyncio
+
+        lock = _file_lock(PORTABLE / "engine-db.lock")
+        await asyncio.to_thread(lock.__enter__)
+        try:
+            return await original(self)
+        finally:
+            await asyncio.to_thread(lock.__exit__, None, None, None)
+
+    Database.__aenter__ = aenter
 
 
 def _install_progress() -> None:
@@ -1165,7 +1511,7 @@ def _cookie_source(value: object) -> Path | None:
     if not isinstance(value, str) or not value:
         return None
     candidate = Path(value).resolve()
-    allowed = (ROOT / "appdata").resolve()
+    allowed = PORTABLE.resolve()
     try:
         candidate.relative_to(allowed)
     except ValueError:
@@ -1205,7 +1551,7 @@ def _filter_cookies(source: Path | None, mapping: dict, urls: list[str]) -> Path
         files = [source] if source.is_file() else sorted(source.glob("*.txt"))
     keys = [str(key).lower() for key in mapping]
     hosts = {(urlparse(url).hostname or "").lower().removeprefix("www.") for url in urls} - {""}
-    target = PORTABLE / "cookies" / "engine"
+    target = ENGINE_COOKIES
     shutil.rmtree(target, ignore_errors=True)
     target.mkdir(parents=True, exist_ok=True)
     kept_sites: set[str] = set()
@@ -1268,11 +1614,22 @@ def _run() -> int:
     destination.mkdir(parents=True, exist_ok=True)
     _install_progress()
     _install_db_reserve()
+    _install_db_open_lock()
     _install_download_clearance()
     _install_server_slots(_bound_int(payload.get("serverSlots"), 1, 6, 3))
+    SITE_LIMITS.configure(payload.get("siteLimits"))
+    _install_retry_policy(_bound_int(payload.get("retryMaxDelay"), 2, 120, 20), _bound_int(payload.get("retryAfterCap"), 5, 600, 60))
     _install_type_folders(bool(payload.get("typeFolders")))
+    _install_rules(payload.get("rules"), destination)
+    _install_quality(payload)
+    _install_segments(_bound_int(payload.get("segments"), 0, 8, 4), _bound_int(payload.get("segmentMinMB"), 1, 4096, 64))
     _install_last_post_report()
     _install_resume_skip(payload.get("skipUrls") or [])
+    if payload.get("previewOnly"):
+        # 3.1 naming preview: pages are crawled and every file is named, nothing is downloaded
+        from cyberdrop_dl.crawlers import SKIP_DOWNLOAD
+
+        SKIP_DOWNLOAD.set(True)
     # Read by the TikTok patch in engine/vendor-patches.
     os.environ["NEXDROP_TIKTOK_AUDIO"] = "1" if payload.get("tiktokAudio") else "0"
     bridge = _LogBridge()
@@ -1393,6 +1750,20 @@ def _run() -> int:
         fields["filters"] = Filters(**filters)
     except Exception as error:  # noqa: BLE001
         emit({"type": "log", "level": "warning", "message": f"File filters could not be applied: {error}"})
+    # 3.1 quality options that the site handlers themselves support (engine config, crawlers.py)
+    try:
+        from cyberdrop_dl.config.crawlers import BandcampConfig, Crawlers, OctaveMusicConfig, TikTokConfig
+
+        crawler_fields = {}
+        if payload.get("tiktokOriginal"):
+            crawler_fields["tiktok"] = TikTokConfig(original=True)
+        if payload.get("audioLossless"):
+            crawler_fields["bandcamp"] = BandcampConfig(formats=("flac", "wav", "aiff", "alas", "mp3-320", "aac-hi", "vorbis", "mp3"))
+            crawler_fields["octave_music"] = OctaveMusicConfig(quality="lossless")
+        if crawler_fields:
+            fields["crawlers"] = Crawlers(**crawler_fields)
+    except Exception as error:  # noqa: BLE001
+        emit({"type": "log", "level": "warning", "message": f"Quality options could not be applied: {error}"})
     from cyberdrop_dl.smart_naming import CORRECTIONS, REGISTRY, REPORT, SETTINGS as NAMING, NamingSettings
 
     naming = NamingSettings.from_payload(payload)
@@ -1402,6 +1773,13 @@ def _run() -> int:
     if problem:
         emit({"type": "log", "level": "warning", "message": f"The filename template is not used: {problem}."})
     fields["max_children"] = MaxChildren()
+    if SLOT:
+        try:  # the engine clears its CSV logs on start; a second job must not clear the first one's
+            from cyberdrop_dl.config.settings import Logs
+
+            fields["logs"] = Logs(folder=PORTABLE / "logs" / f"job{SLOT}")
+        except Exception:  # noqa: BLE001
+            pass
     try:
         from cyberdrop_dl.config.settings import SubFolders, _SubFoldersInclude
 
@@ -1484,7 +1862,7 @@ def _run() -> int:
             emit({"type": "done", "saved": saved, "completed": len(saved)})
     finally:
         # The filtered cookie copies are sign-ins in plain text; they only exist during the run.
-        shutil.rmtree(PORTABLE / "cookies" / "engine", ignore_errors=True)
+        shutil.rmtree(ENGINE_COOKIES, ignore_errors=True)
         FORUM_PAGE_START.reset(page_start)
         FORUM_PAGE_END.reset(page_end)
         ORDER_MODE.reset(order_token)

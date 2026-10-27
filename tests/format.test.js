@@ -76,10 +76,10 @@ test("checksumFor reads SHA256SUMS.txt", () => {
 });
 
 test("download modes resolve to fixed limits, custom keeps the user's numbers", () => {
-  assert.deepStrictEqual(fmt.modeLimits("balanced"), { maxDownloads: 8, perHost: 4, serverSlots: 2 });
-  assert.deepStrictEqual(fmt.modeLimits("low", { maxDownloads: 30 }), { maxDownloads: 3, perHost: 2, serverSlots: 1 });
-  assert.deepStrictEqual(fmt.modeLimits("custom", { maxDownloads: 40, perHost: "5", serverSlots: 0 }), { maxDownloads: 32, perHost: 5, serverSlots: 1 });
-  assert.deepStrictEqual(fmt.modeLimits("nonsense", {}), { maxDownloads: 16, perHost: 6, serverSlots: 3 });
+  assert.deepStrictEqual(fmt.modeLimits("balanced"), { maxDownloads: 8, perHost: 4, serverSlots: 2, segments: 2 });
+  assert.deepStrictEqual(fmt.modeLimits("low", { maxDownloads: 30 }), { maxDownloads: 3, perHost: 2, serverSlots: 1, segments: 0 });
+  assert.deepStrictEqual(fmt.modeLimits("custom", { maxDownloads: 40, perHost: "5", serverSlots: 0, segments: 12 }), { maxDownloads: 32, perHost: 5, serverSlots: 1, segments: 8 });
+  assert.deepStrictEqual(fmt.modeLimits("nonsense", {}), { maxDownloads: 16, perHost: 6, serverSlots: 3, segments: 4 });
   assert.strictEqual(fmt.guessMode({ maxDownloads: 16, perHost: 6, serverSlots: 3 }), "auto");
   assert.strictEqual(fmt.guessMode({}), "auto");
   assert.strictEqual(fmt.guessMode({ maxDownloads: 4, perHost: 6 }), "custom");
@@ -137,4 +137,111 @@ test("diagnostics redaction removes secrets and the user name", () => {
   assert.ok(out.includes("n=1"));
   assert.ok(out.includes('"maxDownloads": 8'));
   assert.ok(out.includes("~\\Downloads\\x.jpg"));
+});
+
+test("duplicate links with other tracking parameters are left out (3.1)", () => {
+  assert.strictEqual(fmt.normalizeUrl("https://www.Cyberdrop.cr/a/xyz/?utm_source=x&page=2#top"), "https://cyberdrop.cr/a/xyz?page=2");
+  assert.strictEqual(fmt.normalizeUrl("https://site.test/search?s=cats"), "https://site.test/search?s=cats");
+  assert.strictEqual(fmt.normalizeUrl("https://x.com/u/status/1?s=20&t=abc"), "https://x.com/u/status/1");
+  const parsed = fmt.parseLinks("https://a.test/x?utm_source=1\nhttps://a.test/x/\nhttps://b.test/y\nhttps://b.test/y");
+  assert.deepStrictEqual(parsed.urls, ["https://a.test/x?utm_source=1", "https://b.test/y"]);
+  assert.deepStrictEqual(parsed.duplicates, ["https://a.test/x/"]);
+});
+
+test("per-site limits accept host = N lines and report the rest", () => {
+  const { limits, bad } = fmt.parseSiteLimits("# comment\nbunkr.cr = 2\nhttps://www.GoFile.io/: 3\n\nnope\nx.test = 99");
+  assert.deepStrictEqual(limits, { "bunkr.cr": 2, "gofile.io": 3 });
+  assert.deepStrictEqual(bad, ["nope", "x.test = 99"]);
+});
+
+test("rule checks match desktop/rules.py", () => {
+  const rule = (then, ...when) => ({ then, when: when.map(([field, op, value]) => ({ field, op, value })) });
+  assert.deepStrictEqual(fmt.ruleProblems(rule("skip", ["type", "is", "video"])), []);
+  assert.deepStrictEqual(fmt.ruleProblems(rule("skip")), ["add at least one condition"]);
+  assert.ok(fmt.ruleProblems(rule("folder", ["type", "is", "video"])).includes("choose the folder"));
+  assert.ok(fmt.ruleProblems({ ...rule("folder", ["size", "over", "5"]), folder: "D:/x" })[0].startsWith("size can only"));
+  assert.ok(fmt.ruleProblems(rule("skip", ["site", "is", "not a site"]))[0].includes("is not a site"));
+  assert.deepStrictEqual(fmt.ruleProblems(rule("skip", ["site", "is", "https://www.bunkr.cr/a/x"])), []);
+  assert.deepStrictEqual(fmt.ruleProblems(rule("only", ["size", "under", "0"])), ["the size must be a number of MB above 0"]);
+  assert.deepStrictEqual(fmt.ruleProblems(rule("skip", ["date", "before", "31/01/2024"])), ["the date must look like 2024-01-31"]);
+  assert.deepStrictEqual(fmt.ruleProblems(rule("skip", ["name", "is", "x"])), ["a condition is incomplete"]);
+  const cleaned = fmt.cleanRuleList([{ then: "bogus", when: [{ field: "nope", op: "is", value: 3 }], extra: 1 }, null]);
+  assert.strictEqual(cleaned.length, 1);
+  assert.strictEqual(cleaned[0].then, "skip");
+  assert.strictEqual(cleaned[0].enabled, true);
+  assert.deepStrictEqual(cleaned[0].when, [{ field: "type", op: "is", value: "3" }]);
+  assert.strictEqual("extra" in cleaned[0], false);
+});
+
+test("download hours on chosen days, across midnight", () => {
+  const at = (day, hh, mm = 0) => new Date(2026, 9, 25 + day, hh, mm); // 2026-10-25 is a Sunday
+  assert.strictEqual(fmt.inSchedule(at(5, 23, 30), "23:00", "02:00", [5]), true); // Friday night
+  assert.strictEqual(fmt.inSchedule(at(6, 1), "23:00", "02:00", [5]), true); // Saturday 01:00 belongs to Friday
+  assert.strictEqual(fmt.inSchedule(at(6, 23, 30), "23:00", "02:00", [5]), false);
+  assert.strictEqual(fmt.inSchedule(at(6, 12), "08:00", "20:00", [0, 6]), true); // weekends only
+  assert.strictEqual(fmt.inSchedule(at(1, 12), "08:00", "20:00", [0, 6]), false);
+  assert.strictEqual(fmt.inSchedule(at(1, 12), "08:00", "20:00", []), true); // no list: every day
+  assert.strictEqual(fmt.inSchedule(at(1, 21), "08:00", "20:00"), false);
+  const next = fmt.nextScheduleStart(at(1, 12), "01:00", "07:00", [6]);
+  assert.strictEqual(next.getDay(), 6);
+  assert.strictEqual(next.getHours(), 1);
+  assert.strictEqual(fmt.nextScheduleStart(at(1, 0, 30), "01:00", "07:00").getDate(), at(1, 1).getDate());
+});
+
+test("what can be watched, and when a watch is due", () => {
+  assert.strictEqual(fmt.watchable({ handler: "builtin", kind: "profile" }).ok, true);
+  assert.strictEqual(fmt.watchable({ handler: "generic", kind: "forum post" }).kind, "forum thread");
+  assert.strictEqual(fmt.watchable({ handler: "direct", kind: "direct file" }).ok, false);
+  assert.match(fmt.watchable({ handler: "builtin", kind: "video" }).reason, /This is a video/);
+  assert.match(fmt.watchable({ handler: "builtin", kind: "page" }).reason, /can be watched/);
+  assert.strictEqual(fmt.watchMinutes({ everyHours: 6 }), 360); // 3.0 watches
+  assert.strictEqual(fmt.watchMinutes({ everyMinutes: 5 }), 30); // never more often than every 30 minutes
+  const now = Date.parse("2026-10-27T12:00:00Z");
+  assert.strictEqual(fmt.watchDue({ everyMinutes: 60, lastCheck: "2026-10-27T11:30:00Z" }, now), false);
+  assert.strictEqual(fmt.watchDue({ everyMinutes: 60, lastCheck: "2026-10-27T10:59:00Z" }, now), true);
+  assert.strictEqual(fmt.watchDue({ everyMinutes: 60, paused: true }, now), false);
+  assert.strictEqual(fmt.everyText(4320), "Every 3 days");
+});
+
+test("retry later and start times", () => {
+  const job = { id: "j1", label: "album", urls: ["https://a.test/x"], doneUrls: ["u"] };
+  const now = Date.parse("2026-10-27T12:00:00Z");
+  assert.strictEqual(fmt.retryLaterJob(job, { retryLater: 0, failed: 2 }, 30, now), null);
+  assert.strictEqual(fmt.retryLaterJob(job, { retryLater: 2, stopped: true }, 30, now), null);
+  assert.strictEqual(fmt.retryLaterJob(job, { retryLater: 2 }, 0, now), null);
+  const first = fmt.retryLaterJob(job, { retryLater: 2 }, 30, now);
+  assert.strictEqual(first.label, "Retry 1: album");
+  assert.strictEqual(first.startAt, "2026-10-27T12:30:00.000Z");
+  assert.strictEqual(first.doneUrls, undefined);
+  const second = fmt.retryLaterJob(first, { retryLater: 1 }, 30, now);
+  assert.strictEqual(second.label, "Retry 2: album");
+  assert.strictEqual(second.startAt, "2026-10-27T13:00:00.000Z"); // each round waits longer
+  const fourth = fmt.retryLaterJob({ ...second, retryRound: 3 }, { retryLater: 1 }, 30, now);
+  assert.strictEqual(fourth, null);
+  assert.strictEqual(fmt.jobReady({ startAt: "2026-10-27T12:30:00Z" }, now), false);
+  assert.strictEqual(fmt.jobReady({ startAt: "2026-10-27T11:30:00Z" }, now), true);
+  assert.strictEqual(fmt.jobReady({ hold: true }, now), false);
+  const cleaned = fmt.cleanJob({ urls: ["https://a.test/x"], startAt: "2026-10-27T12:30:00Z", stopAt: "2026-10-27T12:00:00Z" });
+  assert.strictEqual(cleaned.startAt, "2026-10-27T12:30:00.000Z");
+  assert.strictEqual(cleaned.stopAt, undefined);
+});
+
+test("a job with more links than one run reads is run in parts", () => {
+  const urls = Array.from({ length: 450 }, (_, i) => `https://a.example/f/${i}`);
+  const [head, rest] = fmt.splitRun({ id: "j1", label: "a.example", urls, unsupported: ["magnet:?x"], parked: true });
+  assert.strictEqual(head.urls.length, 200);
+  assert.strictEqual(head.label, "a.example (part 1 of 3)");
+  assert.deepStrictEqual(head.unsupported, ["magnet:?x"]);
+  assert.strictEqual(rest.urls.length, 250);
+  assert.strictEqual(rest.urls[0], urls[200]);
+  assert.deepStrictEqual(rest.unsupported, []);
+  assert.strictEqual(rest.parked, undefined);
+  const [second, third] = fmt.splitRun(rest);
+  assert.strictEqual(second.label, "a.example (part 2 of 3)");
+  assert.strictEqual(third.label, "a.example (part 3 of 3)");
+  assert.strictEqual(third.urls.length, 50);
+  const [last, none] = fmt.splitRun(third);
+  assert.strictEqual(none, null);
+  assert.strictEqual(last, third);
+  assert.strictEqual(fmt.cleanJob({ urls: urls.slice(0, 3), partDone: 2 }).partDone, 2);
 });

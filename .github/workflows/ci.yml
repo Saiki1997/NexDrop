@@ -33,9 +33,15 @@ jobs:
         run: python -c "from cyberdrop_dl.scrape_mapper import get_crawlers_mapping as m; n=len(m()); print(n, 'handlers'); assert n > 300"
 
       - name: Python tests
+        shell: bash
         env:
           CDL_APPDATA_FOLDER: ${{ runner.temp }}/cdl
-        run: python -m unittest discover -s tests -p "test_*.py"
+        run: |
+          set +e
+          python -m unittest discover -s tests -p "test_*.py" 2>&1 | tee "$RUNNER_TEMP/tests.txt"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then python tests/ci_annotate.py "$RUNNER_TEMP/tests.txt"; fi
+          exit "$status"
 
       - name: Offline profile metadata and URL classification tests
         run: python -m unittest discover -s tests -p test_profile_metadata.py -v
@@ -51,4 +57,4 @@ jobs:
           python -c "import json; json.load(open('browser-extension/manifest.json'))"
 
       - name: Node tests
-        run: node --test tests/format.test.js
+        run: node --test tests/*.test.js

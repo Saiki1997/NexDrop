@@ -1,3 +1,81 @@
+# NEXDROP 3.1.0
+
+## Faster and more at once
+- **Several jobs at once** (Settings → Speed → Jobs at once, up to 4). Queued jobs start beside the running one and share the download limit and speed cap equally. Two jobs from the same site never run together. Each job has its own sign-in cookies and its own log, and History is locked so two jobs never write it at the same moment.
+- **Large files in parts.** A file of 64 MB or more downloads over up to 4 connections (Settings → Speed → Parts per large file), but only when the server says it supports this safely: it accepts ranges and sends a strong ETag or Last-Modified. Every part is checked for exactly its range and size. If anything looks wrong, the parts are thrown away and the file is downloaded again in one stream. Each part resumes on its own after a pause.
+- **Per-site limits** (for example `bunkr.cr = 2`), the longest wait between attempts, and how long a server's "retry after" is honoured.
+- **Big link lists run in parts.** One run reads at most 200 links. Before, pasting more than 200 links quietly used only the first 200. Now a bigger job runs in parts of 200, one after another, and the other parts wait at the top of the queue ("part 2 of 5").
+
+## Know what you are downloading
+- **Check** (beside Start) shows, for each link, the site, what it is (album, profile, thread, single file, playlist…), whether it needs a sign-in, and whether it's a duplicate of another link in the box. **Preview** opens each link once, without downloading, to read its title, author and the number of files.
+- **Naming preview** finds every file in a job and shows the name it will get, without downloading anything. You can try other templates and strategies there and save the ones you like.
+- **Test a site** (Settings → Speed) looks up the site's address, connects (through your proxy when one is set) and sends one small HTTPS request, and shows how long each step took and where it failed.
+
+## Download rules (Settings → Downloads)
+- Rules decide per file: **skip**, **only download** matching files, **save into a folder**, or **one at a time** for that site. A rule can match the site, file type, extension, file name, size, album, creator or link.
+- **Preview** shows what the rules would have done to the files already in your Library, before you use them.
+- Rules also apply to direct file links (links no site handler knows).
+
+## Watch, schedule and retry
+- **Watch any link**, not only forum threads: albums, profiles, channels and playlists. Each watch has its own interval (30 minutes to a week) and can be paused. Only new files are downloaded.
+- **Download hours on chosen days** (for example weekends only), with an option to **pause when the hours end**. A window that crosses midnight belongs to the day it starts.
+- **Start later / pause at:** queue a job to start at a time you choose, and optionally pause it at another.
+- **Retry later:** when files still fail for a reason that usually passes (busy server, rate limit, time-out, dropped connection, used-up quota), the job goes back in the queue with a start time. Up to 3 tries, each waiting longer; files already saved are skipped.
+
+## When a job finishes (Settings → Downloads)
+- Show a notification, open the download folder, **organize** the new files into folders (`{creator}/{album}`, `{site}/{type}`…), **verify** them, add them to the Library with thumbnails, and **save a manifest**.
+- **Verify** checks each saved file is still there, has the size the server sent, and is not a web page saved under a picture or video name. The sites don't publish checksums, so this can't compare against one.
+- **Manifest:** one `.nexdrop.json` file per job beside the downloads, with every file's link, name, site, size and SHA-256, so a copy can be checked later. It never holds sign-ins, cookies or the query part of links, and it never overwrites another file.
+- **Broken-link report** (Settings → Sites): failed files of the last days grouped by site and reason, as a Markdown file for a GitHub issue. Links are left out unless you ask, and then ids and secrets are removed.
+
+## Library (new window)
+- Everything you downloaded in one place: **gallery and list**, search, filters by site, type, creator and album, groups, and a preview.
+- Finds files that were **moved, renamed or deleted** outside NEXDROP.
+- **Duplicates:** identical content under any name (same size, then same SHA-256), and **similar** pictures, videos and recordings (the same picture resized or re-encoded, the same video in another quality). Fingerprints are made with the bundled ffmpeg.
+- **Storage:** space used per folder, site and type, and free space.
+- **Organize and rename** with a preview first. Files whose target already exists are marked as conflicts and skipped. Every move is journaled, so a batch can be **undone**, even after a crash.
+- **Archives:** list a ZIP or TAR, check every file's checksum, or extract into a new folder you choose. Nothing inside is run; paths that leave the folder, links and archive bombs are refused, and nothing is overwritten. 7z and RAR are reported as not supported.
+- **Statistics:** files saved, failed and skipped, time spent downloading, average and peak speed, same-content files, top sites and file types, and activity per day, week and month. **Export CSV**. Worked out from History on this PC.
+- Duplicates found during a run can be handled there: keep both, rename the new copy, or set it aside in `_duplicates`. Nothing is deleted.
+
+## Quality
+- **Video streams with several qualities** (HLS): best, a cap such as 1080p or 720p, or smallest. The Activity log says which quality was picked. A video offered in one quality is saved as it is.
+- **Subtitles:** when a streamed video lists subtitles, save them beside it as `video name.en.vtt`, in the languages you prefer. The log lists the languages a video offers even when this is off.
+- **TikTok in original quality** and **lossless audio** from Bandcamp and Octave when the release has it.
+
+## Easier to use
+- **Search Settings**, **reset** one setting or a whole tab to its default, and **profiles**: save the current settings under a name and switch between them. Export and import settings as a file (sign-ins are never included).
+- **File list:** search, sort by page order, name, size or state, resize columns, and show more columns (site, speed, folder, retries). Right-click a file to copy its link, name or error, open it, or show it in its folder.
+- Drop a `.txt`, `.csv`, `.json` or `.m3u` file on the window to add its links.
+- The window opens where you left it, unless that monitor is no longer connected.
+
+## Not in this version
+These parts of the plan are not done yet: a priority column in the queue, audio-only downloads (extracting the sound from a video), settings regrouped into more categories, and opening `.nexdrop.json` or link files from Explorer (file association).
+
+## Measured
+Measured on Linux (4 cores) against a local test server, with `tests/bench_large.py` and a window test; single runs, and Windows numbers will differ. Every saved file was compared byte for byte with what the server sent.
+
+| | 3.0.0 | 3.1.0 |
+| --- | ---: | ---: |
+| 100 files of 64 KB | 6.6 s | 6.4 s |
+| 1,000 files (5 runs of 200) | 46.3 s | 43.9 s |
+| 10,000 files (50 runs of 200) | 457 s, all correct | 460 s, all correct |
+| First and last of those 50 runs | 8.8 s, 9.1 s | 8.8 s, 9.1 s |
+| Highest memory of the download processes, 10,000 files | 177 MB | 177 MB |
+| 4 files of 64 MB, server capping each connection at 8 MB/s | 12.0 s | 6.8 s |
+| 8 files of 64 MB, no cap (local network speed) | 5.5 s | 7.0 s |
+| Window start | 0.68 s | 0.75 s |
+| Window memory, idle | 562 MB | 570 MB |
+| Window with 10,000 files in the list: longest pause | 44 ms | 18 ms |
+| Window start with 10,000 links queued (50 jobs) | 0.79 s | 0.77 s |
+
+- Large files in parts help when a host limits each connection, which many file hosts do. On a connection with no such limit they are slower, because the parts are joined after downloading. Set **Parts per large file** to 1 to turn them off.
+- Two problems were found and fixed while measuring: each file took a little longer as the download folder filled (a 200-file run went from 9 s to 16 s over 8 runs into one folder), and large files in parts used twice the memory.
+- Window memory is the whole Electron app, measured the same way for both versions.
+
+## Upgrading
+Unzip 3.1.0 over your 3.0.0 folder, or update from the banner. Settings, queue, watches, history and sign-ins carry over.
+
 # NEXDROP 3.0.0
 
 ## Downloads you can trust
