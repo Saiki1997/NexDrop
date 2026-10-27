@@ -653,8 +653,40 @@
     </div>
 
     <div class="lib-pane" data-lib="storage" hidden>
-      <p class="status-line" id="storage-status" role="status"></p>
-      <div class="lib-scroll storage" id="storage-body"></div>
+      <div class="lib-scroll storage">
+        <section class="storage-block organize" aria-labelledby="organize-title">
+          <h3 id="organize-title">Organize and rename</h3>
+          <div class="organize-grid">
+            <label class="field"><span class="field-label">Files</span><select class="select" id="org-scope"><option value="all">Every file in the library</option><option value="filters">Files matching the Files tab filters</option></select></label>
+            <label class="field"><span class="field-label">Into</span><select class="select" id="org-root"></select></label>
+            <label class="field"><span class="field-label">Folders</span>
+              <select class="select" id="org-preset">
+                <option value="">Keep folders as they are</option>
+                <option value="{creator}/{album}">Creator / Album</option>
+                <option value="{site}/{creator}">Site / Creator</option>
+                <option value="{type}/{creator}">Type / Creator</option>
+                <option value="{year}/{month}">Year / Month saved</option>
+                <option value="{site}/{date}">Site / Date saved</option>
+                <option value="custom">Custom pattern…</option>
+              </select>
+            </label>
+            <label class="field" id="org-folders-box" hidden><span class="field-label">Folder pattern</span><input type="text" id="org-folders" spellcheck="false" autocomplete="off" maxlength="200" placeholder="{creator}/{album}"></label>
+            <label class="field"><span class="field-label">Rename files (optional)</span><input type="text" id="org-names" spellcheck="false" autocomplete="off" maxlength="200" placeholder="Empty keeps names. Example: {creator} - {album} {number}"></label>
+          </div>
+          <small class="field-help">Variables: {creator} {album} {site} {type} {year} {month} {date} {title} {name} {number}. The extension is kept. Nothing is overwritten or deleted, and every change can be undone.</small>
+          <div class="field-row">
+            <button class="btn btn-quiet btn-small" id="btn-org-preview" type="button">Preview</button>
+            <button class="btn btn-primary btn-small" id="btn-org-apply" type="button" disabled>Move files</button>
+            <span class="status-line" id="org-status" role="status"></span>
+          </div>
+          <div class="check-wrap org-wrap" id="org-plan" hidden>
+            <table class="check-table"><thead><tr><th>File</th><th>Now</th><th>After</th><th></th></tr></thead><tbody id="org-rows"></tbody></table>
+          </div>
+          <ul class="storage-list" id="org-batches"></ul>
+        </section>
+        <p class="status-line" id="storage-status" role="status"></p>
+        <div class="storage" id="storage-body"></div>
+      </div>
     </div>
   </section>
 

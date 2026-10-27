@@ -748,3 +748,11 @@ svg { stroke: currentColor; stroke-width: 1.6; fill: none; stroke-linecap: round
 .rule-arrow { color: var(--ash-dim); }
 .rule-folder { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; justify-content: flex-start; font-family: var(--font-mono); font-size: 11.5px; }
 .rule.is-incomplete .rule-folder { color: var(--copper-hi); }
+
+/* ─── organizer (3.1) ─── */
+.organize-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+.organize-grid .field { margin: 0; }
+.organize input[type="text"] { width: 100%; padding: 7px 10px; border: 1px solid var(--shale-2); border-radius: var(--r-control); background: var(--basalt); }
+.organize .field-row { display: flex; align-items: center; gap: 10px; }
+.org-wrap { max-height: 260px; }
+.org-wrap td { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }

@@ -554,6 +554,109 @@
     document.dispatchEvent(new CustomEvent("nexdrop-storage", { detail: result }));
   }
 
+  // ─── organize and rename ──────────────────────────────────────────────────
+
+  let orgPlanId = "";
+
+  async function loadOrganize() {
+    const info = await api.libraryFolders().catch(() => null);
+    const select = $("#org-root");
+    const keep = select.value;
+    select.textContent = "";
+    for (const dir of info?.roots || []) select.append(new Option(dir, dir));
+    if (keep) select.value = keep;
+    loadBatches();
+  }
+
+  function relative(target, root) {
+    return root && target.toLowerCase().startsWith(root.toLowerCase()) ? target.slice(root.length).replace(/^[\\/]/, "") || "." : target;
+  }
+
+  async function previewOrganize() {
+    const preset = $("#org-preset").value;
+    const folders = preset === "custom" ? $("#org-folders").value.trim() : preset;
+    const names = $("#org-names").value.trim();
+    const root = $("#org-root").value;
+    const filters = $("#org-scope").value === "filters" ? query() : {};
+    setStatus("#org-status", "Working out where each file goes…");
+    $("#btn-org-apply").disabled = true;
+    const plan = await api.organizePlan({ filters, root, folders, names }).catch(() => null);
+    const rows = $("#org-rows");
+    rows.textContent = "";
+    if (!plan?.ok) {
+      $("#org-plan").hidden = true;
+      return setStatus("#org-status", plan?.error || "The preview did not work.", "bad");
+    }
+    orgPlanId = plan.id;
+    $("#org-plan").hidden = !plan.count;
+    for (const move of plan.moves) {
+      const tr = document.createElement("tr");
+      if (move.conflict) tr.className = "dupe";
+      const name = move.from.split(/[\\/]/).pop();
+      for (const text of [name, relative(move.from, root), relative(move.to, root), move.conflict || ""]) {
+        const td = el("td", "", text);
+        td.title = text;
+        tr.append(td);
+      }
+      rows.append(tr);
+    }
+    const ready = plan.count - plan.conflicts;
+    const bits = [`${ready.toLocaleString()} file${ready === 1 ? "" : "s"} to move`];
+    if (plan.conflicts) bits.push(`${plan.conflicts} conflict${plan.conflicts === 1 ? "" : "s"} stay where they are`);
+    if (plan.count > plan.moves.length) bits.push(`the first ${plan.moves.length} shown`);
+    if (plan.truncated) bits.push("only the first 20,000 files are planned at once");
+    setStatus("#org-status", plan.count ? bits.join(" · ") : "Every file is already where this pattern puts it.");
+    $("#btn-org-apply").disabled = !ready;
+  }
+
+  async function applyOrganize() {
+    $("#btn-org-apply").disabled = true;
+    setStatus("#org-status", "Moving…");
+    const result = await api.organizeApply(orgPlanId).catch(() => null);
+    if (result?.canceled) {
+      $("#btn-org-apply").disabled = false;
+      return setStatus("#org-status", "");
+    }
+    if (!result?.ok) return setStatus("#org-status", result?.error || "Nothing was moved.", "bad");
+    $("#org-plan").hidden = true;
+    const extra = result.skipped ? ` ${result.skipped} left where they were${result.errors[0] ? ` (${result.errors[0]})` : ""}.` : "";
+    setStatus("#org-status", `Moved ${result.moved.toLocaleString()} file${result.moved === 1 ? "" : "s"}.${extra}`, "ok");
+    loadBatches();
+    lib.pages.clear();
+  }
+
+  async function loadBatches() {
+    const list = $("#org-batches");
+    list.textContent = "";
+    const result = await api.organizeBatches().catch(() => null);
+    for (const batch of (result?.batches || []).filter((b) => b.count).slice(0, 5)) {
+      const li = el("li");
+      li.append(el("span", "lib-sub", `${new Date(batch.start * 1000).toLocaleString()} · ${batch.count} file${batch.count === 1 ? "" : "s"} moved${batch.undone ? " · undone" : ""}`));
+      if (!batch.undone) {
+        const undo = el("button", "btn btn-quiet btn-small", "Undo");
+        undo.type = "button";
+        undo.addEventListener("click", async () => {
+          const result = await api.organizeUndo(batch.batch).catch(() => null);
+          if (result?.canceled) return;
+          if (!result?.ok) return setStatus("#org-status", result?.error || "Undo did not work.", "bad");
+          setStatus("#org-status", `Moved ${result.restored} file(s) back.${result.problems.length ? ` ${result.problems.length} could not be moved back: ${result.problems[0]}` : ""}`, result.problems.length ? "bad" : "ok");
+          loadBatches();
+          lib.pages.clear();
+        });
+        li.append(undo);
+      }
+      list.append(li);
+    }
+  }
+
+  $("#org-preset").addEventListener("change", () => {
+    $("#org-folders-box").hidden = $("#org-preset").value !== "custom";
+    $("#btn-org-apply").disabled = true;
+  });
+  for (const sel of ["#org-folders", "#org-names", "#org-root", "#org-scope"]) $(sel).addEventListener("input", () => { $("#btn-org-apply").disabled = true; });
+  $("#btn-org-preview").addEventListener("click", previewOrganize);
+  $("#btn-org-apply").addEventListener("click", applyOrganize);
+
   // ─── folders ──────────────────────────────────────────────────────────────
 
   async function manageFolders() {
@@ -672,7 +775,10 @@
     lib.tab = name;
     for (const tab of $$("#library-tabs [role=tab]")) tab.setAttribute("aria-selected", String(tab.dataset.lib === name));
     for (const pane of $$("#library .lib-pane")) pane.hidden = pane.dataset.lib !== name;
-    if (name === "storage") loadStorage();
+    if (name === "storage") {
+      loadOrganize();
+      loadStorage();
+    }
     if (name === "files") renderFiles();
   }
 

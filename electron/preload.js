@@ -58,6 +58,10 @@ contextBridge.exposeInMainWorld("api", {
   libraryFolders: () => ipcRenderer.invoke("library-folders"),
   libraryAddFolder: () => ipcRenderer.invoke("library-add-folder"),
   libraryRemoveFolder: (dir) => ipcRenderer.invoke("library-remove-folder", dir),
+  organizePlan: (body) => ipcRenderer.invoke("organize-plan", body),
+  organizeApply: (id) => ipcRenderer.invoke("organize-apply", id),
+  organizeBatches: () => ipcRenderer.invoke("organize-batches"),
+  organizeUndo: (batch) => ipcRenderer.invoke("organize-undo", batch),
   libraryAction: (body) => ipcRenderer.invoke("library-action", body),
   duplicateAction: (body) => ipcRenderer.invoke("duplicate-action", body),
   onPipelineEvent: (callback) => {

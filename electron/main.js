@@ -1771,6 +1771,55 @@ ipcMain.handle("library-action", async (_event, body) => {
   return { ok: false, error: "Unknown action." };
 });
 
+// Organize and rename (3.1, Library > Storage). The plan stays here between preview and apply,
+// so what is moved is exactly what was shown.
+const ORGANIZE_JOURNAL = path.join(APPDATA, "organize-journal.jsonl");
+let organizePlan = null;
+
+async function organizer(command, body, timeout = 600000) {
+  const result = await runPython([path.join(ROOT, "desktop", "organizer.py"), command, LIBRARY_DB], { input: `${JSON.stringify(body)}\n`, timeout });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "The organizer did not answer.").slice(-300) };
+}
+
+ipcMain.handle("organize-plan", async (_event, body) => {
+  const plan = await organizer("plan", {
+    filters: body?.filters && typeof body.filters === "object" ? body.filters : {},
+    root: String(body?.root || ""),
+    folders: String(body?.folders || "").slice(0, 200),
+    names: String(body?.names || "").slice(0, 200),
+    roots: libraryRoots(),
+  });
+  organizePlan = plan.ok ? plan : null;
+  if (!plan.ok) return plan;
+  return { ...plan, moves: plan.moves.slice(0, 500) };
+});
+
+ipcMain.handle("organize-apply", async (_event, id) => {
+  if (!organizePlan || organizePlan.id !== id) return { ok: false, error: "Preview again first." };
+  const ready = organizePlan.count - organizePlan.conflicts;
+  if (!ready) return { ok: false, error: "Nothing to move." };
+  const answer = await dialog.showMessageBox(mainWindow, {
+    type: "question", buttons: [`Move ${ready} file${ready === 1 ? "" : "s"}`, "Cancel"], defaultId: 0, cancelId: 1,
+    title: "Organize files", message: `Move or rename ${ready} file${ready === 1 ? "" : "s"}?`,
+    detail: `${organizePlan.conflicts ? `${organizePlan.conflicts} with a conflict are left where they are. ` : ""}Nothing is overwritten or deleted, and you can undo this from Storage.`,
+  });
+  if (answer.response !== 0) return { ok: false, canceled: true };
+  const plan = organizePlan;
+  organizePlan = null;
+  return organizer("apply", { plan, jobs: JOBS_DB, journal: ORGANIZE_JOURNAL, roots: libraryRoots(), label: String(plan.label || "") });
+});
+
+ipcMain.handle("organize-batches", () => organizer("batches", { journal: ORGANIZE_JOURNAL }, 30000));
+
+ipcMain.handle("organize-undo", async (_event, batch) => {
+  const answer = await dialog.showMessageBox(mainWindow, {
+    type: "question", buttons: ["Undo", "Cancel"], defaultId: 0, cancelId: 1, title: "Undo organize",
+    message: "Move these files back to where they were?", detail: "Files that were moved again or replaced in the meantime are left alone.",
+  });
+  if (answer.response !== 0) return { ok: false, canceled: true };
+  return organizer("undo", { batch: String(batch || ""), jobs: JOBS_DB, journal: ORGANIZE_JOURNAL });
+});
+
 // After a run with "Ask" or "Replace after confirmation": one pair at a time from the list.
 ipcMain.handle("duplicate-action", async (_event, body) => {
   const target = path.resolve(String(body?.path || ""));
