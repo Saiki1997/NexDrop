@@ -57,11 +57,11 @@ class SharedState(unittest.TestCase):
                 other.wait()
 
 
-def start_session(appdata: Path, slot: int, urls: list[str], folder: Path) -> subprocess.Popen:
+def start_session(appdata: Path, slot: int, urls: list[str], folder: Path, **extra) -> subprocess.Popen:
     env = {**os.environ, "NEXDROP_APPDATA": str(appdata), "NEXDROP_SLOT": str(slot), "PYTHONIOENCODING": "utf-8",
            "NEXDROP_FLARE_MANAGED": "1", "NEXDROP_RETRY_WAIT": "0"}
     config = {"urls": urls, "downloadsDir": str(folder), "orderMode": "parallel", "maxDownloads": 4, "perHost": 4,
-              "smartNames": False, "flareSolver": False, "redownload": True, "autoRetry": False}
+              "smartNames": False, "flareSolver": False, "redownload": True, "autoRetry": False, **extra}
     proc = subprocess.Popen([sys.executable, str(ROOT / "tests" / "session_harness.py")], stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", env=env)
     proc.stdin.write(json.dumps(config) + "\n")

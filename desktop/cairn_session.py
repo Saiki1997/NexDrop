@@ -41,6 +41,7 @@ if os.path.normcase(_DESKTOP_DIR) not in {os.path.normcase(os.path.abspath(e)) f
     sys.path.insert(0, _DESKTOP_DIR)
 from auth_cookies import convert_any  # noqa: E402
 import error_classes  # noqa: E402
+import dup_actions  # noqa: E402
 from job_store import JobStore  # noqa: E402
 from scrape_status import classify_scrape_message  # noqa: E402
 from state_lock import RunningMarker, shared_state  # noqa: E402
@@ -1647,10 +1648,20 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
     for text in hints.summary():
         log("warning", text)
     if duplicates:
-        log("info", f"{len(duplicates)} saved file(s) have the same content as files you already had. "
-                    "Both copies were kept; nothing was deleted.")
-        for path, other in duplicates[:20]:
-            log("info", f"  {path}  =  {other}")
+        action = str(config.get("duplicateAction") or "keep")
+        action = action if action in dup_actions.ACTIONS else "keep"
+        if store:
+            store.flush()  # the new copies' History rows must exist before they are moved or renamed
+        handled = dup_actions.apply(action, duplicates, folder, APPDATA / "jobs.sqlite")
+        what = {"rename": "The new copies were renamed with \"(duplicate)\".",
+                "skip": f"The new copies were moved to the {dup_actions.ASIDE} folder.",
+                "ask": "Choose what to do with them in the list that opens.",
+                "replace": "Choose what to do with them in the list that opens."}.get(action, "Both copies were kept.")
+        log("info", f"{len(duplicates)} saved file(s) have the same content as files you already had. {what} Nothing was deleted.")
+        for row in handled[:20]:
+            log("info", f"  {row['path']}  =  {row['of']}" + (f"  ({row['error']})" if row.get("error") else ""))
+        if action in ("ask", "replace"):
+            emit({"type": "duplicates", "action": action, "root": str(folder), "items": handled[:500]})
     with FILES.lock:
         needs_account = sum(1 for row in FILES.rows.values() if "sign in to Telegram" in (row.get("reason") or ""))
     if needs_account:
