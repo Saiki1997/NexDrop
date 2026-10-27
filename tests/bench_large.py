@@ -11,7 +11,9 @@ Measured per workload: wall time, files per second, CPU seconds of the session a
 (getrusage of finished children), the highest combined memory (RSS) of the session and its
 children sampled every 0.2 s, the memory of the last run compared with the first (growth), the
 events the session sent (what the window has to process), and the History database size.
-A throughput run downloads 8 files of 64 MB at the end.
+A throughput run downloads 8 files of 64 MB at the end, and a capped run 4 files of 64 MB from a
+server that sends each connection at most 8 MB/s, once in one stream and once with the default parts
+(the parts setting does nothing in versions before 3.1).
 
 --root points at another checkout (for example 3.0.0) to measure it the same way. Only
 127.0.0.1 is contacted.
@@ -39,6 +41,7 @@ from local_server import LocalServer, content  # noqa: E402
 PER_RUN = 200
 SMALL = 64 * 1024
 BIG = 64 * 1024 * 1024
+CAP_RATE = 8 * 1024 * 1024
 
 HARNESS = """
 import signal, sys
@@ -68,11 +71,13 @@ def tree_rss(pid: int) -> int:
     return total
 
 
-def one_run(root: Path, appdata: Path, urls: list[str], folder: Path) -> dict:
+def one_run(root: Path, appdata: Path, urls: list[str], folder: Path, segments: int | None = None) -> dict:
     env = {**os.environ, "NEXDROP_APPDATA": str(appdata), "PYTHONIOENCODING": "utf-8",
            "NEXDROP_FLARE_MANAGED": "1", "NEXDROP_RETRY_WAIT": "0"}
     config = {"urls": urls, "downloadsDir": str(folder), "orderMode": "parallel", "maxDownloads": 8, "perHost": 8,
               "smartNames": False, "flareSolver": False, "redownload": True, "autoRetry": False}
+    if segments is not None:
+        config["segments"] = segments
     proc = subprocess.Popen([sys.executable, "-c", HARNESS, str(root)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, text=True, encoding="utf-8", env=env, cwd=str(root))
     proc.stdin.write(json.dumps(config) + "\n")
@@ -109,13 +114,13 @@ def one_run(root: Path, appdata: Path, urls: list[str], folder: Path) -> dict:
             "failed": int(finished.get("failed") or 0)}
 
 
-def workload(root: Path, server: LocalServer, count: int, size: int, tag: str) -> dict:
+def workload(root: Path, server: LocalServer, count: int, size: int, tag: str, rate: int = 0, segments: int | None = None) -> dict:
     work = Path(tempfile.mkdtemp(prefix=f"nexdrop-bench-{tag}-"))
     appdata, folder = work / "appdata", work / "downloads"
     appdata.mkdir()
     old_appdata = root / "engine" / "appdata"  # versions before 3.1 ignore NEXDROP_APPDATA
     names = [f"{tag}{i:05d}.jpg" for i in range(count)]
-    urls = [server.url("ok", name, size=size) for name in names]
+    urls = [server.url("ok", name, size=size, **({"rate": rate} if rate else {})) for name in names]
     old_db = old_appdata / "jobs.sqlite"
     old_size = old_db.stat().st_size if old_db.is_file() else 0  # never deleted: report what this workload added
     before = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -123,7 +128,7 @@ def workload(root: Path, server: LocalServer, count: int, size: int, tag: str) -
     runs = []
     for at in range(0, count, PER_RUN):
         run_started = time.monotonic()
-        runs.append(one_run(root, appdata, urls[at:at + PER_RUN], folder))
+        runs.append(one_run(root, appdata, urls[at:at + PER_RUN], folder, segments))
         runs[-1]["seconds"] = time.monotonic() - run_started
     wall = time.monotonic() - started
     after = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -141,6 +146,8 @@ def workload(root: Path, server: LocalServer, count: int, size: int, tag: str) -
     history = new_db.stat().st_size if new_db.is_file() else (old_db.stat().st_size - old_size if old_db.is_file() else 0)
     result = {
         "files": count,
+        "ratePerConnection": rate,
+        "segments": segments,
         "fileSize": size,
         "runs": len(runs),
         "wallSeconds": round(wall, 2),
@@ -169,6 +176,7 @@ def main() -> int:
     parser.add_argument("--root", default=str(HERE.parent))
     parser.add_argument("--files", default="100,1000,10000")
     parser.add_argument("--big", type=int, default=8, help="64 MB files for the throughput run (0 skips it)")
+    parser.add_argument("--capped", type=int, default=4, help="64 MB files from a server capping each connection at 8 MB/s (0 skips it)")
     parser.add_argument("--json", default="")
     args = parser.parse_args()
     root = Path(args.root).resolve()
@@ -182,6 +190,13 @@ def main() -> int:
             row = workload(root, server, args.big, BIG, "big-")
             out["throughput"] = row
             print(json.dumps(row), flush=True)
+        if args.capped:
+            # a host that caps each connection (many file hosts do): one stream against parts
+            out["capped"] = []
+            for parts in (1, None):
+                row = workload(root, server, args.capped, BIG, f"cap{parts}-", rate=CAP_RATE, segments=parts)
+                out["capped"].append(row)
+                print(json.dumps(row), flush=True)
     if args.json:
         Path(args.json).write_text(json.dumps(out, indent=2), encoding="utf-8")
     return 0

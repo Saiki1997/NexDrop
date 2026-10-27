@@ -4,6 +4,7 @@ Every file's bytes are a pure function of its name and version, so a test can ch
 file holds exactly one version of one file. Routes, all GET:
 
   /ok/<name>?size=N                 a file with Range, ETag and Last-Modified support
+                                    (&rate=B caps each connection at B bytes per second)
                                     (&as=<other> serves the bytes of <other> under this name)
   /trunc/<name>?size=N              no range support; announces N bytes, sends half, then drops (every time)
   /drop-once/<name>?size=N          the first request drops half way, later ones behave like /ok
@@ -28,14 +29,17 @@ request headers.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import socket
 import threading
+import time
 from collections import Counter
 
 from aiohttp import web
 
 
+@functools.lru_cache(maxsize=16)  # a split download asks for the same large file once per part
 def content(name: str, size: int, version: int = 1) -> bytes:
     seed = hashlib.sha256(f"{name}:{version}".encode()).digest()
     return (seed * (size // len(seed) + 1))[:size]
@@ -186,7 +190,13 @@ class LocalServer:
             await asyncio.sleep(0.5)  # let the client read what was sent before the drop
             request.transport.close()  # the client sees a broken transfer
             return response
+        rate = int(request.query.get("rate", "0") or 0)  # bytes per second for this connection, like a host's cap
+        sent_at = time.monotonic()
         for offset in range(0, len(body), 65536):
             await response.write(body[offset:offset + 65536])
+            if rate:
+                ahead = (offset + 65536) / rate - (time.monotonic() - sent_at)
+                if ahead > 0:
+                    await asyncio.sleep(ahead)
         await response.write_eof()
         return response

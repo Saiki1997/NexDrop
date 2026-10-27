@@ -39,8 +39,9 @@ logger = logging.getLogger(__name__)
 MIN_SIZE = 64 * 1024 * 1024  # files smaller than this are faster as one stream
 MIN_PART = 16 * 1024 * 1024
 MAX_PARTS = 4  # set by the bridge from the download mode; 0 or 1 turns splitting off
+PART_CHUNK = 1024 * 1024
 SEG_FILES_MAX = 16  # part files ever written are .seg1 ... .seg(MAX_PARTS - 1); the setting goes up to 8
-COPY_CHUNK = 8 * 1024 * 1024
+COPY_CHUNK = 1024 * 1024
 
 # The bridge replaces this with a check of the hosts that asked to slow down
 host_ok: Callable[[str], bool] = lambda host: True  # noqa: E731
@@ -227,6 +228,9 @@ async def run_parts(
 ) -> None:
     """Download every part concurrently. `open_part(start, end)` returns an async context manager
     with the answer for that range; the answer is checked by the caller-supplied opener."""
+    # The engine reads 10 MB at a time; with up to 4 parts per file that is 40 MB of buffers per
+    # file in flight, so parts read in smaller pieces.
+    chunk_size = min(chunk_size, PART_CHUNK)
 
     async def part0() -> None:
         want = layout[0][1] + 1 - have0
