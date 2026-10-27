@@ -668,8 +668,9 @@ def read_protected(path: Path) -> str:
     raw = path.read_bytes()
     if raw.startswith(_PROTECTED_MARK):
         opened = _dpapi(raw[len(_PROTECTED_MARK):], False)
-        return opened.decode("utf-8", errors="replace") if opened is not None else ""
-    return raw.decode("utf-8", errors="replace")
+        raw = opened if opened is not None else b""
+    # a 2.x file saved by a Windows editor has CRLF line ends; cookie lines are compared without them
+    return raw.decode("utf-8", errors="replace").replace("\r\n", "\n")
 
 
 def save_site_cookies(jar, path: Path = SESSION_COOKIES) -> int:
