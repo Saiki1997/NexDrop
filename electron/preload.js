@@ -54,6 +54,7 @@ contextBridge.exposeInMainWorld("api", {
   libraryQuery: (body) => ipcRenderer.invoke("library-query", body),
   libraryFacets: () => ipcRenderer.invoke("library-facets"),
   libraryGroups: (body) => ipcRenderer.invoke("library-groups", body),
+  rulesPreview: (body) => ipcRenderer.invoke("rules-preview", body),
   libraryStorage: () => ipcRenderer.invoke("library-storage"),
   libraryFolders: () => ipcRenderer.invoke("library-folders"),
   libraryAddFolder: () => ipcRenderer.invoke("library-add-folder"),

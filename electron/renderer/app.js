@@ -71,7 +71,7 @@
     autoRetry: { el: "#auto-retry", type: "check", def: true },
     typeFolders: { el: "#type-folders", type: "check", def: false },
     duplicateAction: { el: "#duplicate-action", type: "text", def: "keep", max: 10 },
-    destinationRules: { get: () => destRules.slice(0, 50), set: (v) => { destRules = cleanRules(v); renderRules(); } },
+    rules: { get: () => fmt.cleanRuleList(rules), set: (v) => { rules = fmt.cleanRuleList(v); renderRules(); } },
     typeImages: { el: "#type-images", type: "check", def: true },
     typeVideos: { el: "#type-videos", type: "check", def: true },
     typeAudio: { el: "#type-audio", type: "check", def: true },
@@ -409,7 +409,7 @@
       autoRetry: prefs.autoRetry,
       typeFolders: prefs.typeFolders,
       duplicateAction: prefs.duplicateAction,
-      destinationRules: (prefs.destinationRules || []).filter((rule) => rule.folder && (rule.site || rule.type)),
+      rules: (prefs.rules || []).filter((rule) => rule.enabled && !fmt.ruleProblems(rule).length),
       fileTypes: { images: prefs.typeImages, videos: prefs.typeVideos, audio: prefs.typeAudio, other: prefs.typeOther },
       minImageKB: prefs.minImageKB,
       skipUrls: job.doneUrls || [],
@@ -716,85 +716,194 @@
     checkLinks(false);
   });
 
-  // ─── destination rules (3.1) ──────────────────────────────────────────────
-  let destRules = [];
-  const RULE_TYPES = { image: "Images", video: "Videos", audio: "Audio", other: "Other files" };
+  // ─── download rules (3.1): "if a file ..., then ..." ───────────────────────
+  // Checked again by desktop/rules.py in the session; a rule with problems is kept but not used.
+  let rules = [];
+  const RULE_FIELD_LABEL = { type: "File type", ext: "Extension", site: "Site", creator: "Creator", name: "File name",
+    url: "Link", size: "Size", date: "Upload date" };
+  const RULE_OP_LABEL = { is: "is", in: "is one of", contains: "contains", "not-contains": "doesn't contain",
+    matches: "looks like", "not-matches": "doesn't look like", over: "is over (MB)", under: "is under (MB)", before: "is before", after: "is after" };
+  const RULE_ACTION_LABEL = { skip: "Skip it", only: "Only download files like this", folder: "Save it to a folder", single: "Download one at a time" };
+  const RULE_TYPE_LABEL = { image: "Images", video: "Videos", audio: "Audio", other: "Other files" };
+  const RULE_HINT = { ext: "jpg, png", site: "bunkr.cr", creator: "name", name: "*preview*", url: "/videos/", size: "500" };
 
-  function cleanRules(value) {
-    return (Array.isArray(value) ? value : []).filter((rule) => rule && typeof rule === "object").map((rule) => ({
-      site: String(rule.site || "").trim().toLowerCase().slice(0, 100),
-      type: RULE_TYPES[rule.type] ? rule.type : "",
-      folder: String(rule.folder || "").slice(0, 500),
-    })).filter((rule) => rule.site || rule.type).slice(0, 50);
+  function select(options, value, label) {
+    const el = document.createElement("select");
+    el.className = "select";
+    el.setAttribute("aria-label", label);
+    for (const [key, text] of Object.entries(options)) el.append(new Option(text, key));
+    el.value = value;
+    return el;
+  }
+
+  function iconButton(label, onClick) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn btn-icon btn-icon-small";
+    button.setAttribute("aria-label", label);
+    button.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 6l8 8M14 6l-8 8"/></svg>';
+    button.addEventListener("click", onClick);
+    return button;
+  }
+
+  function ruleChanged() {
+    $("#rules-preview").textContent = "";
+    savePrefsSoon();
+  }
+
+  function conditionRow(rule, cond, render) {
+    const row = document.createElement("div");
+    row.className = "rule-cond";
+    const field = select(RULE_FIELD_LABEL, cond.field, "Condition");
+    const ops = Object.fromEntries(fmt.RULE_FIELDS[cond.field].map((op) => [op, RULE_OP_LABEL[op]]));
+    if (!ops[cond.op]) cond.op = fmt.RULE_FIELDS[cond.field][0];
+    const op = select(ops, cond.op, "Comparison");
+    let value;
+    if (cond.field === "type") {
+      if (!RULE_TYPE_LABEL[cond.value]) cond.value = "video";
+      value = select(RULE_TYPE_LABEL, cond.value, "File type");
+    } else {
+      value = document.createElement("input");
+      value.type = cond.field === "date" ? "date" : cond.field === "size" ? "number" : "text";
+      if (cond.field === "size") { value.min = "0"; value.step = "any"; }
+      value.placeholder = RULE_HINT[cond.field] || "";
+      value.spellcheck = false;
+      value.value = cond.value;
+      value.setAttribute("aria-label", RULE_FIELD_LABEL[cond.field]);
+    }
+    field.addEventListener("change", () => {
+      cond.field = field.value;
+      cond.op = fmt.RULE_FIELDS[cond.field][0];
+      cond.value = "";
+      render();
+      ruleChanged();
+    });
+    op.addEventListener("change", () => { cond.op = op.value; render(); ruleChanged(); });
+    value.addEventListener("change", () => { cond.value = String(value.value).trim(); render(); ruleChanged(); });
+    const remove = iconButton("Remove condition", () => {
+      rule.when.splice(rule.when.indexOf(cond), 1);
+      render();
+      ruleChanged();
+    });
+    row.append(field, op, value, remove);
+    return row;
   }
 
   function renderRules() {
-    const list = $("#dest-rules");
+    const list = $("#rule-list");
     if (!list) return;
     list.textContent = "";
-    destRules.forEach((rule, index) => {
+    rules.forEach((rule, index) => {
       const li = document.createElement("li");
-      li.className = "rule";
-      let what;
-      if (rule.type) {
-        what = document.createElement("select");
-        what.className = "select";
-        for (const [value, label] of Object.entries(RULE_TYPES)) what.append(new Option(label, value));
-        what.value = rule.type;
-        what.addEventListener("change", () => { rule.type = what.value; savePrefsSoon(); });
-      } else {
-        what = document.createElement("input");
-        what.type = "text";
-        what.placeholder = "site, e.g. bunkr.cr";
-        what.spellcheck = false;
-        what.value = rule.site;
-        what.addEventListener("change", () => {
-          const site = fmt.host(what.value.includes("://") ? what.value : `https://${what.value}`).replace(/^www\./, "");
-          rule.site = site || what.value.trim().toLowerCase();
-          what.value = rule.site;
-          savePrefsSoon();
+      li.className = "rule-card";
+      const render = () => { renderRules(); };
+      const head = document.createElement("div");
+      head.className = "rule-head";
+      const toggle = document.createElement("input");
+      toggle.type = "checkbox";
+      toggle.checked = rule.enabled;
+      toggle.setAttribute("aria-label", "Use this rule");
+      toggle.addEventListener("change", () => { rule.enabled = toggle.checked; render(); ruleChanged(); });
+      const name = document.createElement("input");
+      name.type = "text";
+      name.className = "rule-name";
+      name.placeholder = `Rule ${index + 1}`;
+      name.value = rule.name;
+      name.setAttribute("aria-label", "Rule name");
+      name.addEventListener("change", () => { rule.name = name.value.trim().slice(0, 80); ruleChanged(); });
+      const up = document.createElement("button");
+      up.type = "button";
+      up.className = "btn btn-quiet btn-small";
+      up.textContent = "Move up";
+      up.disabled = index === 0;
+      up.addEventListener("click", () => { rules.splice(index - 1, 0, rules.splice(index, 1)[0]); render(); ruleChanged(); });
+      head.append(toggle, name, up, iconButton("Remove rule", () => { rules.splice(index, 1); render(); ruleChanged(); }));
+
+      const ifLine = document.createElement("div");
+      ifLine.className = "rule-label";
+      ifLine.textContent = "If a file";
+      const conds = document.createElement("div");
+      conds.className = "rule-conds";
+      for (const cond of rule.when) conds.append(conditionRow(rule, cond, render));
+      const add = document.createElement("button");
+      add.type = "button";
+      add.className = "btn btn-quiet btn-small";
+      add.textContent = rule.when.length ? "And also…" : "Add a condition";
+      add.addEventListener("click", () => {
+        rule.when.push({ field: "site", op: "is", value: "" });
+        render();
+        $(`#rule-list > li:nth-child(${index + 1}) .rule-cond:last-of-type input`)?.focus();
+      });
+      conds.append(add);
+
+      const thenLine = document.createElement("div");
+      thenLine.className = "rule-then";
+      const thenLabel = document.createElement("span");
+      thenLabel.className = "rule-label";
+      thenLabel.textContent = "then";
+      const action = select(RULE_ACTION_LABEL, rule.then, "What the rule does");
+      action.addEventListener("change", () => { rule.then = action.value; render(); ruleChanged(); });
+      thenLine.append(thenLabel, action);
+      if (rule.then === "folder") {
+        const folder = document.createElement("button");
+        folder.type = "button";
+        folder.className = "btn btn-quiet btn-small rule-folder";
+        folder.textContent = rule.folder || "Choose folder…";
+        folder.title = rule.folder || "";
+        folder.addEventListener("click", async () => {
+          const picked = await api.pickJobDir();
+          if (!picked?.ok) return;
+          rule.folder = picked.path;
+          render();
+          ruleChanged();
         });
+        thenLine.append(folder);
       }
-      const arrow = document.createElement("span");
-      arrow.className = "rule-arrow";
-      arrow.textContent = "→";
-      const folder = document.createElement("button");
-      folder.type = "button";
-      folder.className = "btn btn-quiet btn-small rule-folder";
-      folder.textContent = rule.folder || "Choose folder…";
-      folder.title = rule.folder || "";
-      folder.addEventListener("click", async () => {
-        const picked = await api.pickJobDir();
-        if (!picked?.ok) return;
-        rule.folder = picked.path;
-        renderRules();
-        savePrefsSoon();
-      });
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "btn btn-icon btn-icon-small";
-      remove.setAttribute("aria-label", "Remove rule");
-      remove.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 6l8 8M14 6l-8 8"/></svg>';
-      remove.addEventListener("click", () => {
-        destRules.splice(index, 1);
-        renderRules();
-        savePrefsSoon();
-      });
-      li.append(what, arrow, folder, remove);
-      if (!rule.folder) li.classList.add("is-incomplete");
+      li.append(head, ifLine, conds, thenLine);
+      const problems = fmt.ruleProblems(rule);
+      if (problems.length) {
+        const note = document.createElement("p");
+        note.className = "rule-problem";
+        note.textContent = `Not used yet: ${problems.join("; ")}.`;
+        li.append(note);
+      }
+      li.classList.toggle("is-off", !rule.enabled);
       list.append(li);
     });
+    $("#rules-empty").hidden = rules.length > 0;
   }
 
-  $("#btn-rule-site").addEventListener("click", () => {
-    destRules.push({ site: "", type: "", folder: "" });
+  $("#btn-rule-add").addEventListener("click", () => {
+    rules.push({ id: `r${Date.now().toString(36)}`, enabled: true, name: "", then: "skip", folder: "", when: [{ field: "name", op: "matches", value: "" }] });
     renderRules();
-    $("#dest-rules li:last-child input")?.focus();
+    $("#rule-list > li:last-child .rule-cond input")?.focus();
   });
-  $("#btn-rule-type").addEventListener("click", () => {
-    destRules.push({ site: "", type: "video", folder: "" });
-    renderRules();
-    savePrefsSoon();
+
+  $("#btn-rules-preview").addEventListener("click", async () => {
+    const out = $("#rules-preview");
+    const usable = rules.filter((rule) => rule.enabled && !fmt.ruleProblems(rule).length);
+    if (!usable.length) {
+      out.textContent = "No rule is ready to use yet.";
+      return;
+    }
+    out.textContent = "Checking your Library…";
+    const result = await api.rulesPreview({ rules: usable });
+    if (!result?.ok) {
+      out.textContent = result?.error || "The rules could not be checked.";
+      return;
+    }
+    if (!result.total) {
+      out.textContent = "Your Library has no files yet. Open the Library once to index your downloads, then check again.";
+      return;
+    }
+    const parts = [`Of ${result.total.toLocaleString()} files in your Library, these rules would skip ${result.skipped.toLocaleString()}`];
+    if (result.folder) parts.push(`send ${result.folder.toLocaleString()} to a rule folder`);
+    if (result.single) parts.push(`download ${result.single.toLocaleString()} one at a time`);
+    let text = `${parts.join(", ")}.`;
+    const examples = result.examples?.skipped || [];
+    if (examples.length) text += ` Skipped, for example: ${examples.slice(0, 4).join(", ")}.`;
+    text += " Upload dates aren't in the Library, so date conditions are not checked here.";
+    out.textContent = text;
   });
 
   // ─── naming preview (3.1): proposed names before downloading ──────────────

@@ -156,6 +156,8 @@ class _LogBridge(logging.Handler):
                         identity = None
                     if isinstance(identity, dict):
                         event["identity"] = identity
+                        if identity.get("creator"):
+                            RULE_CREATORS[parts[2]] = str(identity["creator"])
                 emit(event)
             return
         if raw.startswith("Telegram needs sign-in\t"):
@@ -176,6 +178,8 @@ class _LogBridge(logging.Handler):
             return
         if message.startswith("Download skipped "):
             url = _http_url(message) or ""
+            if url in RULE_SKIPPED:
+                return  # already reported with the rule's name
             lower = message.lower()
             reason = ("already downloaded" if "before the pause" in lower
                       else "file type turned off in Settings" if "extension" in lower or "ignored by config" in lower
@@ -1024,52 +1028,79 @@ def _install_type_folders(enabled: bool) -> None:
     dl.DownloadClient._download = download
 
 
-def _rule_matches(rule: dict, host: str, kind: str) -> bool:
-    site = str(rule.get("site") or "").lower().removeprefix("www.")
-    if site:
-        return host == site or host.endswith("." + site)
-    return str(rule.get("type") or "") == kind
+RULE_CREATORS: dict[str, str] = {}  # media link -> creator, from the naming record (for creator rules)
+RULE_SKIPPED: set[str] = set()  # links a rule skipped; the engine's own "skipped" line for them is not repeated
 
 
-def _install_destination_rules(rules: object, root: Path) -> None:
-    """Settings > Downloads > Destination rules (3.1): files from a site, or of a type, go to another
-    folder. The file keeps its place under the run's folder: <rule folder>/<album>/<name>.
-
-    The first matching rule wins. Folders were chosen in a folder dialog on this PC (checked by the
-    app before the run), so a rule can't point anywhere else."""
-    clean = []
-    for rule in rules if isinstance(rules, list) else []:
-        if not isinstance(rule, dict) or not rule.get("folder"):
-            continue
-        if not (rule.get("site") or rule.get("type") in ("image", "video", "audio", "other")):
-            continue
-        clean.append({"site": str(rule.get("site") or "").strip().lower(), "type": str(rule.get("type") or ""),
-                      "folder": Path(str(rule["folder"])).resolve()})
-    if not clean:
-        return
+def _install_rules(raw: object, root: Path) -> None:
+    """Settings > Downloads > Rules (3.1, desktop/rules.py): skip, only download, save to a folder,
+    one at a time. Checked when a file is found (site, type, name, link, creator, date), and again
+    when the server has said how big it is (size rules)."""
+    sys.path.append(str(ROOT.parent / "desktop"))
     try:
+        import rules as rule_engine
         from cyberdrop_dl.clients import downloads as dl
-        from cyberdrop_dl.constants import FileExt
+        from cyberdrop_dl.crawlers import crawler as crawler_module
     except Exception:  # noqa: BLE001
         return
-    original = dl.DownloadClient._download
+    active = rule_engine.clean(raw)
+    if not active:
+        return
     root = root.resolve()
 
+    def fact_for(media_item, size=None):
+        url = str(getattr(media_item, "url", "") or "")
+        name = str(getattr(media_item, "filename", "") or getattr(media_item, "original_filename", "") or "")
+        return rule_engine.facts(url, name, creator=RULE_CREATORS.get(url, ""), uploaded=getattr(media_item, "uploaded_at", None), size=size)
+
+    def skip(media_item, reason: str) -> None:
+        url = str(media_item.url)
+        RULE_SKIPPED.add(url)
+        emit({"type": "skipped", "url": url, "reason": reason})
+
+    original_skip = crawler_module._should_skip_by_config
+
+    def should_skip(media_item, config):
+        verdict = rule_engine.decide(active, fact_for(media_item))
+        if verdict["skip"]:
+            skip(media_item, verdict["skip"])
+            return True
+        return original_skip(media_item, config)
+
+    crawler_module._should_skip_by_config = should_skip
+
+    original_size = dl._check_filesize_limits
+
+    def size_allowed(media, config):
+        if not original_size(media, config):
+            return False
+        verdict = rule_engine.decide(active, fact_for(media, size=int(getattr(media, "size", 0) or 0)))
+        if verdict["skip"]:
+            skip(media, verdict["skip"])
+            return False
+        return True
+
+    dl._check_filesize_limits = size_allowed
+
+    import asyncio
+
+    single = asyncio.Semaphore(1)
+    original_download = dl.DownloadClient._download
+
     async def download(self, domain, media_item):
+        verdict = rule_engine.decide(active, fact_for(media_item))
         folder = getattr(media_item, "download_folder", None)
-        if folder is not None and not getattr(media_item, "is_segment", False):
-            ext = str(getattr(media_item, "ext", "") or "").lower()
-            kind = "image" if ext in FileExt.IMAGE else "video" if ext in FileExt.VIDEO else "audio" if ext in FileExt.AUDIO else "other"
-            host = str(getattr(getattr(media_item, "url", None), "host", "") or "").lower().removeprefix("www.")
-            rule = next((r for r in clean if _rule_matches(r, host, kind)), None)
-            if rule is not None:
-                try:
-                    relative = Path(folder).resolve().relative_to(root)
-                except ValueError:
-                    relative = None
-                if relative is not None and ".." not in relative.parts:
-                    media_item.download_folder = rule["folder"] / relative
-        return await original(self, domain, media_item)
+        if verdict["folder"] and folder is not None and not getattr(media_item, "is_segment", False):
+            try:
+                relative = Path(folder).resolve().relative_to(root)
+            except ValueError:
+                relative = None
+            if relative is not None and ".." not in relative.parts:
+                media_item.download_folder = Path(verdict["folder"]).resolve() / relative
+        if verdict["single"] and not getattr(media_item, "is_segment", False):
+            async with single:
+                return await original_download(self, domain, media_item)
+        return await original_download(self, domain, media_item)
 
     dl.DownloadClient._download = download
 
@@ -1466,7 +1497,7 @@ def _run() -> int:
     SITE_LIMITS.configure(payload.get("siteLimits"))
     _install_retry_policy(_bound_int(payload.get("retryMaxDelay"), 2, 120, 20), _bound_int(payload.get("retryAfterCap"), 5, 600, 60))
     _install_type_folders(bool(payload.get("typeFolders")))
-    _install_destination_rules(payload.get("destinationRules"), destination)
+    _install_rules(payload.get("rules"), destination)
     _install_segments(_bound_int(payload.get("segments"), 0, 8, 4), _bound_int(payload.get("segmentMinMB"), 1, 4096, 64))
     _install_last_post_report()
     _install_resume_skip(payload.get("skipUrls") or [])

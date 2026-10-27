@@ -379,5 +379,59 @@
     return out;
   }
 
-  return { parseSiteLimits, normalizeUrl, redact, cleanJob, parseJobFile, exportJob, TEMPLATE_VARS, templateProblem, renderTemplate, DOWNLOAD_MODES, modeLimits, guessMode, bytes, speed, mbps, duration, ago, parseLinks, host, finishText, compareVersions, clockMinutes, inTimeWindow, appLinkUrls, checksumFor };
+
+  // Download rules (3.1). The same checks as desktop/rules.py problems(), so the editor can say
+  // what is wrong before the rule is saved; the session checks again and ignores unusable rules.
+  const RULE_FIELDS = {
+    type: ["is"], ext: ["in"], site: ["is"], creator: ["is", "contains"], name: ["matches", "not-matches"],
+    url: ["contains", "not-contains"], size: ["over", "under"], date: ["before", "after"],
+  };
+  const RULE_ACTIONS = ["skip", "only", "folder", "single"];
+  const RULE_TYPES = ["image", "video", "audio", "other"];
+
+  function ruleSite(text) {
+    let value = String(text || "").trim().toLowerCase();
+    if (value.includes("://")) value = host(value);
+    return value.replace(/^www\./, "").replace(/^\/+|\/+$/g, "");
+  }
+
+  function ruleProblems(rule) {
+    const out = [];
+    const when = Array.isArray(rule && rule.when) ? rule.when : [];
+    const action = rule && rule.then;
+    if (!RULE_ACTIONS.includes(action)) out.push("choose what the rule does");
+    if (!when.length) out.push("add at least one condition");
+    for (const cond of when) {
+      const field = cond && cond.field;
+      const value = String((cond && cond.value) ?? "").trim();
+      if (!RULE_FIELDS[field] || !RULE_FIELDS[field].includes(cond.op)) { out.push("a condition is incomplete"); continue; }
+      if (!value) out.push(`the ${field} condition has no value`);
+      else if (field === "type" && !RULE_TYPES.includes(value)) out.push("the type must be images, videos, audio or other files");
+      else if (field === "site" && !/^[a-z0-9.-]+\.[a-z]{2,}$/.test(ruleSite(value))) out.push(`"${value}" is not a site such as bunkr.cr`);
+      else if (field === "size") {
+        if (!(Number(value) > 0)) out.push("the size must be a number of MB above 0");
+        if (action !== "skip" && action !== "only") out.push("size can only be used to skip or to only download files (the size is known after the folder is chosen)");
+      } else if (field === "date" && !(/^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value)))) out.push("the date must look like 2024-01-31");
+      else if (field === "name" && value.length > 200) out.push("the name pattern is too long");
+    }
+    if (action === "folder" && !String((rule && rule.folder) || "").trim()) out.push("choose the folder");
+    return [...new Set(out)];
+  }
+
+  /** Rules as saved in settings: known keys only, at most 50, 10 conditions each. */
+  function cleanRuleList(value) {
+    return (Array.isArray(value) ? value : []).filter((rule) => rule && typeof rule === "object").slice(0, 50).map((rule, index) => ({
+      id: String(rule.id || `r${Date.now().toString(36)}${index}`).slice(0, 40),
+      enabled: rule.enabled !== false,
+      name: String(rule.name || "").slice(0, 80),
+      then: RULE_ACTIONS.includes(rule.then) ? rule.then : "skip",
+      folder: String(rule.folder || "").slice(0, 500),
+      when: (Array.isArray(rule.when) ? rule.when : []).slice(0, 10).map((cond) => ({
+        field: RULE_FIELDS[cond && cond.field] ? cond.field : "type",
+        op: String((cond && cond.op) || ""), value: String((cond && cond.value) ?? "").slice(0, 300),
+      })),
+    }));
+  }
+
+  return { RULE_FIELDS, RULE_ACTIONS, RULE_TYPES, ruleProblems, cleanRuleList, parseSiteLimits, normalizeUrl, redact, cleanJob, parseJobFile, exportJob, TEMPLATE_VARS, templateProblem, renderTemplate, DOWNLOAD_MODES, modeLimits, guessMode, bytes, speed, mbps, duration, ago, parseLinks, host, finishText, compareVersions, clockMinutes, inTimeWindow, appLinkUrls, checksumFor };
 });

@@ -153,3 +153,22 @@ test("per-site limits accept host = N lines and report the rest", () => {
   assert.deepStrictEqual(limits, { "bunkr.cr": 2, "gofile.io": 3 });
   assert.deepStrictEqual(bad, ["nope", "x.test = 99"]);
 });
+
+test("rule checks match desktop/rules.py", () => {
+  const rule = (then, ...when) => ({ then, when: when.map(([field, op, value]) => ({ field, op, value })) });
+  assert.deepStrictEqual(fmt.ruleProblems(rule("skip", ["type", "is", "video"])), []);
+  assert.deepStrictEqual(fmt.ruleProblems(rule("skip")), ["add at least one condition"]);
+  assert.ok(fmt.ruleProblems(rule("folder", ["type", "is", "video"])).includes("choose the folder"));
+  assert.ok(fmt.ruleProblems({ ...rule("folder", ["size", "over", "5"]), folder: "D:/x" })[0].startsWith("size can only"));
+  assert.ok(fmt.ruleProblems(rule("skip", ["site", "is", "not a site"]))[0].includes("is not a site"));
+  assert.deepStrictEqual(fmt.ruleProblems(rule("skip", ["site", "is", "https://www.bunkr.cr/a/x"])), []);
+  assert.deepStrictEqual(fmt.ruleProblems(rule("only", ["size", "under", "0"])), ["the size must be a number of MB above 0"]);
+  assert.deepStrictEqual(fmt.ruleProblems(rule("skip", ["date", "before", "31/01/2024"])), ["the date must look like 2024-01-31"]);
+  assert.deepStrictEqual(fmt.ruleProblems(rule("skip", ["name", "is", "x"])), ["a condition is incomplete"]);
+  const cleaned = fmt.cleanRuleList([{ then: "bogus", when: [{ field: "nope", op: "is", value: 3 }], extra: 1 }, null]);
+  assert.strictEqual(cleaned.length, 1);
+  assert.strictEqual(cleaned[0].then, "skip");
+  assert.strictEqual(cleaned[0].enabled, true);
+  assert.deepStrictEqual(cleaned[0].when, [{ field: "type", op: "is", value: "3" }]);
+  assert.strictEqual("extra" in cleaned[0], false);
+});

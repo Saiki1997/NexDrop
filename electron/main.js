@@ -113,11 +113,11 @@ function samePath(a, b) {
   return process.platform === "win32" ? x.toLowerCase() === y.toLowerCase() : x === y;
 }
 
-/** Destination rules whose folder was chosen in a folder dialog on this PC (3.1). */
+/** Rules (3.1) whose folder, when they have one, was chosen in a folder dialog on this PC. */
 function trustedRules(rules) {
   if (!Array.isArray(rules)) return [];
   const known = [downloadsDir(), ...jobDirs()];
-  return rules.filter((rule) => rule && typeof rule.folder === "string" && known.some((dir) => samePath(dir, rule.folder))).slice(0, 50);
+  return rules.filter((rule) => rule && typeof rule === "object" && (rule.then !== "folder" || (typeof rule.folder === "string" && known.some((dir) => samePath(dir, rule.folder))))).slice(0, 50);
 }
 
 function runFolder(requested) {
@@ -480,7 +480,7 @@ function accountVault() {
 function runConfig(config) {
   const outgoing = { ...(config || {}) };
   outgoing.downloadsDir = runFolder(outgoing.downloadsDir);
-  outgoing.destinationRules = trustedRules(outgoing.destinationRules);
+  outgoing.rules = trustedRules(outgoing.rules);
   for (const key of ["auth", "apiKey", "password", "cookieFolder", "accountCookies"]) delete outgoing[key];
   try {
     const saved = accountVault().engineAuth();
@@ -1718,6 +1718,14 @@ async function dupMove(command, target, root) {
     { input: `${JSON.stringify({ path: target, root })}\n`, timeout: 60000 });
   return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "The file could not be moved.").slice(-300) };
 }
+
+// Settings > Rules: what the rules would do to the files already in the Library (read only).
+ipcMain.handle("rules-preview", async (_event, body) => {
+  if (!fs.existsSync(LIBRARY_DB)) return { ok: true, total: 0, skipped: 0, folder: 0, single: 0, byRule: {}, examples: {}, empty: true };
+  const rules = Array.isArray(body?.rules) ? body.rules.slice(0, 50) : [];
+  const result = await runPython([path.join(ROOT, "desktop", "rules.py"), "preview", LIBRARY_DB], { input: `${JSON.stringify({ rules })}\n`, timeout: 120000 });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "The rules could not be checked.").slice(-300) };
+});
 
 async function archiveCall(command, body, timeout = 600000) {
   const result = await runPython([path.join(ROOT, "desktop", "archives.py"), command], { input: `${JSON.stringify(body)}\n`, timeout });

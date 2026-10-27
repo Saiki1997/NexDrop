@@ -42,6 +42,7 @@ if os.path.normcase(_DESKTOP_DIR) not in {os.path.normcase(os.path.abspath(e)) f
 from auth_cookies import convert_any  # noqa: E402
 import error_classes  # noqa: E402
 import dup_actions  # noqa: E402
+import rules as rule_engine  # noqa: E402
 from job_store import JobStore  # noqa: E402
 from scrape_status import classify_scrape_message  # noqa: E402
 from state_lock import RunningMarker, shared_state  # noqa: E402
@@ -568,7 +569,27 @@ def trim_manifest() -> None:
         pass
 
 
+class RuleSkip(Exception):
+    """A download rule says this direct file is not wanted."""
+
+
+RULES: list[dict] = []  # this run's download rules (rules.py), also applied to direct files
+_SINGLE = threading.Semaphore(1)
+
+
+class _Single(Exception):
+    pass
+
+
 def http_save(url: str, folder: Path) -> dict:
+    try:
+        return _http_save(url, folder, in_slot=False)
+    except _Single:  # a "one at a time" rule: wait for the shared slot, then fetch again
+        with _SINGLE:
+            return _http_save(url, folder, in_slot=True)
+
+
+def _http_save(url: str, folder: Path, *, in_slot: bool) -> dict:
     current = public_url(url)
     for _ in range(6):
         request = urllib.request.Request(current, headers={"Accept-Encoding": "identity", "User-Agent": "NEXDROP/2.1"})
@@ -592,11 +613,19 @@ def http_save(url: str, folder: Path) -> dict:
         if total and total > MAX_BYTES:
             response.close()
             raise ValueError("File exceeds the 80 MB transfer limit")
-        target_dir = folder  # NEXDROP: no "Loose Files" folder
+        name_guess = _pick_name(url, current, response.headers.get("Content-Disposition"))
+        verdict = rule_engine.decide(RULES, rule_engine.facts(url, name_guess, size=total)) if RULES else {}
+        if verdict.get("skip"):
+            response.close()
+            raise RuleSkip(verdict["skip"])
+        if verdict.get("single") and not in_slot:
+            response.close()
+            raise _Single()
+        target_dir = Path(verdict["folder"]) if verdict.get("folder") else folder  # NEXDROP: no "Loose Files" folder
         if TYPE_FOLDERS_ON:
             target_dir = target_dir / type_folder(urlparse(current).path)
         target_dir.mkdir(parents=True, exist_ok=True)
-        number, name = _numbered_filename(url, _pick_name(url, current, response.headers.get("Content-Disposition")))
+        number, name = _numbered_filename(url, name_guess)
         with _NAME_LOCK:  # parallel fallback downloads must never pick the same name
             target = unique_path(target_dir, safe_filename(name))
             target.touch()
@@ -629,6 +658,10 @@ def http_save(url: str, folder: Path) -> dict:
                 raise ValueError(f"Incomplete transfer: got {read:,} of {total:,} bytes")
             if read == 0:
                 raise ValueError("Incomplete transfer: the file is empty")
+            if verdict.get("pending"):  # the server sent no size: check size rules now
+                late = rule_engine.decide(RULES, rule_engine.facts(url, name_guess, size=read))
+                if late.get("skip"):
+                    raise RuleSkip(late["skip"])
             os.replace(partial, target)
         except BaseException:
             partial.unlink(missing_ok=True)
@@ -1245,21 +1278,6 @@ ENGINE_MIN_FREE = 5 * 1024**3  # engine/user-config.yaml min_free_space: below t
 LOW_FREE = 20 * 1024**3
 
 
-def destination_rules(raw: object) -> list[dict]:
-    """Settings > Downloads > Destination rules: [{"site": "bunkr.cr" | "type": "video", "folder": path}]."""
-    rules = []
-    for rule in raw if isinstance(raw, list) else []:
-        if not isinstance(rule, dict) or not str(rule.get("folder") or "").strip():
-            continue
-        site = str(rule.get("site") or "").strip().lower().removeprefix("www.")
-        kind = str(rule.get("type") or "")
-        if site and re.fullmatch(r"[a-z0-9.-]+\.[a-z]{2,}", site):
-            rules.append({"site": site, "folder": str(rule["folder"])})
-        elif kind in ("image", "video", "audio", "other"):
-            rules.append({"type": kind, "folder": str(rule["folder"])})
-    return rules[:50]
-
-
 def check_destinations(folders: list[Path]) -> str:
     """Why the run can't start (a folder can't be written, the drive is almost full), or "".
     Low space that still works is only a warning."""
@@ -1335,9 +1353,10 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
 
     global PREVIEW
     PREVIEW = bool(config.get("previewNames"))
-    rules = destination_rules(config.get("destinationRules"))
+    rules = rule_engine.clean(config.get("rules"))
+    RULES[:] = rules
     if not PREVIEW:
-        problem = check_destinations([folder, *[Path(rule["folder"]) for rule in rules]])
+        problem = check_destinations([folder, *[Path(rule["folder"]) for rule in rules if rule["then"] == "folder"]])
         if problem:
             emit({"type": "error", "message": problem})
             return _finish(urls, folder, [], [], [], started, stopped=False)
@@ -1416,7 +1435,7 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         "siteLimits": config.get("siteLimits") if isinstance(config.get("siteLimits"), dict) else {},
         "tiktokAudio": bool(config.get("tiktokAudio")),
         "typeFolders": bool(config.get("typeFolders")),
-        "destinationRules": rules,
+        "rules": rules,
         "fileTypes": config.get("fileTypes") if isinstance(config.get("fileTypes"), dict) else {},
         "minImageKB": _int(config.get("minImageKB"), 0, 0, 100_000),
         "skipUrls": [str(u) for u in (config.get("skipUrls") or [])][:200_000],
@@ -1689,6 +1708,9 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         try:
             http_save(url, folder)
             saved_urls.append(url)
+        except RuleSkip as reason:
+            skipped_urls.append(url)
+            FILES.update(url, state="skipped", reason=str(reason), speed=0)
         except Exception as error:  # noqa: BLE001
             failed.append(url)
             reason = str(error)[:200]

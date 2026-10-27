@@ -332,6 +332,8 @@ class DownloadClient:
                 file_size_check = _check_filesize_limits(media_item, self.config)
                 if not file_size_check:
                     logger.info("Download skipped %s due to filesize restrictions", media_item.url)
+                    if media_item.partial_file and not await aio.exists(media_item.partial_file):
+                        resume_validators.forget(media_item.partial_file)  # NEXDROP patch: no sidecar left for a skipped file
                     proceed = False
                     skip = True
                     return proceed, skip

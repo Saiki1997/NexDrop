@@ -340,13 +340,15 @@
           <small class="field-help">Found by content (same size and hash), even under another name or from another site. Nothing is ever deleted without asking; the Recycle Bin always asks first.</small>
         </label>
         <div class="field">
-          <span class="field-label">Destination rules</span>
-          <ul class="rule-list" id="dest-rules"></ul>
+          <span class="field-label">Download rules</span>
+          <p class="field-help" id="rules-empty">No rules. Rules can skip files, only download some, send some to their own folder, or download big ones one at a time.</p>
+          <ul class="rule-list" id="rule-list"></ul>
           <div class="field-row">
-            <button class="btn btn-quiet btn-small" id="btn-rule-site" type="button">Add a site rule</button>
-            <button class="btn btn-quiet btn-small" id="btn-rule-type" type="button">Add a file type rule</button>
+            <button class="btn btn-quiet btn-small" id="btn-rule-add" type="button">Add a rule</button>
+            <button class="btn btn-quiet btn-small" id="btn-rules-preview" type="button">Check against my Library</button>
           </div>
-          <small class="field-help">Files from a site, or of a type, go to their own folder instead of the download folder, keeping their album folders. The first rule that fits is used.</small>
+          <p class="status-line" id="rules-preview" role="status"></p>
+          <small class="field-help">Rules are checked in order. A skip rule wins over the others; when any "only download" rule is on, a file must fit one of them. The first folder rule that fits is used, and the file keeps its album folders. Size is known once the server answers, so size can only skip or limit downloads.</small>
         </div>
         <label class="switch"><input type="checkbox" id="type-folders"><span class="switch-text">Sort into Images, Videos, Audio and Other folders<small>New files only. Files from earlier runs stay where they are.</small></span></label>
         <label class="switch"><input type="checkbox" id="auto-retry" checked><span class="switch-text">Retry temporary errors automatically<small>Files that fail because a server is busy or times out are tried once more, 45 seconds after the run.</small></span></label>
