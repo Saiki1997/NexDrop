@@ -1330,6 +1330,7 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         "maxDownloads": _int(config.get("maxDownloads"), 16, 1, 32),
         "perHost": _int(config.get("perHost"), 6, 1, 16),
         "serverSlots": _int(config.get("serverSlots"), 3, 1, 6),
+        "segments": _int(config.get("segments"), 4, 0, 8),
         "tiktokAudio": bool(config.get("tiktokAudio")),
         "typeFolders": bool(config.get("typeFolders")),
         "fileTypes": config.get("fileTypes") if isinstance(config.get("fileTypes"), dict) else {},
@@ -1378,7 +1379,8 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
     if order_mode != "source":
         mode = _choice(config.get("downloadMode"), tuple(DOWNLOAD_MODE_LABELS), "custom")
         log("info", f"Download mode: {DOWNLOAD_MODE_LABELS[mode]}, {payload['maxDownloads']} at once, "
-                    f"{payload['perHost']} per site, {payload['serverSlots']} per server.")
+                    f"{payload['perHost']} per site, {payload['serverSlots']} per server, "
+                    + (f"large files in up to {payload['segments']} parts." if payload["segments"] > 1 else "large files in one stream."))
     maintain_engine_db()  # tidy up after an earlier crash or forced stop
     env = os.environ.copy()
     env.update({

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import itertools
 import logging
 import time
@@ -11,7 +12,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, final
 from aiohttp import hdrs
 
 from cyberdrop_dl import aio, constants, ffmpeg, storage
-from cyberdrop_dl.clients import etag, resume_validators
+from cyberdrop_dl.clients import etag, resume_validators, segments
 from cyberdrop_dl.clients.http import JSON_CHECK, check_http_status
 from cyberdrop_dl.constants import USE_RETRY_PATH, FileExt
 from cyberdrop_dl.exceptions import DownloadError, InvalidContentTypeError, SlowDownloadError
@@ -84,6 +85,12 @@ class DownloadClient:
         if self.SUPPORTS_RANGES and media_item.partial_file and (size := await aio.get_size(media_item.partial_file)):
             resume_point = size
             media_item.headers[hdrs.RANGE] = f"bytes={size}-"
+            # NEXDROP patch: a file split into parts resumes part 1 up to its own end (multi-segment)
+            if not media_item.is_segment and (split := segments.resume_range(media_item.partial_file, size)):
+                keep, media_item.headers[hdrs.RANGE] = split
+                if keep != size:
+                    await aio.to_thread(_truncate)(media_item.partial_file, keep)
+                    resume_point = keep
             # NEXDROP patch: If-Range makes the server send the whole file again (200) when it changed
             # since the partial file was started, instead of bytes of a different file.
             if not media_item.is_segment and (if_range := resume_validators.if_range(media_item.partial_file)):
@@ -98,7 +105,7 @@ class DownloadClient:
                 headers=media_item.headers,
                 impersonate=media_item.extra_info.get("impersonate"),
             ) as resp:
-                return await self._process_response(media_item, domain, resume_point, resp)
+                return await self._process_response(media_item, domain, resume_point, resp, download_url)
 
     async def _predownload_skip(self, media_item: MediaItem, domain: str) -> bool | None:
         should_download, should_skip = await self.get_final_file_info(media_item, domain)
@@ -120,6 +127,7 @@ class DownloadClient:
         domain: str,
         resume_point: int,
         resp: AbstractResponse[Any],
+        download_url: Any = None,
     ) -> bool:
         resume_point = await _check_response(media_item, resp, resume_point)
         media_item.size = _get_content_length(resp.headers)
@@ -129,7 +137,11 @@ class DownloadClient:
             # Content-Length of a ranged response only counts the bytes after resume_point.
             # Every check below (partial size, final size, filesize limits) needs the size of the whole file
             media_item.size += resume_point
+            parsed = resume_validators.parse_content_range(resp.headers.get(hdrs.CONTENT_RANGE))
+            if parsed and parsed[2]:
+                media_item.size = parsed[2]  # NEXDROP patch: part 1 of a split file asks for less than the rest
         elif not media_item.is_segment and media_item.partial_file:
+            await aio.to_thread(segments.discard)(media_item.partial_file)  # parts of an older copy are useless now
             resume_validators.save(media_item.partial_file, resp.headers, media_item.size, str(media_item.url))
         _set_upload_date(media_item, resp.headers)
         if not media_item.path:
@@ -137,14 +149,82 @@ class DownloadClient:
             if downloaded is not None:
                 return downloaded
 
+        layout = self._segment_layout(media_item, resp, resume_point)
         hook = self._make_hook(media_item)
-        if resume_point:
+        already = resume_point + (segments.existing_bytes(media_item.partial_file, layout) if layout else 0)
+        if already:
             # NEXDROP patch: bytes already on disk move the bar but are not new downloaded bytes.
-            (hook.resume or hook.advance)(resume_point)
+            (hook.resume or hook.advance)(already)
 
         with hook:
-            await self._append_content(media_item, hook, resp)
+            if layout:
+                await self._append_segments(media_item, hook, resp, layout, resume_point, download_url or media_item.url)
+            else:
+                await self._append_content(media_item, hook, resp)
             return True
+
+    def _segment_layout(self, media_item: MediaItem, resp: AbstractResponse[Any], resume_point: int) -> list[tuple[int, int]]:
+        """NEXDROP patch: the parts this file downloads in, or [] for one stream."""
+        if media_item.is_segment or not media_item.partial_file or not media_item.size:
+            return []
+        if resp.status == HTTPStatus.PARTIAL_CONTENT:
+            return segments.load_layout(media_item.partial_file) if resume_point else []
+        impersonated = bool(media_item.extra_info.get("impersonate") or self.config.network.impersonate)
+        if resume_point or not segments.eligible(
+            media_item.url, media_item.url.host or "", resp.headers, media_item.size, impersonated=impersonated
+        ):
+            return []
+        layout = segments.plan(media_item.size, segments.parts_for(media_item.size))
+        segments.save_layout(media_item.partial_file, layout)
+        logger.info(f"Downloading {media_item.filename} in {len(layout)} parts at once")
+        return layout
+
+    async def _append_segments(
+        self,
+        media_item: MediaItem,
+        hook: ProgressHook,
+        resp: AbstractResponse[Any],
+        layout: list[tuple[int, int]],
+        have0: int,
+        download_url: Any,
+    ) -> None:
+        """NEXDROP patch: multi-segment download. Falls back to one stream on anything unexpected."""
+        check_free_space = storage.create_free_space_checker(media_item)
+        check_download_speed = make_speed_checker(media_item, hook, self.download_speed_threshold)
+        await check_free_space(max(0, media_item.size - have0 - segments.existing_bytes(media_item.partial_file, layout)))
+        await self._pre_download_check(media_item)
+        validators = resume_validators.load(media_item.partial_file)
+        if_range = resume_validators.if_range(media_item.partial_file)
+        size = media_item.size
+
+        async def on_chunk(n_bytes: int) -> None:
+            await self.speed_limiter.acquire(n_bytes)
+            await check_free_space()
+            hook.advance(n_bytes)
+            check_download_speed()
+
+        @contextlib.asynccontextmanager
+        async def open_part(start: int, end: int):
+            headers = {k: v for k, v in media_item.headers.items() if k not in (hdrs.RANGE, hdrs.IF_RANGE)}
+            headers[hdrs.RANGE] = f"bytes={start}-{end}"
+            if if_range:
+                headers[hdrs.IF_RANGE] = if_range
+            async with self.http_client.raw_request(download_url, headers=headers, impersonate=False) as part_resp:
+                if part_resp.status in (HTTPStatus.TOO_MANY_REQUESTS, HTTPStatus.SERVICE_UNAVAILABLE):
+                    raise segments.SegmentError(f"Server answered {part_resp.status} to an extra connection")
+                segments.check_part(part_resp.headers, part_resp.status, start, end, size, validators)
+                yield part_resp
+
+        try:
+            async with self._track_speed(hook):
+                await segments.run_parts(resp, media_item.partial_file, layout, have0, open_part, self.chunk_size, on_chunk)
+            await aio.to_thread(segments.merge)(media_item.partial_file, layout)
+        except segments.SegmentError as error:
+            segments.forget_link(media_item.url)
+            await aio.to_thread(segments.discard)(media_item.partial_file)
+            await _discard_partial(media_item.partial_file)
+            raise DownloadError("Segment Mismatch", f"{error}. Downloading it as one stream", retry=True) from None
+        await self._post_download_check(media_item)
 
     def _make_hook(self, media_item: MediaItem) -> ProgressHook:
         if media_item.is_segment and not media_item.extra_info.get("MUX_STREAM"):
@@ -542,9 +622,15 @@ async def _check_response(media_item: MediaItem, resp: AbstractResponse[Any], re
     return resume_point
 
 
+def _truncate(path: Path, size: int) -> None:
+    with path.open("r+b") as handle:
+        handle.truncate(size)
+
+
 async def _discard_partial(partial_file: Path | None) -> None:
     if partial_file is None:
         return
+    await aio.to_thread(segments.discard)(partial_file)
     await aio.unlink(partial_file, missing_ok=True)
     resume_validators.forget(partial_file)
 

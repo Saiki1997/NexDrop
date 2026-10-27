@@ -63,6 +63,7 @@
     maxDownloads: { el: "#max-downloads", type: "int", def: 16, min: 1, max: 32 },
     perHost: { el: "#per-host", type: "int", def: 6, min: 1, max: 16 },
     serverSlots: { el: "#server-slots", type: "int", def: 3, min: 1, max: 6 },
+    segments: { el: "#segments", type: "int", def: 4, min: 0, max: 8 },
     tiktokAudio: { el: "#tiktok-audio", type: "check", def: false },
     autoRetry: { el: "#auto-retry", type: "check", def: true },
     typeFolders: { el: "#type-folders", type: "check", def: false },
@@ -158,7 +159,7 @@
     const mode = $("#download-mode").value;
     const custom = mode === "custom" || !fmt.DOWNLOAD_MODES[mode];
     const limits = custom ? null : fmt.modeLimits(mode);
-    for (const [key, id] of [["maxDownloads", "#max-downloads"], ["perHost", "#per-host"], ["serverSlots", "#server-slots"]]) {
+    for (const [key, id] of [["maxDownloads", "#max-downloads"], ["perHost", "#per-host"], ["serverSlots", "#server-slots"], ["segments", "#segments"]]) {
       const input = $(id);
       if (!custom) {
         if (input.disabled === false) input.dataset.custom = input.value;  // keep the user's own numbers

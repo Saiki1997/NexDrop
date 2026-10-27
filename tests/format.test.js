@@ -76,10 +76,10 @@ test("checksumFor reads SHA256SUMS.txt", () => {
 });
 
 test("download modes resolve to fixed limits, custom keeps the user's numbers", () => {
-  assert.deepStrictEqual(fmt.modeLimits("balanced"), { maxDownloads: 8, perHost: 4, serverSlots: 2 });
-  assert.deepStrictEqual(fmt.modeLimits("low", { maxDownloads: 30 }), { maxDownloads: 3, perHost: 2, serverSlots: 1 });
-  assert.deepStrictEqual(fmt.modeLimits("custom", { maxDownloads: 40, perHost: "5", serverSlots: 0 }), { maxDownloads: 32, perHost: 5, serverSlots: 1 });
-  assert.deepStrictEqual(fmt.modeLimits("nonsense", {}), { maxDownloads: 16, perHost: 6, serverSlots: 3 });
+  assert.deepStrictEqual(fmt.modeLimits("balanced"), { maxDownloads: 8, perHost: 4, serverSlots: 2, segments: 2 });
+  assert.deepStrictEqual(fmt.modeLimits("low", { maxDownloads: 30 }), { maxDownloads: 3, perHost: 2, serverSlots: 1, segments: 0 });
+  assert.deepStrictEqual(fmt.modeLimits("custom", { maxDownloads: 40, perHost: "5", serverSlots: 0, segments: 12 }), { maxDownloads: 32, perHost: 5, serverSlots: 1, segments: 8 });
+  assert.deepStrictEqual(fmt.modeLimits("nonsense", {}), { maxDownloads: 16, perHost: 6, serverSlots: 3, segments: 4 });
   assert.strictEqual(fmt.guessMode({ maxDownloads: 16, perHost: 6, serverSlots: 3 }), "auto");
   assert.strictEqual(fmt.guessMode({}), "auto");
   assert.strictEqual(fmt.guessMode({ maxDownloads: 4, perHost: 6 }), "custom");

@@ -922,6 +922,25 @@ def _install_server_slots(per_server: int) -> None:
     Downloader.lock = lock
 
 
+def _install_segments(parts: int, min_mb: int) -> None:
+    """Multi-segment downloads (engine patch clients/segments.py): how many parts per large file,
+    from the download mode. A host that asked to slow down, or a paused site, gets one stream."""
+    try:
+        from cyberdrop_dl.clients import segments
+    except Exception:  # noqa: BLE001
+        return
+    segments.MAX_PARTS = parts
+    segments.MIN_SIZE = min_mb * 1024 * 1024
+    segments.MIN_PART = max(256 * 1024, segments.MIN_SIZE // 4)
+
+    def host_ok(host: str) -> bool:
+        if host in SERVER_SLOTS.reduced:
+            return False
+        return not any(site and site in host and BREAKER.blocked_for(site) for site in list(BREAKER.until))
+
+    segments.host_ok = host_ok
+
+
 TYPE_FOLDERS = {"image": "Images", "video": "Videos", "audio": "Audio", "other": "Other"}
 
 
@@ -1271,6 +1290,7 @@ def _run() -> int:
     _install_download_clearance()
     _install_server_slots(_bound_int(payload.get("serverSlots"), 1, 6, 3))
     _install_type_folders(bool(payload.get("typeFolders")))
+    _install_segments(_bound_int(payload.get("segments"), 0, 8, 4), _bound_int(payload.get("segmentMinMB"), 1, 4096, 64))
     _install_last_post_report()
     _install_resume_skip(payload.get("skipUrls") or [])
     # Read by the TikTok patch in engine/vendor-patches.

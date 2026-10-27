@@ -16,6 +16,8 @@ file holds exactly one version of one file. Routes, all GET:
   /changed/<name>?size=N            first request drops half way with ETag "v1"; afterwards the file is
                                     version 2 (ETag "v2") and If-Range: "v1" gets a 200 with all of v2
   /changed-ignore/<name>?size=N     like /changed, but the server ignores If-Range and answers 206 with v2
+  /seg-wrong/<name>?size=N          like /ok, but a range starting after byte 0 is answered from byte 0
+  /seg-drop/<name>?size=N           like /ok, but the first range starting after byte 0 drops half way
 
 `server.hits[path]` counts the requests per path and `server.headers[path]` keeps the last
 request headers.
@@ -41,6 +43,8 @@ class LocalServer:
     def __init__(self) -> None:
         self.hits: Counter[str] = Counter()
         self.headers: dict[str, dict[str, str]] = {}
+        self.ranged: Counter[str] = Counter()  # range requests that start after byte 0
+        self.ranges: dict[str, list[str]] = {}  # their Range headers, after the first one
         self.port = 0
         self._loop: asyncio.AbstractEventLoop | None = None
         self._runner: web.AppRunner | None = None
@@ -120,6 +124,23 @@ class LocalServer:
                     return await self._send(request, new, etag='"v2"', ranges=False)
                 return await self._send(request, new, etag='"v2"')
             return await self._send(request, new, etag='"v2"')  # ignores If-Range
+        if route == "seg-wrong":  # plain requests work; a range that starts after byte 0 is answered from byte 0
+            data = content(name, size)
+            wanted = request.headers.get("Range", "")
+            if wanted.startswith("bytes=") and not wanted.startswith("bytes=0-"):
+                return await self._send(request, data, etag='"w1"', force_range_start=0)
+            return await self._send(request, data, etag='"w1"')
+        if route == "seg-drop":  # the first range request after byte 0 drops half way through its part
+            data = content(name, size)
+            wanted = request.headers.get("Range", "")
+            if wanted.startswith("bytes=") and not wanted.startswith("bytes=0-"):
+                self.ranged[key] += 1
+                if self.ranged[key] == 1:
+                    first, _, last = wanted[6:].partition("-")
+                    middle = (int(first) + int(last or size - 1)) // 2
+                    return await self._send(request, data, etag='"s1"', drop_at=middle)
+                self.ranges.setdefault(key, []).append(wanted)
+            return await self._send(request, data, etag='"s1"')
         same = request.query.get("as", name)  # /ok/<name>?as=<other> serves <other>'s bytes
         return await self._send(request, content(same, size), etag=f'"{same}-{size}"')
 
@@ -134,14 +155,18 @@ class LocalServer:
             headers["ETag"] = etag
         wanted = request.headers.get("Range", "")
         if ranges and wanted.startswith("bytes="):
-            start = int(wanted[6:].split("-")[0] or 0)
+            first, _, last = wanted[6:].partition("-")
+            start = int(first or 0)
+            end = min(int(last), size - 1) if last.strip() else size - 1
             if start >= size:
                 return web.Response(status=416, headers={"Content-Range": f"bytes */{size}"})
             if force_range_start is not None:
                 start = force_range_start
             status = 206
-            headers["Content-Range"] = f"bytes {start}-{size - 1}/{size}"
-        body = data[start:]
+            headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+        else:
+            end = size - 1
+        body = data[start:end + 1]
         headers["Content-Length"] = str(len(body))
         response = web.StreamResponse(status=status, headers=headers)
         await response.prepare(request)
