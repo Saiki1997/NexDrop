@@ -37,8 +37,15 @@ sign-ins, history and downloads in `engine\appdata` and `downloads` are kept eit
   by Active, Saved, Skipped or Unfinished, or by site.
 - **Queue** more links while a run is going. **Pause** keeps a run; **Resume** continues it, even after
   closing NEXDROP or a crash, and half-downloaded files continue where they stopped.
-- **Watch** forum threads: NEXDROP rechecks them every 1–24 hours while it is open and downloads only
-  new posts.
+- **Watch** forum threads, albums, profiles, channels and playlists: NEXDROP rechecks them every 30
+  minutes to a week while it is open and downloads only new files.
+- **Several jobs at once**, large files in parts, per-site limits, and big link lists run in parts of 200.
+- **Download rules** skip files, keep only some, or send them to a folder by site, type, size, name or
+  creator. **Check** a list of links before downloading, and **preview the names** files will get.
+- **Library**: everything you downloaded, with a gallery, search, duplicates and similar files, storage
+  use, organize and rename with undo, archive checks and statistics.
+- **When a job finishes**: notify, open the folder, organize, verify the files and save a manifest with
+  every file's SHA-256.
 - Bot-check pages (DDoS-Guard, Cloudflare) are solved by the bundled FlareSolverr, which starts in the
   background.
 - Temporary server errors (500, 502, 503, 504, 429, timeouts) are retried automatically. Files you
