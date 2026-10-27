@@ -137,7 +137,8 @@ class TwoJobsTogether(unittest.TestCase):
         conn = sqlite3.connect(self.appdata / "jobs.sqlite")
         statuses = [row[0] for row in conn.execute("SELECT status FROM jobs")]
         conn.close()
-        self.assertEqual(len(statuses), 2)
+        notes = [e.get("message") for slot in (0, 1) for e in self.events[slot] if "istory" in str(e.get("message"))]
+        self.assertEqual(len(statuses), 2, notes)
         self.assertNotIn("interrupted", statuses)
 
     def test_second_job_has_its_own_engine_logs_and_no_cookies_are_left(self):

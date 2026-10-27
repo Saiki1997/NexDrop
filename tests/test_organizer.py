@@ -18,7 +18,7 @@ from job_store import JobStore  # noqa: E402
 class Organizer(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        base = Path(self._tmp.name)
+        base = Path(self._tmp.name).resolve()  # Windows CI: the temp folder is an 8.3 short name
         self.root = base / "dl"
         (self.root / "Loose Files").mkdir(parents=True)
         (self.root / "keep-empty").mkdir()

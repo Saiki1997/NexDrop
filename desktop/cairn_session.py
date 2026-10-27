@@ -1391,12 +1391,15 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
     try:
         if PREVIEW:
             raise _NoHistory
-        store = JobStore(APPDATA / "jobs.sqlite")
-        # Jobs still marked running belong to a crashed session, unless another job is running now
-        recovered = [] if MARKER.others() else store.recover()
+        # One process at a time: two jobs starting together could otherwise race on creating
+        # the database (its health check, the switch to WAL) and one would run without History.
+        with shared_state(APPDATA):
+            store = JobStore(APPDATA / "jobs.sqlite")
+            # Jobs still marked running belong to a crashed session, unless another job is running now
+            recovered = [] if MARKER.others() else store.recover()
+            job_id = store.start_job(urls, str(folder))
         if recovered:
             log("warning", f"Marked {len(recovered)} unfinished job(s) as interrupted. They were not started again.")
-        job_id = store.start_job(urls, str(folder))
     except _NoHistory:
         store = None
     except Exception as error:  # noqa: BLE001

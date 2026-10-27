@@ -50,7 +50,7 @@ class InARun(unittest.TestCase):
     def run_twice(self, action):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        base = Path(tmp.name)
+        base = Path(tmp.name).resolve()  # Windows CI: the temp folder is an 8.3 short name
         appdata, folder = base / "appdata", base / "dl"
         stamp = time.time_ns()
         with LocalServer() as server:
