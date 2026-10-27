@@ -1235,9 +1235,44 @@ const JOBS_DB = path.join(APPDATA, "jobs.sqlite");
 
 ipcMain.handle("history-search", async (_event, body) => {
   if (!fs.existsSync(JOBS_DB)) return { ok: true, items: [], total: 0 };
-  const query = { text: String(body?.text || "").slice(0, 200), host: String(body?.host || "").slice(0, 200), status: String(body?.status || "completed"), limit: Math.max(1, Math.min(500, Number(body?.limit) || 200)) };
+  const query = { ...historyQuery(body), limit: Math.max(1, Math.min(500, Number(body?.limit) || 200)) };
   const result = await runPython([path.join(ROOT, "desktop", "job_store.py"), "search", JOBS_DB], { input: `${JSON.stringify(query)}\n`, timeout: 30000 });
   return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "History search failed.").slice(0, 300), items: [] };
+});
+
+function historyQuery(body) {
+  return {
+    text: String(body?.text || "").slice(0, 200),
+    host: String(body?.host || "").slice(0, 200),
+    status: String(body?.status || "completed"),
+    days: Math.max(0, Math.min(3650, Number(body?.days) || 0)),
+    type: String(body?.type || "").slice(0, 20),
+  };
+}
+
+// 3.0: the History list as CSV, with the same filters.
+ipcMain.handle("history-export", async (_event, body) => {
+  if (!fs.existsSync(JOBS_DB)) return { ok: false, error: "There is no history yet." };
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
+  const stamp = new Date().toISOString().slice(0, 10);
+  const picked = await dialog.showSaveDialog(mainWindow, {
+    title: "Export history",
+    defaultPath: path.join(app.getPath("documents"), `nexdrop-history-${stamp}.csv`),
+    filters: [{ name: "CSV", extensions: ["csv"] }],
+  });
+  if (picked.canceled || !picked.filePath) return { ok: false, canceled: true };
+  const dest = picked.filePath.toLowerCase().endsWith(".csv") ? picked.filePath : `${picked.filePath}.csv`;
+  const input = `${JSON.stringify({ query: historyQuery(body), dest })}\n`;
+  const result = await runPython([path.join(ROOT, "desktop", "job_store.py"), "export", JOBS_DB], { input, timeout: 120000 });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "Export failed.").slice(0, 300) };
+});
+
+// 3.0: per-site results from the history database (nothing is sent anywhere).
+ipcMain.handle("site-health", async (_event, days) => {
+  if (!fs.existsSync(JOBS_DB)) return { ok: true, sites: [] };
+  const span = String(Math.max(1, Math.min(365, Number(days) || 30)));
+  const result = await runPython([path.join(ROOT, "desktop", "job_store.py"), "health", JOBS_DB, span], { timeout: 30000 });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "Site health could not be read.").slice(0, 300), sites: [] };
 });
 
 // Smart naming V2: renaming a file from History. The window passes the item id and the new

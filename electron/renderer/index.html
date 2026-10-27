@@ -411,14 +411,43 @@
             <option value="completed">Saved</option>
             <option value="failed">Failed</option>
             <option value="skipped">Skipped</option>
+            <option value="missing">Saved, file missing</option>
             <option value="all">Everything</option>
           </select>
+        </div>
+        <div class="field-row history-filters">
+          <select class="select" id="history-days" aria-label="When">
+            <option value="0">Any time</option>
+            <option value="1">Last 24 hours</option>
+            <option value="7">Last 7 days</option>
+            <option value="30">Last 30 days</option>
+          </select>
+          <select class="select" id="history-type" aria-label="File type">
+            <option value="">All types</option>
+            <option value="image">Images</option>
+            <option value="video">Videos</option>
+            <option value="audio">Audio</option>
+            <option value="archive">Archives</option>
+            <option value="other">Other files</option>
+          </select>
+          <button class="btn btn-quiet" id="btn-history-export" type="button" title="Save every file matching these filters as a CSV file">Export CSV</button>
         </div>
         <p class="status-line" id="history-status-line" role="status"></p>
         <ul class="history-list" id="history-list"></ul>
       </section>
 
       <section class="pane" data-pane="sources" hidden>
+        <div class="field-row">
+          <span class="field-label health-title">Site health</span>
+          <select class="select" id="health-days" aria-label="Period">
+            <option value="1">Last 24 hours</option>
+            <option value="7">Last 7 days</option>
+            <option value="30" selected>Last 30 days</option>
+          </select>
+        </div>
+        <p class="pane-intro">How downloads from each site went, from your own history on this PC. Nothing is sent anywhere.</p>
+        <ul class="health-list" id="health-list"></ul>
+        <div class="divider"></div>
         <p class="pane-intro">NexDrop uses its bundled download engine. Links that no site handler accepts are logged here so you can see what is missing.</p>
         <p class="status-line" id="source-status">Not checked yet.</p>
         <div class="field-row actions">

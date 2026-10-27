@@ -1381,6 +1381,7 @@
     $$(".sheet .pane").forEach((p) => { p.hidden = p.dataset.pane !== name; });
     if (name === "accounts") loadAccounts();
     if (name === "history") searchHistory();
+    if (name === "sources") showHealth();
   }
   $("#btn-settings").addEventListener("click", () => openSheet());
   $("#btn-settings-close").addEventListener("click", closeSheet);
@@ -1775,15 +1776,20 @@
     historyTimer = setTimeout(searchHistory, 250);
   }
 
-  async function searchHistory() {
-    const seq = ++historySeq;
-    setStatus("#history-status-line", "Searching…", null);
-    const result = await api.historySearch({
+  function historyQuery() {
+    return {
       text: $("#history-text").value,
       host: $("#history-host").value,
       status: $("#history-status").value,
-      limit: 200,
-    }).catch(() => null);
+      days: Number($("#history-days").value) || 0,
+      type: $("#history-type").value,
+    };
+  }
+
+  async function searchHistory() {
+    const seq = ++historySeq;
+    setStatus("#history-status-line", "Searching…", null);
+    const result = await api.historySearch({ ...historyQuery(), limit: 200 }).catch(() => null);
     if (seq !== historySeq) return; // a newer search is on its way
     if (!result || result.ok === false) {
       setStatus("#history-status-line", result?.error || "The history could not be read.", "bad");
@@ -1802,7 +1808,8 @@
     }
     const total = Number(result.total) || 0;
     const shown = (result.items || []).length;
-    setStatus("#history-status-line", total ? (total > shown ? `${total.toLocaleString()} files, newest ${shown} shown.` : `${total.toLocaleString()} ${total === 1 ? "file" : "files"}.`) : "Nothing found.", null);
+    const count = total ? (total > shown ? `${total.toLocaleString()} files, newest ${shown} shown.` : `${total.toLocaleString()} ${total === 1 ? "file" : "files"}.`) : "Nothing found.";
+    setStatus("#history-status-line", result.note ? `${count} ${result.note}` : count, null);
     renderHistory(result.items || []);
   }
 
@@ -1826,8 +1833,10 @@
       name.title = item.url;
       const meta = document.createElement("small");
       const when = new Date(Number(item.at) * 1000);
-      meta.textContent = [item.host, item.bytes ? fmt.bytes(item.bytes) : "", Number.isFinite(when.getTime()) ? when.toLocaleString() : "", item.status !== "completed" ? item.status : ""].filter(Boolean).join(" · ");
-      meta.title = item.source ? `From ${item.source}` : "";
+      const result = item.missing ? "file missing" : item.status === "failed" ? item.label || "failed" : item.status !== "completed" ? item.status : "";
+      meta.textContent = [item.host, item.bytes ? fmt.bytes(item.bytes) : "", Number.isFinite(when.getTime()) ? when.toLocaleString() : "", result].filter(Boolean).join(" · ");
+      meta.title = [item.source ? `From ${item.source}` : "", item.error || "", item.missing ? "The file is no longer where it was saved (moved, renamed or deleted)." : ""].filter(Boolean).join("\n");
+      if (item.missing || item.status === "failed") meta.classList.add("problem");
       info.append(name, meta);
       const show = document.createElement("button");
       show.type = "button";
@@ -1933,6 +1942,55 @@
   $("#history-text").addEventListener("input", searchHistorySoon);
   $("#history-host").addEventListener("change", searchHistory);
   $("#history-status").addEventListener("change", searchHistory);
+  $("#history-days").addEventListener("change", searchHistory);
+  $("#history-type").addEventListener("change", searchHistory);
+  $("#btn-history-export").addEventListener("click", async () => {
+    setStatus("#history-status-line", "Exporting…", null);
+    const result = await api.historyExport(historyQuery()).catch(() => null);
+    if (result?.canceled) return setStatus("#history-status-line", "", null);
+    if (result?.ok) setStatus("#history-status-line", `Saved ${result.count.toLocaleString()} rows to ${result.path}.`, "ok");
+    else setStatus("#history-status-line", result?.error || "Export failed.", "bad");
+  });
+
+  // ─── site health (Settings > Sites) ───────────────────────────────────────
+  const HEALTH_WORDS = { working: "Working", unstable: "Unstable", failing: "Failing", unknown: "No results yet" };
+
+  async function showHealth() {
+    const list = $("#health-list");
+    const result = await api.siteHealth(Number($("#health-days").value) || 30).catch(() => null);
+    list.textContent = "";
+    const sites = (result && result.sites) || [];
+    if (!sites.length) {
+      const li = document.createElement("li");
+      li.className = "empty-note";
+      li.textContent = result && result.ok === false ? result.error : "Sites appear here after a run.";
+      list.appendChild(li);
+      return;
+    }
+    for (const site of sites) {
+      const li = document.createElement("li");
+      const dot = document.createElement("span");
+      dot.className = `health-dot ${site.state}`;
+      dot.title = HEALTH_WORDS[site.state] || "";
+      const host = document.createElement("span");
+      host.className = "health-host";
+      host.textContent = site.host;
+      const rate = document.createElement("span");
+      rate.className = "health-rate";
+      rate.textContent = site.rate === null ? "–" : `${Math.round(site.rate * 100)}% saved`;
+      const meta = document.createElement("small");
+      meta.className = "health-meta";
+      const parts = [`${HEALTH_WORDS[site.state]}: ${site.saved.toLocaleString()} saved, ${site.failed.toLocaleString()} failed`];
+      if (site.bytes) parts.push(fmt.bytes(site.bytes));
+      if (site.lastSaved) parts.push(`last saved ${fmt.ago(new Date(site.lastSaved * 1000).toISOString())}`);
+      if (site.reasons.length) parts.push(`mostly ${site.reasons.map((r) => `${r.label.toLowerCase()} (${r.count})`).join(", ")}`);
+      meta.textContent = parts.join(" · ");
+      if (site.reasons.length) meta.title = site.reasons[0].action;
+      li.append(dot, host, rate, meta);
+      list.appendChild(li);
+    }
+  }
+  $("#health-days").addEventListener("change", showHealth);
 
   // ─── helpers ──────────────────────────────────────────────────────────────
   function flash(el) {

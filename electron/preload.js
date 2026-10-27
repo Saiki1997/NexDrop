@@ -34,6 +34,8 @@ contextBridge.exposeInMainWorld("api", {
   updateAuto: (on) => ipcRenderer.invoke("update-auto", on),
   historySearch: (query) => ipcRenderer.invoke("history-search", query),
   historyReveal: (id) => ipcRenderer.invoke("history-reveal", id),
+  historyExport: (query) => ipcRenderer.invoke("history-export", query),
+  siteHealth: (days) => ipcRenderer.invoke("site-health", days),
   historyRename: (body) => ipcRenderer.invoke("history-rename", body),
   namingCorrections: (body) => ipcRenderer.invoke("naming-corrections", body),
   onPipelineEvent: (callback) => {

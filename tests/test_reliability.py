@@ -193,6 +193,65 @@ class JobDatabase(unittest.TestCase):
 
 
 
+class HistoryTools(unittest.TestCase):
+    """3.0 History: filters, missing files, CSV export and the site health summary."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.store = JobStore(self.dir / "jobs.sqlite")
+        job = self.store.start_job(["https://simpcity.cr/threads/a.1/"], str(self.dir))
+        kept = self.dir / "kept.jpg"
+        kept.write_bytes(b"x")
+        rows = [
+            {"url": "https://bunkr.cr/kept.jpg", "host": "bunkr.cr", "event": "success", "name": "kept.jpg",
+             "destination": str(kept), "bytes_total": 1},
+            {"url": "https://bunkr.cr/gone.mp4", "host": "bunkr.cr", "event": "success", "name": "gone.mp4",
+             "destination": str(self.dir / "gone.mp4"), "bytes_total": 5},
+            {"url": "https://bunkr.cr/busy.mp4", "host": "bunkr.cr", "event": "failure", "status": "503 Service Unavailable",
+             "category": "server_busy"},
+            {"url": "https://gofile.io/x.zip", "host": "gofile.io", "event": "failure", "status": "=HYPERLINK(evil) 404"},
+        ]
+        for row in rows:
+            self.store.note(job, row)
+        self.store.flush()
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def test_type_and_missing_filters(self):
+        self.assertEqual([i["name"] for i in self.store.search(kind="video")["items"]], ["gone.mp4"])
+        missing = self.store.search(status="missing")
+        self.assertEqual([i["name"] for i in missing["items"]], ["gone.mp4"])
+        self.assertTrue(missing["items"][0]["missing"])
+        self.assertEqual(self.store.search(status="all", days=1)["total"], 4)
+
+    def test_failed_items_carry_their_category(self):
+        failed = {i["url"]: i for i in self.store.search(status="failed")["items"]}
+        self.assertEqual(failed["https://bunkr.cr/busy.mp4"]["label"], "Server busy")
+        self.assertEqual(failed["https://gofile.io/x.zip"]["category"], "not_found")  # classified when not stored
+
+    def test_csv_export_is_safe_to_open_in_a_spreadsheet(self):
+        import csv
+
+        dest = self.dir / "history.csv"
+        self.assertEqual(self.store.export_csv({"status": "all"}, dest), 4)
+        with dest.open(encoding="utf-8-sig") as handle:
+            rows = list(csv.reader(handle))
+        self.assertEqual(rows[0][:3], ["date", "result", "file"])
+        details = [r[8] for r in rows[1:]]
+        self.assertIn("'=HYPERLINK(evil) 404", details)
+        self.assertIn("saved, file missing", [r[1] for r in rows[1:]])
+
+    def test_site_health(self):
+        sites = {s["host"]: s for s in self.store.health(30)}
+        self.assertEqual((sites["bunkr.cr"]["saved"], sites["bunkr.cr"]["failed"]), (2, 1))
+        self.assertEqual(sites["bunkr.cr"]["reasons"][0]["label"], "Server busy")
+        self.assertEqual(sites["gofile.io"]["state"], "failing")
+        self.assertEqual(sites["bunkr.cr"]["state"], "unstable")
+
+
 class CookieCopies(unittest.TestCase):
     NETSCAPE = "# Netscape HTTP Cookie File\n.simpcity.cr\tTRUE\t/\tTRUE\t1900000000\txf_user\tsecret\n"
 
