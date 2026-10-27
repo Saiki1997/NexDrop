@@ -328,6 +328,22 @@ def save_history(urls: set[str]) -> None:
     _write_json(HISTORY, sorted(urls))
 
 
+VIDEO_QUALITIES = {"best", "smallest", "2160", "1440", "1080", "720", "480", "360"}
+
+
+def quality_options(config: dict) -> dict:
+    """Settings > Downloads > Quality (3.1), checked before they reach the engine."""
+    quality = str(config.get("videoQuality") or "best")
+    subs = config.get("subtitles") if isinstance(config.get("subtitles"), dict) else {}
+    languages = [re.sub(r"[^a-z0-9-]", "", str(x).lower())[:12] for x in subs.get("languages") or []] if isinstance(subs.get("languages"), list) else []
+    return {
+        "tiktokOriginal": bool(config.get("tiktokOriginal")),
+        "audioLossless": bool(config.get("audioLossless")),
+        "videoQuality": quality if quality in VIDEO_QUALITIES else "best",
+        "subtitles": {"on": bool(subs.get("on")), "languages": [x for x in languages if x][:10]},
+    }
+
+
 def record_runs(urls: list[str], saved: int, failed: int, skipped: int, stopped: bool) -> None:
     runs = _read_json(RUNS, {})
     if not isinstance(runs, dict):
@@ -1444,6 +1460,7 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         "retryAfterCap": _int(config.get("retryAfterCap"), 60, 5, 600),
         "siteLimits": config.get("siteLimits") if isinstance(config.get("siteLimits"), dict) else {},
         "tiktokAudio": bool(config.get("tiktokAudio")),
+        **quality_options(config),
         "typeFolders": bool(config.get("typeFolders")),
         "rules": rules,
         "fileTypes": config.get("fileTypes") if isinstance(config.get("fileTypes"), dict) else {},

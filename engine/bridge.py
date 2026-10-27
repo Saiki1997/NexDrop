@@ -1105,6 +1105,129 @@ def _install_rules(raw: object, root: Path) -> None:
     dl.DownloadClient._download = download
 
 
+QUALITY_CAPS = {"2160": 2160, "1440": 1440, "1080": 1080, "720": 720, "480": 480, "360": 360}
+
+
+def pick_rendition(groups: list, quality: str):
+    """From stream variants sorted best to worst: the best at or below the chosen height, or the
+    smallest when "smallest" is chosen or every variant is above the cap. Variants without a known
+    height only win when nothing else is there."""
+    if not groups:
+        raise StopIteration
+    if quality == "smallest":
+        known = [g for g in groups if getattr(g.resolution, "height", 0) > 0]
+        return (known or groups)[-1]
+    cap = QUALITY_CAPS.get(str(quality))
+    if not cap:
+        return groups[0]
+    for group in groups:
+        if 0 < getattr(group.resolution, "height", 0) <= cap:
+            return group
+    known = [g for g in groups if getattr(g.resolution, "height", 0) > 0]
+    return (known or groups)[-1]
+
+
+SUB_LANGUAGE: dict[str, str] = {}  # subtitle playlist URL -> language, for the saved file's name
+SUB_SEEN: set[str] = set()
+
+
+def _install_quality(payload: dict) -> None:
+    """Settings > Downloads > Quality (3.1). Only where the source itself offers a choice:
+
+    - streams (HLS) that list several qualities: the best at or below the chosen height;
+    - subtitles that a stream lists: saved beside the video as <video name>.<language>.vtt, in the
+      chosen languages; off by default (then they are not downloaded at all).
+
+    A source with one quality or no subtitles is downloaded as it is, and nothing is claimed."""
+    SUB_SEEN.clear()
+    quality = str(payload.get("videoQuality") or "best")
+    subs = payload.get("subtitles") if isinstance(payload.get("subtitles"), dict) else {}
+    subs_on = bool(subs.get("on"))
+    languages = [str(x).strip().lower() for x in subs.get("languages") or [] if str(x).strip()][:10]
+    try:
+        import dataclasses
+
+        from cyberdrop_dl.downloader import hls
+        from cyberdrop_dl.utils import m3u8 as m3u8_module
+    except Exception:  # noqa: BLE001
+        return
+    parser = m3u8_module.VariantM3U8Parser
+    original_best = parser.get_best_group
+
+    def get_best_group(self, only=(), *, exclude=()):
+        groups = list(self.get_rendition_groups(only=only, exclude=exclude))
+        if quality == "best" or len(groups) < 2:
+            return original_best(self, only=only, exclude=exclude)
+        chosen = pick_rendition(groups, quality)
+        names = ", ".join(dict.fromkeys(g.resolution.name for g in groups if getattr(g.resolution, "height", 0) > 0))
+        emit({"type": "log", "level": "info", "message": f"Stream quality: {chosen.resolution.name} of {names}."})
+        return chosen
+
+    parser.get_best_group = get_best_group
+
+    details = m3u8_module.RenditionDetails
+    original_new = details.new
+
+    def new(playlist):
+        made = original_new(playlist)
+        try:
+            listed = [m for m in made.media if str(getattr(m, "type", "")).lower().endswith("subtitles")]
+        except Exception:  # noqa: BLE001
+            listed = []
+        if listed:
+            found = sorted({str(getattr(m, "language", "") or "?").lower() for m in listed})
+            key = ",".join(found)
+            if key not in SUB_SEEN:
+                SUB_SEEN.add(key)
+                emit({"type": "log", "level": "info", "message": f"Subtitles offered: {', '.join(found)}" + ("" if subs_on else " (not saved; turn on subtitles in Settings > Downloads)")})
+        if not subs_on:
+            return dataclasses.replace(made, urls=made.urls._replace(subtitle=None)) if made.urls.subtitle else made
+        pick = None
+        for lang in languages or [None]:
+            for media in listed:
+                media_lang = str(getattr(media, "language", "") or "").lower()
+                if lang is None or media_lang == lang or media_lang.split("-")[0] == lang:
+                    pick = media
+                    break
+            if pick is not None:
+                break
+        if pick is None:
+            return dataclasses.replace(made, urls=made.urls._replace(subtitle=None)) if made.urls.subtitle else made
+        url = m3u8_module.parse_url(pick.absolute_uri, trim=False)
+        SUB_LANGUAGE[str(url)] = re.sub(r"[^a-z0-9-]", "", str(getattr(pick, "language", "") or "").lower())[:12] or "subtitles"
+        return dataclasses.replace(made, urls=made.urls._replace(subtitle=url))
+
+    details.new = staticmethod(new)
+
+    original_download = hls.download
+
+    async def download(media_item, rendition, download_fn, client):
+        streams = await original_download(media_item, rendition, download_fn, client)
+        sub = getattr(streams, "subs", None)
+        if sub and Path(sub).is_file():
+            source = str(getattr(rendition.subtitle, "source", "") or "")
+            lang = SUB_LANGUAGE.get(source, "subtitles")
+            video = Path(media_item.path)
+            target = video.with_name(f"{video.stem}.{lang}{Path(sub).suffix or '.vtt'}")
+            number = 2
+            while target.exists():  # never overwrite
+                target = video.with_name(f"{video.stem}.{lang} ({number}){Path(sub).suffix or '.vtt'}")
+                number += 1
+            try:
+                Path(sub).replace(target)
+                emit({"type": "log", "level": "info", "message": f"Subtitles saved: {target.name}"})
+                streams = streams._replace(subs=target)
+                try:
+                    Path(sub).parent.rmdir()  # the stream's temporary folder, now empty
+                except OSError:
+                    pass
+            except OSError as error:
+                emit({"type": "log", "level": "warning", "message": f"Subtitles could not be moved beside the video: {error}"})
+        return streams
+
+    hls.download = download
+
+
 def _install_last_post_report() -> None:
     """Report the last forum post reached, so a watched thread can continue from it."""
     try:
@@ -1498,6 +1621,7 @@ def _run() -> int:
     _install_retry_policy(_bound_int(payload.get("retryMaxDelay"), 2, 120, 20), _bound_int(payload.get("retryAfterCap"), 5, 600, 60))
     _install_type_folders(bool(payload.get("typeFolders")))
     _install_rules(payload.get("rules"), destination)
+    _install_quality(payload)
     _install_segments(_bound_int(payload.get("segments"), 0, 8, 4), _bound_int(payload.get("segmentMinMB"), 1, 4096, 64))
     _install_last_post_report()
     _install_resume_skip(payload.get("skipUrls") or [])
@@ -1626,6 +1750,20 @@ def _run() -> int:
         fields["filters"] = Filters(**filters)
     except Exception as error:  # noqa: BLE001
         emit({"type": "log", "level": "warning", "message": f"File filters could not be applied: {error}"})
+    # 3.1 quality options that the site handlers themselves support (engine config, crawlers.py)
+    try:
+        from cyberdrop_dl.config.crawlers import BandcampConfig, Crawlers, OctaveMusicConfig, TikTokConfig
+
+        crawler_fields = {}
+        if payload.get("tiktokOriginal"):
+            crawler_fields["tiktok"] = TikTokConfig(original=True)
+        if payload.get("audioLossless"):
+            crawler_fields["bandcamp"] = BandcampConfig(formats=("flac", "wav", "aiff", "alas", "mp3-320", "aac-hi", "vorbis", "mp3"))
+            crawler_fields["octave_music"] = OctaveMusicConfig(quality="lossless")
+        if crawler_fields:
+            fields["crawlers"] = Crawlers(**crawler_fields)
+    except Exception as error:  # noqa: BLE001
+        emit({"type": "log", "level": "warning", "message": f"Quality options could not be applied: {error}"})
     from cyberdrop_dl.smart_naming import CORRECTIONS, REGISTRY, REPORT, SETTINGS as NAMING, NamingSettings
 
     naming = NamingSettings.from_payload(payload)

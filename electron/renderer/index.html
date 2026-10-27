@@ -415,6 +415,26 @@
           </select>
           <small class="field-help">Busy servers, rate limits, time-outs, dropped connections and used-up quotas. The job goes back in the queue with a start time; files already saved are skipped. Up to 3 tries, each waiting longer.</small>
         </label>
+        <div class="field">
+          <span class="field-label">Quality, where the site offers a choice</span>
+          <label class="field"><span class="field-label">Video streams with several qualities</span>
+            <select id="video-quality" class="select">
+              <option value="best">Best available</option>
+              <option value="2160">Up to 2160p (4K)</option>
+              <option value="1440">Up to 1440p</option>
+              <option value="1080">Up to 1080p</option>
+              <option value="720">Up to 720p</option>
+              <option value="480">Up to 480p</option>
+              <option value="360">Up to 360p</option>
+              <option value="smallest">Smallest</option>
+            </select>
+            <small class="field-help">For streamed videos (HLS) that list several qualities. A video offered in one quality is saved as it is; the Activity log says which quality was picked.</small>
+          </label>
+          <label class="switch"><input type="checkbox" id="tiktok-original"><span class="switch-text">TikTok videos in original quality<small>Slower; the site handler asks for the original upload.</small></span></label>
+          <label class="switch"><input type="checkbox" id="audio-lossless"><span class="switch-text">Lossless audio when offered<small>Bandcamp and Octave give FLAC or WAV when the release has it; otherwise the usual MP3.</small></span></label>
+          <label class="switch"><input type="checkbox" id="subtitles-on"><span class="switch-text">Save subtitles<small>When a streamed video lists subtitles, they are saved beside it as "video name.language.vtt". The Activity log lists the languages a video offers even when this is off.</small></span></label>
+          <label class="field time-row" data-needs="subtitles-on"><span class="field-label">Languages, in order of preference</span><input type="text" id="subtitle-languages" placeholder="en, es (empty: the first one listed)" spellcheck="false" autocomplete="off" maxlength="80"></label>
+        </div>
         <label class="switch"><input type="checkbox" id="tiktok-audio"><span class="switch-text">TikTok sounds<small>Also saves each TikTok post's background sound as an .mp3. Off saves time; the videos keep their audio either way.</small></span></label>
         <label class="switch"><input type="checkbox" id="deep-scrape"><span class="switch-text">Deep scan<small>Makes extra requests per page to find more files. Slower.</small></span></label>
         <label class="switch"><input type="checkbox" id="flare" checked><span class="switch-text">Get past bot checks<small>Runs the bundled FlareSolverr in the background for sites behind DDoS-Guard or Cloudflare. Its first start takes a minute or two.</small></span></label>
