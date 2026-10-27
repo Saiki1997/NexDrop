@@ -790,3 +790,13 @@ svg { stroke: currentColor; stroke-width: 1.6; fill: none; stroke-linecap: round
 .stats-split { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
 .stats-table-toggle summary { cursor: pointer; font-size: 12px; color: var(--ash); }
 .stats-table-toggle table { margin-top: 8px; }
+
+/* ─── settings search, reset, profiles (3.1) ─── */
+.sheet-head { gap: 12px; }
+.settings-search { flex: 1; min-width: 0; max-width: 260px; margin-left: auto; padding: 6px 10px; border: 1px solid var(--shale-2); border-radius: var(--r-control); background: var(--basalt); color: var(--bone); font: inherit; font-size: 13px; }
+.sheet.is-searching .sheet-tabs button { opacity: .5; }
+.sheet .pane .search-hidden { display: none !important; }
+.reset-one { position: absolute; top: 0; right: 0; padding: 1px 6px; border: 1px solid var(--shale-2); border-radius: 5px; background: var(--slate-2); color: var(--ash); font: inherit; font-size: 11px; cursor: pointer; }
+.reset-one:hover { color: var(--bone); border-color: var(--copper); }
+.has-reset { position: relative; padding-right: 56px; }
+.pane-reset { display: flex; justify-content: flex-end; padding-top: 10px; border-top: 1px solid var(--shale); margin-top: 6px; }

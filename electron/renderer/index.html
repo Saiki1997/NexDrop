@@ -280,6 +280,7 @@
   <aside class="sheet" id="settings" aria-labelledby="settings-title" aria-hidden="true" inert>
     <header class="sheet-head">
       <h2 id="settings-title">Settings</h2>
+      <input type="search" id="settings-search" class="settings-search" placeholder="Search settings" spellcheck="false" autocomplete="off" aria-label="Search settings">
       <button class="btn btn-icon" id="btn-settings-close" type="button" aria-label="Close settings">
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>
       </button>
@@ -295,6 +296,7 @@
     </nav>
 
     <div class="sheet-body">
+      <p class="pane-intro" id="settings-no-match" hidden>No setting matches. Try another word, such as "speed", "folder" or "rule".</p>
       <section class="pane" data-pane="downloads">
         <div class="field">
           <span class="field-label">Save files to</span>
@@ -403,6 +405,7 @@
           <input type="number" id="thread-depth" min="0" max="3" value="0">
           <small class="field-help">0 downloads only the thread you pasted. Up to 3 levels.</small>
         </label>
+        <div class="pane-reset"><button class="btn btn-quiet btn-small" type="button" data-reset-pane="downloads">Reset this tab to defaults</button></div>
       </section>
 
       <section class="pane" data-pane="network" hidden>
@@ -488,6 +491,7 @@
           <small class="field-help">Looks the site up, connects (through the proxy when one is set) and sends one small request. Nothing is downloaded.</small>
           <ul class="net-steps" id="net-steps"></ul>
         </div>
+        <div class="pane-reset"><button class="btn btn-quiet btn-small" type="button" data-reset-pane="network">Reset this tab to defaults</button></div>
       </section>
 
       <section class="pane" data-pane="accounts" hidden>
@@ -631,6 +635,25 @@
             <span class="field-help" id="rollback-text"></span>
           </div>
         </div>
+        <div class="field" id="profiles-field">
+          <span class="field-label">Settings profiles</span>
+          <div class="field-row">
+            <select class="select" id="profile-list" aria-label="Saved profiles"></select>
+            <button class="btn btn-quiet btn-small" id="btn-profile-use" type="button">Use</button>
+            <button class="btn btn-quiet btn-small" id="btn-profile-delete" type="button">Delete</button>
+          </div>
+          <div class="field-row">
+            <input type="text" id="profile-name" placeholder="Name for the current settings, e.g. Night downloads" maxlength="60" spellcheck="false" autocomplete="off">
+            <button class="btn btn-quiet btn-small" id="btn-profile-save" type="button">Save as profile</button>
+          </div>
+          <div class="field-row">
+            <button class="btn btn-quiet btn-small" id="btn-profile-export" type="button">Export settings…</button>
+            <button class="btn btn-quiet btn-small" id="btn-profile-import" type="button">Import settings…</button>
+          </div>
+          <p class="status-line" id="profile-status" role="status"></p>
+          <small class="field-help">A profile holds the settings in these tabs, not sign-ins, cookies, the queue or History. Imported settings are checked: unknown ones are ignored and values out of range are brought into range, and you are told which.</small>
+        </div>
+        <div class="divider"></div>
         <label class="switch"><input type="checkbox" id="update-auto" checked><span class="switch-text">Check for updates automatically<small>Asks GitHub for the newest release when NEXDROP starts and twice a day. Nothing is downloaded until you press Update now.</small></span></label>
         <div class="divider"></div>
         <label class="switch"><input type="checkbox" id="close-to-tray"><span class="switch-text">Keep running in the tray when closed<small>Closing the window keeps downloads and watched links going. Quit from the tray icon to exit.</small></span></label>
@@ -648,6 +671,7 @@
         </div>
         <p class="field-help">A backup holds your settings, queue, watched links, history and learned names, never sign-ins or cookies. Restoring keeps your current files as ".before-restore" copies. Diagnostics is a text file for bug reports with tokens, passwords, e-mail addresses and your user name removed; read it before you share it.</p>
         <p class="status-line" id="backup-status" role="status"></p>
+        <div class="pane-reset"><button class="btn btn-quiet btn-small" type="button" data-reset-pane="app">Reset this tab to defaults</button></div>
       </section>
     </div>
   </aside>

@@ -35,7 +35,7 @@ const PYTHON = [
   path.join(ROOT, "engine", ".venv", "Scripts", "python.exe"),
   path.join(ROOT, "engine", ".venv", "bin", "python"),
 ].find((item) => fs.existsSync(item)) || (process.platform === "win32" ? "python.exe" : "python3");
-const SETTING_KEYS = new Set(["downloads_dir", "cookie_files", "prefs", "window", "queue", "watches", "active_run", "thread_posts", "update_skip"]);
+const SETTING_KEYS = new Set(["downloads_dir", "cookie_files", "prefs", "window", "queue", "watches", "active_run", "thread_posts", "update_skip", "profiles"]);
 const LOG_DIR = path.join(APPDATA, "logs");
 const FLARE_BIN = ["flaresolverr.exe", "flaresolverr"].map((n) => path.join(ROOT, "runtime", "flaresolverr", n)).find((f) => fs.existsSync(f)) || "";
 const FLARE_URL = "http://127.0.0.1:8191/v1";
@@ -697,6 +697,7 @@ ipcMain.handle("get-defaults", () => {
     watches: Array.isArray(settings.watches) ? settings.watches : [],
     activeRun: settings.active_run && typeof settings.active_run === "object" ? settings.active_run : null,
     threadPosts: settings.thread_posts && typeof settings.thread_posts === "object" ? settings.thread_posts : {},
+    profiles: settings.profiles && typeof settings.profiles === "object" && !Array.isArray(settings.profiles) ? settings.profiles : {},
     platform: process.platform,
     version: app.getVersion(),
   };
@@ -768,6 +769,42 @@ ipcMain.handle("jobs-export", async (_event, jobs) => {
   const body = { format: "nexdrop-jobs", version: 1, exported: new Date().toISOString(), jobs: jobs.slice(0, 500) };
   fs.writeFileSync(result.filePath, JSON.stringify(body, null, 2));
   return { ok: true, path: result.filePath, count: body.jobs.length };
+});
+
+// Settings > App > profiles (3.1): the settings in the tabs as a JSON file. No sign-ins or cookies
+// are in prefs; the window checks every field again when importing.
+ipcMain.handle("settings-export", async (_event, body) => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: "Export settings",
+    defaultPath: path.join(app.getPath("documents"), "nexdrop-settings.json"),
+    filters: [{ name: "NexDrop settings", extensions: ["json"] }],
+  });
+  if (result.canceled || !result.filePath) return { ok: false, canceled: true };
+  const prefs = body && typeof body.prefs === "object" ? body.prefs : {};
+  const profiles = body && typeof body.profiles === "object" ? body.profiles : {};
+  try {
+    fs.writeFileSync(result.filePath, JSON.stringify({ format: "nexdrop-settings", version: 1, app: app.getVersion(), exported: new Date().toISOString(), prefs, profiles }, null, 2));
+  } catch (error) {
+    return { ok: false, error: `Could not write the file: ${error.message}` };
+  }
+  return { ok: true, path: result.filePath };
+});
+
+ipcMain.handle("settings-import", async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Import settings", properties: ["openFile"], filters: [{ name: "NexDrop settings", extensions: ["json"] }],
+  });
+  if (result.canceled || !result.filePaths.length) return { ok: false, canceled: true };
+  try {
+    if (fs.statSync(result.filePaths[0]).size > 2_000_000) return { ok: false, error: "That file is too large to be a settings file." };
+    const data = JSON.parse(fs.readFileSync(result.filePaths[0], "utf8"));
+    if (!data || data.format !== "nexdrop-settings" || typeof data.prefs !== "object") return { ok: false, error: "This is not a NexDrop settings file." };
+    return { ok: true, prefs: data.prefs, profiles: data.profiles && typeof data.profiles === "object" ? data.profiles : {} };
+  } catch (error) {
+    return { ok: false, error: `The file could not be read: ${error.message}` };
+  }
 });
 
 ipcMain.handle("jobs-import", async () => {

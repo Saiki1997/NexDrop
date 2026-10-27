@@ -2196,6 +2196,7 @@
     sheet.inert = false;
     sheet.setAttribute("aria-hidden", "false");
     sheet.classList.add("open");
+    markResettable();
     $("#btn-settings-close").focus();
   }
   function closeSheet() {
@@ -2213,6 +2214,250 @@
     if (name === "history") searchHistory();
     if (name === "sources") showHealth();
   }
+  // ─── settings search, defaults, reset, profiles (3.1) ──────────────────────
+  // Fields set through code have no element to look at; these say where they live and their default.
+  const CUSTOM_PANE = { rules: "downloads", scheduleDays: "network" };
+  const CUSTOM_DEFAULT = { rules: [], scheduleDays: [0, 1, 2, 3, 4, 5, 6] };
+  const CUSTOM_BOX = { rules: "#rule-list", scheduleDays: "#schedule-days" };
+
+  function prefPane(key, spec) {
+    if (CUSTOM_PANE[key]) return CUSTOM_PANE[key];
+    const node = spec.el && $(spec.el);
+    const pane = node && node.closest(".sheet .pane");
+    return pane ? pane.dataset.pane : "";
+  }
+
+  function prefDefault(key, spec) {
+    return key in CUSTOM_DEFAULT ? CUSTOM_DEFAULT[key] : spec.def;
+  }
+
+  function prefBox(key, spec) {
+    const node = $(CUSTOM_BOX[key] || spec.el);
+    return node ? node.closest(".switch, .field") : null;
+  }
+
+  function sameValue(a, b) {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+
+  // Everything that shows a value derived from settings.
+  function refreshAfterPrefs() {
+    for (const id of ["#max-downloads", "#per-host", "#server-slots"]) $(id).dataset.custom = $(id).value;
+    showDownloadMode();
+    showTemplateExample();
+    renderRules();
+    savePrefsSoon();
+    setTimeout(markResettable, 350);
+  }
+
+  // A limit field locked by a download mode keeps the user's own number in data-custom.
+  function writePref(spec, value) {
+    writeField(spec, value);
+    const node = spec.el && $(spec.el);
+    if (node && node.dataset.custom !== undefined) node.dataset.custom = node.value;
+  }
+
+  function resetPref(key) {
+    const spec = PREF_FIELDS[key];
+    writePref(spec, prefDefault(key, spec));
+  }
+
+  // A small "Reset" button beside each setting that differs from its default.
+  function markResettable() {
+    for (const [key, spec] of Object.entries(PREF_FIELDS)) {
+      if (!prefPane(key, spec)) continue;
+      const box = prefBox(key, spec);
+      if (!box) continue;
+      let button = box.querySelector(`:scope > .reset-one[data-key="${key}"]`);
+      const changed = !sameValue(readField(spec), prefDefault(key, spec));
+      if (!button && changed) {
+        button = document.createElement("button");
+        button.type = "button";
+        button.className = "reset-one";
+        button.dataset.key = key;
+        button.textContent = "Reset";
+        button.title = "Back to the default value";
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          resetPref(key);
+          refreshAfterPrefs();
+        });
+        box.append(button);
+      }
+      if (button) button.hidden = !changed;
+      box.classList.toggle("has-reset", changed);
+    }
+  }
+
+  for (const button of $$("[data-reset-pane]")) {
+    button.addEventListener("click", () => {
+      const pane = button.dataset.resetPane;
+      const keys = Object.entries(PREF_FIELDS).filter(([key, spec]) => prefPane(key, spec) === pane).map(([key]) => key);
+      const label = $(`#sheet-tabs [data-pane="${pane}"]`)?.textContent || pane;
+      if (!window.confirm(`Put every setting in ${label} back to its default? Sign-ins, the queue and History are not touched.`)) return;
+      keys.forEach(resetPref);
+      refreshAfterPrefs();
+      log("info", `${label} settings are back to their defaults.`);
+    });
+  }
+
+  // Search: shows every setting whose label or help text has all the words, across the tabs.
+  const SEARCH_PANES = ["downloads", "network", "accounts", "watched", "sources", "app"];
+  let paneBeforeSearch = "downloads";
+  function searchItems(pane) {
+    const out = [];
+    for (const child of pane.children) {
+      if (child.classList.contains("field-grid")) out.push(...child.children);
+      else out.push(child);
+    }
+    return out;
+  }
+  function runSettingsSearch() {
+    const words = $("#settings-search").value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const searching = words.length > 0;
+    if (searching && !sheet.classList.contains("is-searching")) paneBeforeSearch = $("#sheet-tabs [aria-selected=true]")?.dataset.pane || "downloads";
+    sheet.classList.toggle("is-searching", searching);
+    let any = false;
+    for (const pane of $$(".sheet .pane")) {
+      for (const item of $$(".search-hidden", pane)) item.classList.remove("search-hidden");
+      if (!searching) continue;
+      if (!SEARCH_PANES.includes(pane.dataset.pane)) {
+        pane.hidden = true;
+        continue;
+      }
+      let hits = 0;
+      for (const item of searchItems(pane)) {
+        const text = `${item.textContent} ${$$("input[placeholder]", item).map((i) => i.placeholder).join(" ")}`.toLowerCase();
+        const hit = !item.classList.contains("divider") && !item.classList.contains("pane-reset") && words.every((word) => text.includes(word));
+        item.classList.toggle("search-hidden", !hit);
+        if (hit) hits += 1;
+      }
+      pane.hidden = hits === 0;
+      any = any || hits > 0;
+    }
+    $("#settings-no-match").hidden = !searching || any;
+    if (!searching) selectPane(paneBeforeSearch);
+  }
+  $("#settings-search").addEventListener("input", runSettingsSearch);
+  $("#settings-search").addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && event.target.value) {
+      event.stopPropagation();
+      event.target.value = "";
+      runSettingsSearch();
+    }
+  });
+  $("#sheet-tabs").addEventListener("click", () => {
+    if (!$("#settings-search").value) return;
+    $("#settings-search").value = "";
+    sheet.classList.remove("is-searching");
+    for (const item of $$(".sheet .search-hidden")) item.classList.remove("search-hidden");
+    $("#settings-no-match").hidden = true;
+  }, true);
+
+  // Profiles: named copies of the settings in these tabs, kept with the other settings; export and
+  // import as a JSON file. Imports are checked field by field.
+  let profiles = {};
+  const PROFILE_SKIP = new Set(["version"]);
+
+  function renderProfiles() {
+    const list = $("#profile-list");
+    list.textContent = "";
+    const names = Object.keys(profiles).sort((a, b) => a.localeCompare(b));
+    if (!names.length) list.append(new Option("No saved profiles", ""));
+    for (const name of names) list.append(new Option(name, name));
+    $("#btn-profile-use").disabled = !names.length;
+    $("#btn-profile-delete").disabled = !names.length;
+  }
+
+  function saveProfiles() {
+    api.saveGuiSetting({ profiles });
+    renderProfiles();
+  }
+
+  /** Writes settings from a profile or a file; returns what was ignored or changed to fit. */
+  function applyProfile(raw) {
+    const ignored = [];
+    const adjusted = [];
+    const source = raw && typeof raw === "object" ? raw : {};
+    for (const [key, value] of Object.entries(source)) {
+      if (PROFILE_SKIP.has(key)) continue;
+      const spec = PREF_FIELDS[key];
+      if (!spec || APP_OPTION_KEYS.includes(key)) {
+        ignored.push(key);
+        continue;
+      }
+      writePref(spec, value);
+      if (!sameValue(readField(spec), value)) adjusted.push(key);
+    }
+    refreshAfterPrefs();
+    api.applyAppOptions();
+    return { ignored, adjusted };
+  }
+
+  function profileReport(prefix, result) {
+    const parts = [prefix];
+    if (result.adjusted.length) parts.push(`Brought into range: ${result.adjusted.slice(0, 8).join(", ")}${result.adjusted.length > 8 ? "…" : ""}.`);
+    if (result.ignored.length) parts.push(`Not used (unknown or set per PC): ${result.ignored.slice(0, 8).join(", ")}${result.ignored.length > 8 ? "…" : ""}.`);
+    setStatus("#profile-status", parts.join(" "), result.adjusted.length || result.ignored.length ? null : "ok");
+  }
+
+  // Start with Windows, the tray and similar are about this PC, so profiles leave them out.
+  function profilePrefs() {
+    const out = collectPrefs();
+    for (const key of [...APP_OPTION_KEYS, ...PROFILE_SKIP]) delete out[key];
+    return out;
+  }
+
+  $("#btn-profile-save").addEventListener("click", () => {
+    const name = $("#profile-name").value.trim().slice(0, 60);
+    if (!name) {
+      setStatus("#profile-status", "Type a name for the profile first.", "bad");
+      $("#profile-name").focus();
+      return;
+    }
+    if (!profiles[name] && Object.keys(profiles).length >= 20) {
+      setStatus("#profile-status", "Up to 20 profiles. Delete one first.", "bad");
+      return;
+    }
+    profiles[name] = profilePrefs();
+    saveProfiles();
+    $("#profile-list").value = name;
+    $("#profile-name").value = "";
+    setStatus("#profile-status", `Saved the current settings as "${name}".`, "ok");
+  });
+  $("#btn-profile-use").addEventListener("click", () => {
+    const name = $("#profile-list").value;
+    if (!profiles[name]) return;
+    profileReport(`Using "${name}".`, applyProfile(profiles[name]));
+  });
+  $("#btn-profile-delete").addEventListener("click", () => {
+    const name = $("#profile-list").value;
+    if (!profiles[name] || !window.confirm(`Delete the profile "${name}"? Your current settings stay as they are.`)) return;
+    delete profiles[name];
+    saveProfiles();
+    setStatus("#profile-status", `Deleted "${name}".`, null);
+  });
+  $("#btn-profile-export").addEventListener("click", async () => {
+    const result = await api.settingsExport({ prefs: profilePrefs(), profiles });
+    if (result?.ok) setStatus("#profile-status", `Exported to ${result.path}.`, "ok");
+    else if (!result?.canceled) setStatus("#profile-status", result?.error || "The file could not be written.", "bad");
+  });
+  $("#btn-profile-import").addEventListener("click", async () => {
+    const result = await api.settingsImport();
+    if (result?.canceled) return;
+    if (!result?.ok) return setStatus("#profile-status", result?.error || "The file could not be read.", "bad");
+    let added = 0;
+    for (const [name, value] of Object.entries(result.profiles || {})) {
+      if (value && typeof value === "object" && Object.keys(profiles).length < 20 && !profiles[name]) {
+        profiles[String(name).slice(0, 60)] = value;
+        added += 1;
+      }
+    }
+    if (added) saveProfiles();
+    profileReport(`Imported the settings${added ? ` and ${added} profile(s)` : ""}.`, applyProfile(result.prefs));
+  });
+
   $("#btn-settings").addEventListener("click", () => openSheet());
   $("#btn-settings-close").addEventListener("click", closeSheet);
   $("#sheet-scrim").addEventListener("click", closeSheet);
@@ -2230,7 +2475,10 @@
   $("#download-mode").addEventListener("change", showDownloadMode);
   $("#name-template").addEventListener("input", showTemplateExample);
   for (const id of ["#number-width", "#numbering"]) $(id).addEventListener("change", showTemplateExample);
-  sheet.addEventListener("change", savePrefsSoon);
+  sheet.addEventListener("change", () => {
+    savePrefsSoon();
+    setTimeout(markResettable, 350);
+  });
   $("#order-seg").addEventListener("click", (event) => {
     const button = event.target.closest("[data-order]");
     if (!button) return;
@@ -2919,6 +3167,8 @@
     queue = Array.isArray(defaults.queue) ? defaults.queue : [];
     watches = Array.isArray(defaults.watches) ? defaults.watches : [];
     threadPosts = defaults.threadPosts || {};
+    profiles = defaults.profiles && typeof defaults.profiles === "object" ? defaults.profiles : {};
+    renderProfiles();
     renderQueue();
     renderWatches();
     if (defaults.activeRun && Array.isArray(defaults.activeRun.urls)) {
