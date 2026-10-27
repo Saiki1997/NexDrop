@@ -286,7 +286,7 @@
   }
 
   /* Jobs (3.0 job manager): what is kept in an export, and reading an export or a link list back. */
-  const JOB_FIELDS = ["label", "urls", "unsupported", "startPage", "endPage", "redownload", "folder", "mode", "speedMB", "hold", "named"];
+  const JOB_FIELDS = ["label", "urls", "unsupported", "startPage", "endPage", "redownload", "folder", "mode", "speedMB", "hold", "named", "startAt", "stopAt"];
   const MAX_JOBS = 500;
   const MAX_JOB_URLS = 20000;
 
@@ -317,6 +317,11 @@
     if (speed !== null && raw.speedMB !== "" && raw.speedMB !== null) job.speedMB = speed;
     if (raw.hold) job.hold = true;
     if (raw.named) job.named = true;
+    for (const key of ["startAt", "stopAt"]) {
+      const when = typeof raw[key] === "string" ? Date.parse(raw[key]) : NaN;
+      if (Number.isFinite(when)) job[key] = new Date(when).toISOString();
+    }
+    if (job.startAt && job.stopAt && job.stopAt <= job.startAt) delete job.stopAt;
     return job;
   }
 
@@ -433,5 +438,88 @@
     }));
   }
 
-  return { RULE_FIELDS, RULE_ACTIONS, RULE_TYPES, ruleProblems, cleanRuleList, parseSiteLimits, normalizeUrl, redact, cleanJob, parseJobFile, exportJob, TEMPLATE_VARS, templateProblem, renderTemplate, DOWNLOAD_MODES, modeLimits, guessMode, bytes, speed, mbps, duration, ago, parseLinks, host, finishText, compareVersions, clockMinutes, inTimeWindow, appLinkUrls, checksumFor };
+
+  /**
+   * Download hours on chosen weekdays (0 = Sunday). A window that crosses midnight belongs to the
+   * day it starts: Friday 23:00-02:00 includes Saturday 01:00. No days chosen means every day.
+   */
+  function inSchedule(date, from, to, days) {
+    const allowed = Array.isArray(days) && days.length ? new Set(days.map(Number)) : null;
+    const start = clockMinutes(from);
+    const end = clockMinutes(to);
+    const today = date.getDay();
+    const yesterday = (today + 6) % 7;
+    if (start === null || end === null || start === end) return !allowed || allowed.has(today);
+    const now = date.getHours() * 60 + date.getMinutes();
+    if (start < end) return now >= start && now < end && (!allowed || allowed.has(today));
+    if (now >= start) return !allowed || allowed.has(today);
+    if (now < end) return !allowed || allowed.has(yesterday);
+    return false;
+  }
+
+  /** When the download hours next begin, or null when no day is chosen. */
+  function nextScheduleStart(date, from, to, days) {
+    const allowed = Array.isArray(days) && days.length ? new Set(days.map(Number)) : null;
+    const start = clockMinutes(from);
+    if (start === null || (allowed && !allowed.size)) return null;
+    for (let add = 0; add <= 7; add += 1) {
+      const day = new Date(date.getFullYear(), date.getMonth(), date.getDate() + add, Math.floor(start / 60), start % 60);
+      if (day > date && (!allowed || allowed.has(day.getDay()))) return day;
+    }
+    return null;
+  }
+
+  // Watched sources (3.1): links whose handler lists files that can grow. A single file, post or
+  // video doesn't get new files, and a page no handler describes can't be checked honestly.
+  const WATCH_KINDS = ["forum thread", "forum post", "album", "gallery", "profile", "playlist", "cloud folder", "tag"];
+  const WATCH_EVERY = [30, 60, 180, 360, 720, 1440, 4320, 10080]; // minutes
+  const WATCH_MIN_MINUTES = 30;
+
+  function watchable(item) {
+    if (!item) return { ok: false, reason: "The link could not be read." };
+    if (item.handler === "none" || item.handler === "direct") return { ok: false, reason: "NexDrop has no handler that lists files for this link, so it can't tell when something new appears." };
+    if (WATCH_KINDS.includes(item.kind)) return { ok: true, kind: item.kind === "forum post" ? "forum thread" : item.kind };
+    const what = item.kind ? `a ${item.kind}` : "a page whose handler doesn't say what it lists";
+    return { ok: false, reason: `This is ${what}. Only threads, albums, galleries, profiles, channels, playlists, cloud folders and tags can be watched.` };
+  }
+
+  /** Minutes between checks; watches from 3.0 kept hours. */
+  function watchMinutes(watch) {
+    const minutes = Number(watch && watch.everyMinutes) || Number(watch && watch.everyHours) * 60 || 360;
+    return Math.max(WATCH_MIN_MINUTES, Math.min(10080, minutes));
+  }
+
+  function watchDue(watch, nowMs) {
+    if (!watch || watch.paused) return false;
+    if (!watch.lastCheck) return true;
+    return nowMs - Date.parse(watch.lastCheck) >= watchMinutes(watch) * 60 * 1000;
+  }
+
+  function everyText(minutes) {
+    if (minutes < 60) return `Every ${minutes} minutes`;
+    if (minutes === 60) return "Every hour";
+    if (minutes < 1440) return `Every ${minutes / 60} hours`;
+    if (minutes === 1440) return "Every day";
+    if (minutes === 10080) return "Every week";
+    return `Every ${minutes / 1440} days`;
+  }
+
+  // "Retry later" (3.1): a job whose files failed for reasons that pass (busy server, rate limit,
+  // time-out) runs again later; its saved files are skipped by History. At most 3 rounds.
+  const RETRY_LATER_ROUNDS = 3;
+  function retryLaterJob(job, event, delayMinutes, now = Date.now()) {
+    const round = (Number(job && job.retryRound) || 0) + 1;
+    if (!job || !delayMinutes || !event || event.stopped || !(event.retryLater > 0) || round > RETRY_LATER_ROUNDS || !(job.urls || []).length) return null;
+    const base = String(job.label || "").replace(/^Retry \d: /, "");
+    return { ...job, id: `j${now.toString(36)}r${round}`, label: `Retry ${round}: ${base}`, named: true, retryRound: round,
+      startAt: new Date(now + delayMinutes * 60 * 1000 * round).toISOString(), redownload: false,
+      parked: undefined, resumed: undefined, doneUrls: undefined, watchId: undefined, hold: undefined };
+  }
+
+  /** A queued job waits for its own start time. */
+  function jobReady(job, nowMs) {
+    return Boolean(job) && !job.hold && (!job.startAt || Date.parse(job.startAt) <= nowMs);
+  }
+
+  return { inSchedule, nextScheduleStart, WATCH_KINDS, WATCH_EVERY, WATCH_MIN_MINUTES, watchable, watchMinutes, watchDue, everyText, RETRY_LATER_ROUNDS, retryLaterJob, jobReady, RULE_FIELDS, RULE_ACTIONS, RULE_TYPES, ruleProblems, cleanRuleList, parseSiteLimits, normalizeUrl, redact, cleanJob, parseJobFile, exportJob, TEMPLATE_VARS, templateProblem, renderTemplate, DOWNLOAD_MODES, modeLimits, guessMode, bytes, speed, mbps, duration, ago, parseLinks, host, finishText, compareVersions, clockMinutes, inTimeWindow, appLinkUrls, checksumFor };
 });

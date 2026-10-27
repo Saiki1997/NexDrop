@@ -27,6 +27,7 @@
         <button class="btn btn-quiet" id="btn-import" type="button" title="Load links from a .txt file">Import</button>
         <button class="btn btn-quiet" id="btn-check" type="button" title="See what each link is before downloading: site, type, sign-in, duplicates">Check</button>
         <button class="btn btn-primary" id="btn-start" type="button">Start</button>
+        <button class="btn btn-quiet" id="btn-later" type="button" title="Queue these links to start, and if you like stop, at a time you choose">Later…</button>
         <button class="btn btn-quiet" id="btn-queue" type="button" hidden title="Download these links after the current run">Add to queue</button>
         <button class="btn btn-stop" id="btn-stop" type="button" hidden title="Stop for now. Resume continues where it left off, even after closing NEXDROP.">Pause</button>
         <button class="btn btn-quiet" id="btn-library" type="button" title="Everything you downloaded: gallery, search, duplicates and storage">Library</button>
@@ -123,7 +124,7 @@
           <select id="host-filter" class="select" aria-label="Filter by site">
             <option value="">All sites</option>
           </select>
-          <button class="btn btn-quiet btn-small" id="btn-watch" type="button" hidden title="Check this thread for new posts every few hours while NEXDROP is open">Watch for new posts</button>
+          <button class="btn btn-quiet btn-small" id="btn-watch" type="button" hidden title="Check this link for new files every few hours while NEXDROP is open">Watch for new files</button>
           <button class="btn btn-quiet btn-small" id="btn-retry-failed" type="button" hidden>Retry unfinished</button>
         </div>
 
@@ -239,6 +240,10 @@
         <label class="field"><span class="field-label">Download mode</span><select id="job-mode" class="select"><option value="">As in Settings</option><option value="auto">Auto</option><option value="balanced">Balanced</option><option value="max">Maximum speed</option><option value="low">Low resource</option></select></label>
         <label class="field"><span class="field-label">Speed cap, MB/s</span><input type="number" id="job-speed" min="0" max="1000" placeholder="As in Settings"><small class="field-help">0 means no cap.</small></label>
       </div>
+      <div class="field-grid">
+        <label class="field"><span class="field-label">Start at</span><input type="datetime-local" id="job-start-at"><small class="field-help">Empty starts when its turn comes.</small></label>
+        <label class="field"><span class="field-label">Pause at</span><input type="datetime-local" id="job-stop-at"><small class="field-help">The job pauses then and can be resumed later.</small></label>
+      </div>
       <label class="switch"><input type="checkbox" id="job-hold"><span class="switch-text">Hold<small>Stays in the queue but doesn't start until you release it.</small></span></label>
       <div class="dialog-actions">
         <button class="btn btn-quiet btn-small" value="top" type="submit">Move to top</button>
@@ -249,6 +254,23 @@
       <div class="dialog-actions">
         <button class="btn btn-quiet" value="cancel" type="submit">Cancel</button>
         <button class="btn btn-primary" value="save" type="submit">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog" id="later-dialog" aria-labelledby="later-title">
+    <form method="dialog">
+      <h2 id="later-title">Start later</h2>
+      <p class="dialog-text" id="later-links"></p>
+      <div class="field-grid">
+        <label class="field"><span class="field-label">Start at</span><input type="datetime-local" id="later-start" required></label>
+        <label class="field"><span class="field-label">Pause at (optional)</span><input type="datetime-local" id="later-stop"></label>
+      </div>
+      <p class="status-line" id="later-status" role="status"></p>
+      <small class="field-help">NEXDROP has to be open (it can wait in the tray) at that time. The job waits in the queue until then.</small>
+      <div class="dialog-actions">
+        <button class="btn btn-quiet" value="cancel" type="submit" formnovalidate>Cancel</button>
+        <button class="btn btn-primary" value="save" type="submit" id="btn-later-save">Queue</button>
       </div>
     </form>
   </dialog>
@@ -352,6 +374,16 @@
         </div>
         <label class="switch"><input type="checkbox" id="type-folders"><span class="switch-text">Sort into Images, Videos, Audio and Other folders<small>New files only. Files from earlier runs stay where they are.</small></span></label>
         <label class="switch"><input type="checkbox" id="auto-retry" checked><span class="switch-text">Retry temporary errors automatically<small>Files that fail because a server is busy or times out are tried once more, 45 seconds after the run.</small></span></label>
+        <label class="field">
+          <span class="field-label">If files still fail for a reason that passes, try the job again</span>
+          <select id="retry-later" class="select">
+            <option value="0">Don't</option>
+            <option value="30">30 minutes later</option>
+            <option value="120">2 hours later</option>
+            <option value="720">12 hours later</option>
+          </select>
+          <small class="field-help">Busy servers, rate limits, time-outs, dropped connections and used-up quotas. The job goes back in the queue with a start time; files already saved are skipped. Up to 3 tries, each waiting longer.</small>
+        </label>
         <label class="switch"><input type="checkbox" id="tiktok-audio"><span class="switch-text">TikTok sounds<small>Also saves each TikTok post's background sound as an .mp3. Off saves time; the videos keep their audio either way.</small></span></label>
         <label class="switch"><input type="checkbox" id="deep-scrape"><span class="switch-text">Deep scan<small>Makes extra requests per page to find more files. Slower.</small></span></label>
         <label class="switch"><input type="checkbox" id="flare" checked><span class="switch-text">Get past bot checks<small>Runs the bundled FlareSolverr in the background for sites behind DDoS-Guard or Cloudflare. Its first start takes a minute or two.</small></span></label>
@@ -413,11 +445,21 @@
         </div>
 
         <div class="divider"></div>
-        <label class="switch"><input type="checkbox" id="schedule-on"><span class="switch-text">Only start downloads at certain times<small>Links you start outside these hours wait in the queue, and so do watched-thread checks. Press Start with an empty links box to start the queue now anyway.</small></span></label>
+        <label class="switch"><input type="checkbox" id="schedule-on"><span class="switch-text">Only download at certain times<small>Links you start outside these hours wait in the queue, and so do watched-link checks. Press Start with an empty links box to start the queue now anyway.</small></span></label>
         <div class="field-row time-row" data-needs="schedule-on">
           <label class="field"><span class="field-label">From</span><input type="time" id="schedule-from" value="01:00"></label>
           <label class="field"><span class="field-label">Until</span><input type="time" id="schedule-to" value="07:00"></label>
         </div>
+        <div class="field" data-needs="schedule-on">
+          <span class="field-label">On these days</span>
+          <div class="day-row" id="schedule-days">
+            <label><input type="checkbox" data-day="1" checked>Mon</label><label><input type="checkbox" data-day="2" checked>Tue</label><label><input type="checkbox" data-day="3" checked>Wed</label><label><input type="checkbox" data-day="4" checked>Thu</label><label><input type="checkbox" data-day="5" checked>Fri</label><label><input type="checkbox" data-day="6" checked>Sat</label><label><input type="checkbox" data-day="0" checked>Sun</label>
+            <button class="btn btn-quiet btn-small" type="button" id="btn-days-weekend">Weekends</button>
+            <button class="btn btn-quiet btn-small" type="button" id="btn-days-all">Every day</button>
+          </div>
+          <small class="field-help">Hours that pass midnight belong to the day they start: Friday 23:00 to 02:00 runs into Saturday morning.</small>
+        </div>
+        <label class="switch" data-needs="schedule-on"><input type="checkbox" id="schedule-stop"><span class="switch-text">Pause downloads when the hours end<small>Running jobs pause at the end time and continue by themselves when the hours start again. A job you started by hand outside the hours keeps going.</small></span></label>
         <label class="switch"><input type="checkbox" id="quiet-on"><span class="switch-text">Slower in quiet hours<small>Runs that start in these hours use the lower speed cap below. A run keeps its speed until it ends.</small></span></label>
         <div class="field-row time-row" data-needs="quiet-on">
           <label class="field"><span class="field-label">From</span><input type="time" id="quiet-from" value="18:00"></label>
@@ -486,18 +528,12 @@
       </section>
 
       <section class="pane" data-pane="watched" hidden>
-        <p class="pane-intro">NEXDROP checks watched forum threads for new posts and downloads only what's new. Checks run while NEXDROP is open.</p>
+        <p class="pane-intro">NEXDROP checks watched links and downloads only what's new: threads continue from the last post read, and albums, profiles, channels, playlists, galleries, cloud folders and tags skip every file already in History. Checks run while NEXDROP is open, within the download hours and the per-site limits.</p>
         <div class="field">
-          <span class="field-label">Thread link</span>
+          <span class="field-label">Link to watch</span>
           <div class="field-row">
-            <input type="text" id="watch-url" placeholder="https://simpcity.cr/threads/…" spellcheck="false">
-            <select class="select" id="watch-every" aria-label="How often to check">
-              <option value="1">Every hour</option>
-              <option value="3">Every 3 hours</option>
-              <option value="6" selected>Every 6 hours</option>
-              <option value="12">Every 12 hours</option>
-              <option value="24">Every 24 hours</option>
-            </select>
+            <input type="text" id="watch-url" placeholder="A thread, album, profile, channel or playlist link" spellcheck="false">
+            <select class="select" id="watch-every" aria-label="How often to check"></select>
             <button class="btn btn-quiet" id="btn-watch-add" type="button">Watch</button>
           </div>
         </div>
@@ -578,8 +614,8 @@
         </div>
         <label class="switch"><input type="checkbox" id="update-auto" checked><span class="switch-text">Check for updates automatically<small>Asks GitHub for the newest release when NEXDROP starts and twice a day. Nothing is downloaded until you press Update now.</small></span></label>
         <div class="divider"></div>
-        <label class="switch"><input type="checkbox" id="close-to-tray"><span class="switch-text">Keep running in the tray when closed<small>Closing the window keeps downloads and watched threads going. Quit from the tray icon to exit.</small></span></label>
-        <label class="switch"><input type="checkbox" id="start-with-windows"><span class="switch-text">Start with Windows<small>Opens NEXDROP when you sign in to Windows, in the tray if the option above is on, so watched threads keep being checked.</small></span></label>
+        <label class="switch"><input type="checkbox" id="close-to-tray"><span class="switch-text">Keep running in the tray when closed<small>Closing the window keeps downloads and watched links going. Quit from the tray icon to exit.</small></span></label>
+        <label class="switch"><input type="checkbox" id="start-with-windows"><span class="switch-text">Start with Windows<small>Opens NEXDROP when you sign in to Windows, in the tray if the option above is on, so watched links keep being checked.</small></span></label>
         <label class="switch"><input type="checkbox" id="clipboard-watch"><span class="switch-text">Add copied links automatically<small>Links you copy in other programs are added to the links box. Nothing starts until you press Start.</small></span></label>
         <div class="divider"></div>
         <label class="switch"><input type="checkbox" id="link-handler"><span class="switch-text">Open links sent from the browser<small>Lets the NEXDROP browser extension (in the browser-extension folder) send pages and links here with right-click &gt; Download with NEXDROP. Registers nexdrop:// links for this folder.</small></span></label>
@@ -591,7 +627,7 @@
           <button class="btn btn-quiet" id="btn-restore" type="button">Restore…</button>
           <button class="btn btn-quiet" id="btn-diagnostics" type="button">Save diagnostics…</button>
         </div>
-        <p class="field-help">A backup holds your settings, queue, watched threads, history and learned names, never sign-ins or cookies. Restoring keeps your current files as ".before-restore" copies. Diagnostics is a text file for bug reports with tokens, passwords, e-mail addresses and your user name removed; read it before you share it.</p>
+        <p class="field-help">A backup holds your settings, queue, watched links, history and learned names, never sign-ins or cookies. Restoring keeps your current files as ".before-restore" copies. Diagnostics is a text file for bug reports with tokens, passwords, e-mail addresses and your user name removed; read it before you share it.</p>
         <p class="status-line" id="backup-status" role="status"></p>
       </section>
     </div>

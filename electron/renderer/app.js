@@ -90,6 +90,15 @@
     scheduleOn: { el: "#schedule-on", type: "check", def: false },
     scheduleFrom: { el: "#schedule-from", type: "time", def: "01:00" },
     scheduleTo: { el: "#schedule-to", type: "time", def: "07:00" },
+    scheduleDays: {
+      get: () => $$("#schedule-days input[data-day]").filter((box) => box.checked).map((box) => Number(box.dataset.day)),
+      set: (v) => {
+        const days = Array.isArray(v) ? v.map(Number) : [0, 1, 2, 3, 4, 5, 6];
+        for (const box of $$("#schedule-days input[data-day]")) box.checked = days.includes(Number(box.dataset.day));
+      },
+    },
+    scheduleStop: { el: "#schedule-stop", type: "check", def: false },
+    retryLater: { el: "#retry-later", type: "int", def: 0, min: 0, max: 720 },
     quietOn: { el: "#quiet-on", type: "check", def: false },
     quietFrom: { el: "#quiet-from", type: "time", def: "18:00" },
     quietTo: { el: "#quiet-to", type: "time", def: "23:00" },
@@ -259,7 +268,7 @@
 
   // ─── jobs: one run of one or more links ────────────────────────────────────
   // A job is {id, urls, unsupported, label, startPage, endPage, redownload, watchId}.
-  // The queue, resume after pause, and watched threads all go through runJob().
+  // The queue, resume after pause, and watched links all go through runJob().
   let queue = [];
   let watches = [];
   let threadPosts = {};
@@ -348,7 +357,7 @@
       log("phase", `Resuming: ${job.label}`);
       log("info", "Files saved before the pause are skipped and half-finished files continue where they stopped. The links are read again from the start to find the rest.");
     } else {
-      log("phase", job.watchId ? `Checking watched thread: ${job.label}` : `Starting: ${job.label}`);
+      log("phase", job.watchId ? `Checking watched link: ${job.label}` : `Starting: ${job.label}`);
     }
     const config = pipelineConfig(job, log);
     api.startPipeline(config);
@@ -442,7 +451,19 @@
     }
     api.saveGuiSetting({ active_run: null });
     if (job.watchId) watchFinished(job.watchId, event);
+    queueRetryLater(job, event);
     setTimeout(startNextInQueue, 1500);
+  }
+
+  // Settings > Downloads > "try the job again": failed files a later try can fix.
+  function queueRetryLater(job, event) {
+    if (job.watchId) return; // a watched link is checked again at its own interval
+    const retry = fmt.retryLaterJob(job, event, prefs.retryLater);
+    if (!retry) return;
+    queue = queue.filter((q) => q.urls.join("\n") !== retry.urls.join("\n") || !q.retryRound);
+    queue.push(retry);
+    saveQueue();
+    log("info", `${event.retryLater} file(s) failed for a reason that usually passes. ${retry.label} is queued for ${new Date(retry.startAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}; files already saved are skipped.`);
   }
 
   // ─── queue ────────────────────────────────────────────────────────────────
@@ -474,11 +495,14 @@
     if (!$("#resume").hidden) return; // a paused run waits for Resume, Queue it or Discard first
     if (!force && !scheduleAllows()) return;
     const busy = busySites(); // sites of jobs still running beside the window
-    const index = queue.findIndex((q) => !q.hold && ![...jobSites(q)].some((site) => busy.has(site)));
+    const now = Date.now();
+    const index = queue.findIndex((q) => fmt.jobReady(q, now) && ![...jobSites(q)].some((site) => busy.has(site)));
     if (index < 0) return;
     const [next] = queue.splice(index, 1);
     saveQueue();
-    runJob(next.parked ? { ...next, resumed: true } : next);
+    // Started by hand outside the download hours: "Pause when the hours end" leaves it running.
+    const forced = force && !scheduleAllows() ? true : undefined;
+    runJob(next.parked ? { ...next, resumed: true, forced } : { ...next, forced });
     setTimeout(() => fillSlots(force), 1000);
   }
 
@@ -512,9 +536,11 @@
     if (!force && !scheduleAllows()) return;
     while (1 + bgJobs.size < (prefs.jobsAtOnce || 1)) {
       const busy = busySites();
-      const index = queue.findIndex((q) => !q.hold && ![...jobSites(q)].some((site) => busy.has(site)));
+      const now = Date.now();
+      const index = queue.findIndex((q) => fmt.jobReady(q, now) && ![...jobSites(q)].some((site) => busy.has(site)));
       if (index < 0) return;
       const [job] = queue.splice(index, 1);
+      if (force && !scheduleAllows()) job.forced = true;
       saveQueue();
       const notes = [];
       const config = pipelineConfig(job, (_level, text) => notes.push(text));
@@ -577,6 +603,7 @@
       const result = fmt.finishText(event);
       log(result.tone === "ok" ? "ok" : "warning", `${job.label}: ${result.message}`);
       if (job.watchId) watchFinished(job.watchId, event);
+      queueRetryLater(job, event);
       loadRecent();
     }
     renderBgJobs();
@@ -1017,6 +1044,15 @@
       name.title = [...item.urls.slice(0, 20), ...own.filter(Boolean), "Click to rename, reorder, hold or change this job's folder and speed."].join("\n");
       name.addEventListener("click", () => editJob(item.id));
       li.appendChild(name);
+      if (item.startAt || item.stopAt) {
+        const when = document.createElement("span");
+        when.className = "queue-when";
+        const parts = [];
+        if (item.startAt && Date.parse(item.startAt) > Date.now()) parts.push(`starts ${whenText(item.startAt)}`);
+        if (item.stopAt) parts.push(`pauses ${whenText(item.stopAt)}`);
+        when.textContent = parts.join(", ");
+        if (parts.length) li.appendChild(when);
+      }
       if (item.folder || item.mode || Number.isFinite(item.speedMB)) {
         const tag = document.createElement("span");
         tag.className = "queue-tag";
@@ -1042,6 +1078,29 @@
     $("#btn-queue").hidden = !run.running;
   }
 
+  function whenText(iso) {
+    const date = new Date(iso);
+    const today = new Date();
+    const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    if (date.toDateString() === today.toDateString()) return time;
+    return `${date.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })} ${time}`;
+  }
+
+  // <input type="datetime-local"> works in local time without a zone.
+  function localInput(iso) {
+    if (!iso) return "";
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return "";
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+
+  function fromLocalInput(value) {
+    if (!value) return undefined;
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+  }
+
   function newJobId() {
     return `j${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   }
@@ -1058,6 +1117,8 @@
     $("#job-mode").value = item.mode || "";
     $("#job-speed").value = Number.isFinite(item.speedMB) ? item.speedMB : "";
     $("#job-hold").checked = Boolean(item.hold);
+    $("#job-start-at").value = localInput(item.startAt);
+    $("#job-stop-at").value = localInput(item.stopAt);
     showJobFolder();
     $("#job-dialog").showModal();
   }
@@ -1099,6 +1160,9 @@
     item.speedMB = Number.isFinite(speed) ? Math.max(0, Math.min(1000, speed)) : undefined;
     item.hold = $("#job-hold").checked || undefined;
     item.folder = state.folder || undefined;
+    item.startAt = fromLocalInput($("#job-start-at").value);
+    item.stopAt = fromLocalInput($("#job-stop-at").value);
+    if (item.stopAt && item.startAt && Date.parse(item.stopAt) <= Date.parse(item.startAt)) item.stopAt = undefined;
     if (action === "remove") queue.splice(index, 1);
     else if (action === "top") queue.unshift(...queue.splice(index, 1));
     else if (action === "bottom") queue.push(...queue.splice(index, 1));
@@ -1116,6 +1180,46 @@
   });
 
   $("#btn-queue").addEventListener("click", () => addToQueue());
+
+  // "Later…": queue the links with a start time, and if wanted a time to pause.
+  let laterJob = null;
+  $("#btn-later").addEventListener("click", () => {
+    const job = jobFromInput();
+    if (!job) return;
+    laterJob = job;
+    $("#later-links").textContent = job.urls.length === 1 ? job.urls[0] : `${job.urls.length} links, starting with ${job.urls[0]}`;
+    const start = new Date(Date.now() + 60 * 60 * 1000);
+    start.setMinutes(0, 0, 0);
+    $("#later-start").value = localInput(start.toISOString());
+    $("#later-stop").value = "";
+    $("#later-status").textContent = "";
+    $("#later-dialog").showModal();
+  });
+  $("#btn-later-save").addEventListener("click", (event) => {
+    const startAt = fromLocalInput($("#later-start").value);
+    const stopAt = fromLocalInput($("#later-stop").value);
+    let problem = "";
+    if (!startAt) problem = "Choose when to start.";
+    else if (stopAt && Date.parse(stopAt) <= Date.parse(startAt)) problem = "The pause time must be after the start time.";
+    if (problem) {
+      event.preventDefault();
+      setStatus("#later-status", problem, "bad");
+    }
+  });
+  $("#later-dialog").addEventListener("close", () => {
+    const job = laterJob;
+    laterJob = null;
+    if (!job || $("#later-dialog").returnValue !== "save") return;
+    job.startAt = fromLocalInput($("#later-start").value);
+    job.stopAt = fromLocalInput($("#later-stop").value);
+    const before = queue.length;
+    addToQueue(job);
+    if (queue.length > before) {
+      urlsBox.value = "";
+      autoGrow();
+      log("info", `${job.label} starts at ${whenText(job.startAt)}${job.stopAt ? ` and pauses at ${whenText(job.stopAt)}` : ""}. NEXDROP has to be open then (the tray is enough).`);
+    }
+  });
   $("#btn-queue-clear").addEventListener("click", () => {
     queue = [];
     saveQueue();
@@ -1169,7 +1273,7 @@
   $("#btn-start").addEventListener("click", startRun);
   $("#btn-stop").addEventListener("click", stopRun);
 
-  // ─── watched threads ──────────────────────────────────────────────────────
+  // ─── watched links (3.1: threads, albums, profiles, channels, playlists, …) ──
   const WATCH_TICK_MS = 60 * 1000;
 
   function threadKey(url) {
@@ -1190,30 +1294,53 @@
     updateWatchButton();
   }
 
-  function addWatch(url, hours) {
-    const key = threadKey(url);
-    if (!key) {
-      setStatus("#watch-status", "Only forum thread links (with /threads/ in them) can be watched.", "bad");
+  // Same link for watching: a thread by its thread address, anything else without tracking parts.
+  function watchKey(url) {
+    return threadKey(url) || String(url).trim().replace(/[?#].*$/, "").replace(/\/+$/, "").toLowerCase().replace(/^http:/, "https:").replace("://www.", "://");
+  }
+
+  // Asks the URL analyzer (the engine's own handlers) what the link is; only links that list
+  // files which can grow are accepted.
+  async function addWatch(url, minutes) {
+    const value = String(url || "").trim();
+    if (!/^https?:\/\//i.test(value)) {
+      setStatus("#watch-status", "Paste a full link that starts with https://.", "bad");
       return false;
     }
-    if (watches.some((w) => threadKey(w.url) === key)) {
-      setStatus("#watch-status", "That thread is already watched.", null);
+    const key = watchKey(value);
+    if (watches.some((w) => watchKey(w.url) === key)) {
+      setStatus("#watch-status", "That link is already watched.", null);
       return false;
     }
-    watches.push({ id: `w${Date.now().toString(36)}`, url: key + "/", label: jobLabel([key]), everyHours: hours || 6, lastCheck: null, lastNew: null });
+    setStatus("#watch-status", "Checking what this link is…", null);
+    const result = await api.analyzeLinks({ urls: [value] }).catch((error) => ({ ok: false, error: error.message }));
+    const item = result && result.items && result.items[0];
+    const verdict = fmt.watchable(item);
+    if (!verdict.ok) {
+      setStatus("#watch-status", result && result.ok === false && result.error ? result.error : verdict.reason, "bad");
+      return false;
+    }
+    const thread = verdict.kind === "forum thread" && threadKey(value);
+    const watchUrl = thread ? `${thread}/` : value;
+    watches.push({ id: `w${Date.now().toString(36)}`, url: watchUrl, kind: verdict.kind, site: item.site || item.host || "",
+      label: jobLabel([watchUrl]), everyMinutes: Math.max(fmt.WATCH_MIN_MINUTES, minutes || 360), lastCheck: null, lastNew: null });
     saveWatches();
-    setStatus("#watch-status", `Watching ${jobLabel([key])}. NEXDROP checks it while it is open.`, "ok");
+    setStatus("#watch-status", `Watching ${jobLabel([watchUrl])} (${verdict.kind}). NEXDROP checks it while it is open.`, "ok");
     return true;
   }
 
   function watchJob(watch) {
-    // Start from the last post seen, so only newer posts are scanned.
-    const from = threadPosts[threadKey(watch.url)] || watch.url;
-    return { id: `j${Date.now().toString(36)}`, urls: [from], unsupported: [], label: watch.label, startPage: 1, endPage: null, redownload: false, watchId: watch.id };
+    // A thread starts from the last post seen, so only newer posts are scanned. Other links are
+    // read again and History skips every file saved before.
+    const thread = threadKey(watch.url);
+    const from = (thread && threadPosts[thread]) || watch.url;
+    return { id: `j${Date.now().toString(36)}`, urls: [from], unsupported: [], label: watch.label, startPage: 1, endPage: null,
+      redownload: false, watchId: watch.id, folder: watch.folder || undefined };
   }
 
   function checkWatch(watch) {
     if (queue.some((q) => q.watchId === watch.id) || (activeJob && activeJob.watchId === watch.id)) return;
+    if ([...bgJobs.values()].some((entry) => entry.job.watchId === watch.id)) return;
     addToQueue(watchJob(watch));
     if (!run.running) startNextInQueue();
   }
@@ -1230,21 +1357,57 @@
     else log("info", `${watch.label}: no new files.`);
   }
 
-  function dueWatches() {
+  // Paused by "Pause downloads when the hours end" or a job's own pause time; continues by itself.
+  let schedulePaused = false;
+
+  function scheduleTick() {
+    showSchedule();
+    renderQueue(); // start times count down
     const now = Date.now();
-    return watches.filter((w) => !w.lastCheck || now - Date.parse(w.lastCheck) >= w.everyHours * 3600 * 1000);
+    const hoursOver = prefs.scheduleOn && prefs.scheduleStop && !scheduleAllows();
+    if (run.running && activeJob && !$("#btn-stop").disabled) {
+      if (activeJob.stopAt && Date.parse(activeJob.stopAt) <= now) {
+        log("info", `${activeJob.label}: its pause time has come. Resume continues where it stopped.`);
+        activeJob.stopAt = undefined; // Resume isn't paused again by the same time
+        stopRun();
+      } else if (hoursOver && !activeJob.forced) {
+        log("info", "The download hours are over. The run pauses and continues when they start again.");
+        schedulePaused = true;
+        stopRun();
+      }
+    }
+    for (const [slot, entry] of bgJobs) {
+      if (entry.pausing) continue;
+      if ((entry.job.stopAt && Date.parse(entry.job.stopAt) <= now) || (hoursOver && !entry.job.forced)) {
+        if (entry.job.stopAt && Date.parse(entry.job.stopAt) <= now) entry.job = { ...entry.job, stopAt: undefined };
+        pauseBgJob(slot);
+      }
+    }
+    if (run.running) return;
+    if (!$("#resume").hidden) {
+      if (schedulePaused && pausedJob && scheduleAllows()) {
+        schedulePaused = false;
+        log("info", "The download hours have started again. Continuing the paused run.");
+        runJob({ ...pausedJob, resumed: true });
+      }
+      return;
+    }
+    watches.filter((w) => fmt.watchDue(w, now)).forEach(checkWatch);
+    startNextInQueue(); // the download hours or a job's start time may have just come
   }
 
-  setInterval(() => {
-    showSchedule();
-    if (run.running || !$("#resume").hidden) return;
-    dueWatches().forEach(checkWatch);
-    startNextInQueue(); // the download hours may have just begun
-  }, WATCH_TICK_MS);
+  setInterval(scheduleTick, WATCH_TICK_MS);
+
+  function setDays(days) {
+    PREF_FIELDS.scheduleDays.set(days);
+    savePrefsSoon();
+  }
+  $("#btn-days-weekend").addEventListener("click", () => setDays([0, 6]));
+  $("#btn-days-all").addEventListener("click", () => setDays([0, 1, 2, 3, 4, 5, 6]));
 
   // ─── download hours and quiet hours ───────────────────────────────────────
   function scheduleAllows(now = new Date()) {
-    return !prefs.scheduleOn || fmt.inTimeWindow(now, prefs.scheduleFrom, prefs.scheduleTo);
+    return !prefs.scheduleOn || fmt.inSchedule(now, prefs.scheduleFrom, prefs.scheduleTo, prefs.scheduleDays);
   }
 
   function quietActive(now = new Date()) {
@@ -1258,7 +1421,12 @@
       $$("input, select", row).forEach((input) => { input.disabled = !on; });
     }
     const parts = [];
-    if (prefs.scheduleOn) parts.push(scheduleAllows() ? `Download hours now (until ${prefs.scheduleTo}).` : `Outside download hours: queued links start at ${prefs.scheduleFrom}.`);
+    if (prefs.scheduleOn) {
+      const next = fmt.nextScheduleStart(new Date(), prefs.scheduleFrom, prefs.scheduleTo, prefs.scheduleDays);
+      if (scheduleAllows()) parts.push(`Download hours now (until ${prefs.scheduleTo}).`);
+      else if (next) parts.push(`Outside download hours: queued links start ${whenText(next.toISOString())}.`);
+      else parts.push("No day is chosen, so queued links only start when you press Start.");
+    }
     if (prefs.quietOn) parts.push(quietActive() ? `Quiet hours now: new runs are capped at ${prefs.quietSpeedMB} MB/s.` : `Quiet hours start at ${prefs.quietFrom}.`);
     setStatus("#schedule-status", parts.join(" "), null);
   }
@@ -1269,37 +1437,48 @@
     if (!watches.length) {
       const li = document.createElement("li");
       li.className = "empty-note";
-      li.textContent = "No threads watched yet.";
+      li.textContent = "Nothing watched yet.";
       list.appendChild(li);
       return;
     }
     for (const watch of watches) {
       const li = document.createElement("li");
       li.className = "watch-item";
+      li.classList.toggle("is-paused", Boolean(watch.paused));
       const info = document.createElement("div");
       info.className = "watch-info";
       const name = document.createElement("strong");
       name.textContent = watch.label;
       name.title = watch.url;
+      const kind = document.createElement("span");
+      kind.className = "watch-kind";
+      kind.textContent = [watch.kind || "forum thread", watch.site].filter(Boolean).join(" · ");
       const meta = document.createElement("small");
-      meta.textContent = !watch.lastCheck
-        ? "Not checked yet"
-        : watch.lastFailed
-          ? `Check failed ${fmt.ago(watch.lastCheck)}`
-          : `Checked ${fmt.ago(watch.lastCheck)}, ${watch.lastNew ? `${watch.lastNew} new file(s)` : "nothing new"}`;
-      info.append(name, meta);
+      meta.textContent = watch.paused
+        ? "Paused"
+        : !watch.lastCheck
+          ? "Not checked yet"
+          : watch.lastFailed
+            ? `Check failed ${fmt.ago(watch.lastCheck)}`
+            : `Checked ${fmt.ago(watch.lastCheck)}, ${watch.lastNew ? `${watch.lastNew} new file(s)` : "nothing new"}`;
+      info.append(name, kind, meta);
       const every = document.createElement("select");
       every.className = "select";
       every.setAttribute("aria-label", `How often to check ${watch.label}`);
-      for (const h of [1, 3, 6, 12, 24]) {
-        const option = document.createElement("option");
-        option.value = String(h);
-        option.textContent = h === 1 ? "Every hour" : `Every ${h} hours`;
-        every.appendChild(option);
-      }
-      every.value = String(watch.everyHours);
+      const minutes = fmt.watchMinutes(watch);
+      for (const m of new Set([...fmt.WATCH_EVERY, minutes])) every.append(new Option(fmt.everyText(m), String(m)));
+      every.value = String(minutes);
       every.addEventListener("change", () => {
-        watch.everyHours = Number(every.value);
+        watch.everyMinutes = Number(every.value);
+        delete watch.everyHours;
+        saveWatches();
+      });
+      const pause = document.createElement("button");
+      pause.type = "button";
+      pause.className = "btn btn-quiet btn-small";
+      pause.textContent = watch.paused ? "Resume" : "Pause";
+      pause.addEventListener("click", () => {
+        watch.paused = !watch.paused || undefined;
         saveWatches();
       });
       const now = document.createElement("button");
@@ -1311,31 +1490,42 @@
       remove.type = "button";
       remove.className = "btn btn-quiet btn-small btn-danger";
       remove.textContent = "Remove";
+      remove.title = "Stop watching. Files already downloaded stay where they are.";
       remove.addEventListener("click", () => {
         watches = watches.filter((w) => w.id !== watch.id);
         saveWatches();
       });
-      li.append(info, every, now, remove);
+      li.append(info, every, pause, now, remove);
       list.appendChild(li);
     }
   }
 
-  // "Watch this thread" appears after running a single forum thread.
+  // "Watch for new files" appears after running a single link that can be watched.
   let lastThread = "";
+  let lastWatchable = "";
+  async function noteWatchable(url) {
+    lastWatchable = "";
+    if (!url) return updateWatchButton();
+    const result = await api.analyzeLinks({ urls: [url] }).catch(() => null);
+    if (url === lastThread && fmt.watchable(result && result.items && result.items[0]).ok) lastWatchable = url;
+    updateWatchButton();
+  }
   function updateWatchButton() {
-    const key = threadKey(lastThread);
+    const key = lastWatchable && watchKey(lastWatchable);
     const button = $("#btn-watch");
     button.hidden = !key || run.running;
-    const watched = watches.some((w) => threadKey(w.url) === key);
-    button.textContent = watched ? "Watched" : "Watch for new posts";
+    const watched = watches.some((w) => watchKey(w.url) === key);
+    button.textContent = watched ? "Watched" : "Watch for new files";
     button.disabled = watched;
   }
-  $("#btn-watch").addEventListener("click", () => {
-    if (addWatch(lastThread, 6)) log("ok", "Watching this thread. New posts are downloaded every 6 hours while NEXDROP is open.");
+  $("#btn-watch").addEventListener("click", async () => {
+    if (await addWatch(lastWatchable, 360)) log("ok", "Watching this link. New files are downloaded every 6 hours while NEXDROP is open (Settings > Watched).");
   });
-  $("#btn-watch-add").addEventListener("click", () => {
+  for (const m of fmt.WATCH_EVERY) $("#watch-every").append(new Option(fmt.everyText(m), String(m)));
+  $("#watch-every").value = "360";
+  $("#btn-watch-add").addEventListener("click", async () => {
     const value = $("#watch-url").value.trim();
-    if (value && addWatch(value, Number($("#watch-every").value) || 6)) $("#watch-url").value = "";
+    if (value && (await addWatch(value, Number($("#watch-every").value) || 360))) $("#watch-url").value = "";
   });
 
   function askSeen(seen, total) {
@@ -1461,7 +1651,7 @@
         break;
       case "app-command":
         if (event.command === "pause") stopRun();
-        else if (event.command === "check-watches") watches.forEach(checkWatch);
+        else if (event.command === "check-watches") watches.filter((w) => !w.paused).forEach(checkWatch);
         else if (event.command === "open-folder") api.openPath(run.root || downloadsDir);
         break;
       case "error":
@@ -1560,6 +1750,7 @@
     else if (event.stopped || anySaved) phases.classList.add("partial");
     else phases.classList.add("failed");
     lastThread = activeJob && activeJob.urls.length === 1 && !activeJob.watchId ? activeJob.urls[0] : "";
+    noteWatchable(lastThread);
     setRunning(false);
     view.dirty = true;
     scheduleRender();

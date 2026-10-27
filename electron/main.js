@@ -207,13 +207,13 @@ function createWindow() {
       /* window position is a convenience */
     }
     if (!quitting && tray && appOptions().closeToTray) {
-      // Keep downloads and watched threads going; Quit in the tray menu really exits.
+      // Keep downloads and watched links going; Quit in the tray menu really exits.
       event.preventDefault();
       mainWindow.hide();
       if (!trayHinted) {
         trayHinted = true;
         if (Notification.isSupported()) {
-          new Notification({ title: "NEXDROP is still running", body: "Downloads and watched threads continue. Use the tray icon to open NEXDROP or quit.", icon: appIcon(), silent: true }).show();
+          new Notification({ title: "NEXDROP is still running", body: "Downloads and watched links continue. Use the tray icon to open NEXDROP or quit.", icon: appIcon(), silent: true }).show();
         }
       }
     }
@@ -1264,7 +1264,7 @@ function ensureTray(on) {
     { label: "Open NEXDROP", click: showWindow },
     { type: "separator" },
     { label: "Pause downloads", click: () => command("pause") },
-    { label: "Check watched threads now", click: () => command("check-watches") },
+    { label: "Check watched links now", click: () => command("check-watches") },
     { label: "Open download folder", click: () => command("open-folder") },
     { type: "separator" },
     { label: "Quit NEXDROP", click: () => { quitting = true; app.quit(); } },

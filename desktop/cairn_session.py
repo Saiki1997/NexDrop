@@ -1811,6 +1811,9 @@ def _finish(urls, folder, saved_urls, failed, skipped_urls, started, *, stopped,
         "failed": len(failed),
         "skipped": len(skipped_urls),
         "failedUrls": list(dict.fromkeys(failed))[:500],
+        # failed files a later try can fix (busy server, rate limit, time-out, dropped connection, quota)
+        "retryLater": sum(1 for url in dict.fromkeys(failed)
+                          if error_classes.classify(FILES.reason(url), url) in error_classes.RETRY_LATER),
         "root": str(folder),
         "stopped": stopped,
         "bytes": FILES.bytes,

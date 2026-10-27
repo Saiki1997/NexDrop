@@ -172,3 +172,56 @@ test("rule checks match desktop/rules.py", () => {
   assert.deepStrictEqual(cleaned[0].when, [{ field: "type", op: "is", value: "3" }]);
   assert.strictEqual("extra" in cleaned[0], false);
 });
+
+test("download hours on chosen days, across midnight", () => {
+  const at = (day, hh, mm = 0) => new Date(2026, 9, 25 + day, hh, mm); // 2026-10-25 is a Sunday
+  assert.strictEqual(fmt.inSchedule(at(5, 23, 30), "23:00", "02:00", [5]), true); // Friday night
+  assert.strictEqual(fmt.inSchedule(at(6, 1), "23:00", "02:00", [5]), true); // Saturday 01:00 belongs to Friday
+  assert.strictEqual(fmt.inSchedule(at(6, 23, 30), "23:00", "02:00", [5]), false);
+  assert.strictEqual(fmt.inSchedule(at(6, 12), "08:00", "20:00", [0, 6]), true); // weekends only
+  assert.strictEqual(fmt.inSchedule(at(1, 12), "08:00", "20:00", [0, 6]), false);
+  assert.strictEqual(fmt.inSchedule(at(1, 12), "08:00", "20:00", []), true); // no list: every day
+  assert.strictEqual(fmt.inSchedule(at(1, 21), "08:00", "20:00"), false);
+  const next = fmt.nextScheduleStart(at(1, 12), "01:00", "07:00", [6]);
+  assert.strictEqual(next.getDay(), 6);
+  assert.strictEqual(next.getHours(), 1);
+  assert.strictEqual(fmt.nextScheduleStart(at(1, 0, 30), "01:00", "07:00").getDate(), at(1, 1).getDate());
+});
+
+test("what can be watched, and when a watch is due", () => {
+  assert.strictEqual(fmt.watchable({ handler: "builtin", kind: "profile" }).ok, true);
+  assert.strictEqual(fmt.watchable({ handler: "generic", kind: "forum post" }).kind, "forum thread");
+  assert.strictEqual(fmt.watchable({ handler: "direct", kind: "direct file" }).ok, false);
+  assert.match(fmt.watchable({ handler: "builtin", kind: "video" }).reason, /This is a video/);
+  assert.match(fmt.watchable({ handler: "builtin", kind: "page" }).reason, /can be watched/);
+  assert.strictEqual(fmt.watchMinutes({ everyHours: 6 }), 360); // 3.0 watches
+  assert.strictEqual(fmt.watchMinutes({ everyMinutes: 5 }), 30); // never more often than every 30 minutes
+  const now = Date.parse("2026-10-27T12:00:00Z");
+  assert.strictEqual(fmt.watchDue({ everyMinutes: 60, lastCheck: "2026-10-27T11:30:00Z" }, now), false);
+  assert.strictEqual(fmt.watchDue({ everyMinutes: 60, lastCheck: "2026-10-27T10:59:00Z" }, now), true);
+  assert.strictEqual(fmt.watchDue({ everyMinutes: 60, paused: true }, now), false);
+  assert.strictEqual(fmt.everyText(4320), "Every 3 days");
+});
+
+test("retry later and start times", () => {
+  const job = { id: "j1", label: "album", urls: ["https://a.test/x"], doneUrls: ["u"] };
+  const now = Date.parse("2026-10-27T12:00:00Z");
+  assert.strictEqual(fmt.retryLaterJob(job, { retryLater: 0, failed: 2 }, 30, now), null);
+  assert.strictEqual(fmt.retryLaterJob(job, { retryLater: 2, stopped: true }, 30, now), null);
+  assert.strictEqual(fmt.retryLaterJob(job, { retryLater: 2 }, 0, now), null);
+  const first = fmt.retryLaterJob(job, { retryLater: 2 }, 30, now);
+  assert.strictEqual(first.label, "Retry 1: album");
+  assert.strictEqual(first.startAt, "2026-10-27T12:30:00.000Z");
+  assert.strictEqual(first.doneUrls, undefined);
+  const second = fmt.retryLaterJob(first, { retryLater: 1 }, 30, now);
+  assert.strictEqual(second.label, "Retry 2: album");
+  assert.strictEqual(second.startAt, "2026-10-27T13:00:00.000Z"); // each round waits longer
+  const fourth = fmt.retryLaterJob({ ...second, retryRound: 3 }, { retryLater: 1 }, 30, now);
+  assert.strictEqual(fourth, null);
+  assert.strictEqual(fmt.jobReady({ startAt: "2026-10-27T12:30:00Z" }, now), false);
+  assert.strictEqual(fmt.jobReady({ startAt: "2026-10-27T11:30:00Z" }, now), true);
+  assert.strictEqual(fmt.jobReady({ hold: true }, now), false);
+  const cleaned = fmt.cleanJob({ urls: ["https://a.test/x"], startAt: "2026-10-27T12:30:00Z", stopAt: "2026-10-27T12:00:00Z" });
+  assert.strictEqual(cleaned.startAt, "2026-10-27T12:30:00.000Z");
+  assert.strictEqual(cleaned.stopAt, undefined);
+});
