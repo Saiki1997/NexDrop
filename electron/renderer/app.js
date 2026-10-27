@@ -370,6 +370,11 @@
   function takePart(job) {
     const [head, rest] = fmt.splitRun(job);
     if (rest) {
+      // a name made from the links ("a.jpg + 449 more") is made again for each part
+      const base = String(job.label || "").replace(/ \(part \d+ of \d+\)$/, "");
+      if (base === jobLabel(job.urls)) {
+        for (const part of [head, rest]) part.label = part.label.replace(base, jobLabel(part.urls));
+      }
       rest.id = newJobId();
       queue.unshift(rest);
       saveQueue();
@@ -1125,7 +1130,7 @@
       list.appendChild(li);
     }
     const held = queue.filter((q) => q.hold).length;
-    const waiting = queue.length === 1 ? "1 link waiting" : `${queue.length} waiting`;
+    const waiting = `${queue.length} waiting`;
     $("#queue-count").textContent = held ? `${waiting}, ${held} held` : waiting;
     box.hidden = !queue.length;
     $("#btn-queue").hidden = !run.running;
