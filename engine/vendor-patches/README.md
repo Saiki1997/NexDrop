@@ -161,3 +161,5 @@ Smart naming V2 (2.5.0):
   part 1 in the `.part` file; other parts are `If-Range` requests into `.part.segN`, each checked for exactly its range, size and
   validators. The layout is kept in the `.nxmeta` sidecar so each part resumes from its own size. A wrong answer deletes the parts,
   marks the link "one stream" for the run and retries it whole. Hosts that asked to slow down get one stream.
+- `cyberdrop_dl/clients/downloads.py` (3.1): a file a size rule skips before any byte is written no longer leaves its
+  `.part.nxmeta` sidecar behind (`resume_validators.forget`).

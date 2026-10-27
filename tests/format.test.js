@@ -225,3 +225,23 @@ test("retry later and start times", () => {
   assert.strictEqual(cleaned.startAt, "2026-10-27T12:30:00.000Z");
   assert.strictEqual(cleaned.stopAt, undefined);
 });
+
+test("a job with more links than one run reads is run in parts", () => {
+  const urls = Array.from({ length: 450 }, (_, i) => `https://a.example/f/${i}`);
+  const [head, rest] = fmt.splitRun({ id: "j1", label: "a.example", urls, unsupported: ["magnet:?x"], parked: true });
+  assert.strictEqual(head.urls.length, 200);
+  assert.strictEqual(head.label, "a.example (part 1 of 3)");
+  assert.deepStrictEqual(head.unsupported, ["magnet:?x"]);
+  assert.strictEqual(rest.urls.length, 250);
+  assert.strictEqual(rest.urls[0], urls[200]);
+  assert.deepStrictEqual(rest.unsupported, []);
+  assert.strictEqual(rest.parked, undefined);
+  const [second, third] = fmt.splitRun(rest);
+  assert.strictEqual(second.label, "a.example (part 2 of 3)");
+  assert.strictEqual(third.label, "a.example (part 3 of 3)");
+  assert.strictEqual(third.urls.length, 50);
+  const [last, none] = fmt.splitRun(third);
+  assert.strictEqual(none, null);
+  assert.strictEqual(last, third);
+  assert.strictEqual(fmt.cleanJob({ urls: urls.slice(0, 3), partDone: 2 }).partDone, 2);
+});

@@ -286,9 +286,26 @@
   }
 
   /* Jobs (3.0 job manager): what is kept in an export, and reading an export or a link list back. */
-  const JOB_FIELDS = ["label", "urls", "unsupported", "startPage", "endPage", "redownload", "folder", "mode", "speedMB", "hold", "named", "startAt", "stopAt"];
+  const JOB_FIELDS = ["label", "urls", "unsupported", "startPage", "endPage", "redownload", "folder", "mode", "speedMB", "hold", "named", "startAt", "stopAt", "partDone"];
   const MAX_JOBS = 500;
   const MAX_JOB_URLS = 20000;
+  // One run reads at most this many links (MAX_URLS in desktop/cairn_session.py); a bigger job
+  // is run in parts, the rest waiting at the front of the queue.
+  const RUN_URLS = 200;
+
+  /** [the part to run now, the rest as a queued job or null]. Labels say "part 2 of 5". */
+  function splitRun(job, max = RUN_URLS) {
+    const urls = Array.isArray(job.urls) ? job.urls : [];
+    if (urls.length <= max) return [job, null];
+    const base = String(job.label || "").replace(/ \(part \d+ of \d+\)$/, "");
+    const done = Number(job.partDone) || 0;
+    const parts = done + Math.ceil(urls.length / max);
+    const head = { ...job, urls: urls.slice(0, max), label: `${base} (part ${done + 1} of ${parts})`, partDone: done + 1 };
+    const rest = { ...job, urls: urls.slice(max), unsupported: [], label: `${base} (part ${done + 2} of ${parts})`, partDone: done + 1 };
+    delete rest.parked;
+    delete rest.doneUrls;
+    return [head, rest];
+  }
 
   function sameFolder(a, b) {
     const norm = (p) => String(p || "").replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
@@ -317,6 +334,8 @@
     if (speed !== null && raw.speedMB !== "" && raw.speedMB !== null) job.speedMB = speed;
     if (raw.hold) job.hold = true;
     if (raw.named) job.named = true;
+    const partDone = int(raw.partDone, 1, 1000);
+    if (partDone) job.partDone = partDone;
     for (const key of ["startAt", "stopAt"]) {
       const when = typeof raw[key] === "string" ? Date.parse(raw[key]) : NaN;
       if (Number.isFinite(when)) job[key] = new Date(when).toISOString();
@@ -521,5 +540,5 @@
     return Boolean(job) && !job.hold && (!job.startAt || Date.parse(job.startAt) <= nowMs);
   }
 
-  return { inSchedule, nextScheduleStart, WATCH_KINDS, WATCH_EVERY, WATCH_MIN_MINUTES, watchable, watchMinutes, watchDue, everyText, RETRY_LATER_ROUNDS, retryLaterJob, jobReady, RULE_FIELDS, RULE_ACTIONS, RULE_TYPES, ruleProblems, cleanRuleList, parseSiteLimits, normalizeUrl, redact, cleanJob, parseJobFile, exportJob, TEMPLATE_VARS, templateProblem, renderTemplate, DOWNLOAD_MODES, modeLimits, guessMode, bytes, speed, mbps, duration, ago, parseLinks, host, finishText, compareVersions, clockMinutes, inTimeWindow, appLinkUrls, checksumFor };
+  return { RUN_URLS, splitRun, inSchedule, nextScheduleStart, WATCH_KINDS, WATCH_EVERY, WATCH_MIN_MINUTES, watchable, watchMinutes, watchDue, everyText, RETRY_LATER_ROUNDS, retryLaterJob, jobReady, RULE_FIELDS, RULE_ACTIONS, RULE_TYPES, ruleProblems, cleanRuleList, parseSiteLimits, normalizeUrl, redact, cleanJob, parseJobFile, exportJob, TEMPLATE_VARS, templateProblem, renderTemplate, DOWNLOAD_MODES, modeLimits, guessMode, bytes, speed, mbps, duration, ago, parseLinks, host, finishText, compareVersions, clockMinutes, inTimeWindow, appLinkUrls, checksumFor };
 });

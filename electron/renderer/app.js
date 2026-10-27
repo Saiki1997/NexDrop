@@ -366,7 +366,20 @@
     runJob(job);
   }
 
+  // A job with more links than one run reads runs in parts; the rest waits at the front of the queue.
+  function takePart(job) {
+    const [head, rest] = fmt.splitRun(job);
+    if (rest) {
+      rest.id = newJobId();
+      queue.unshift(rest);
+      saveQueue();
+      if (!job.partDone) log("info", `${job.urls.length} links are more than one run reads (${fmt.RUN_URLS}), so this job runs in ${Math.ceil(job.urls.length / fmt.RUN_URLS)} parts, one after another. The other parts wait at the top of the queue.`);
+    }
+    return head;
+  }
+
   function runJob(job) {
+    job = takePart(job);
     prefs = collectPrefs();
     api.saveGuiSetting({ prefs });
     activeJob = job;
@@ -578,9 +591,10 @@
       const now = Date.now();
       const index = queue.findIndex((q) => fmt.jobReady(q, now) && ![...jobSites(q)].some((site) => busy.has(site)));
       if (index < 0) return;
-      const [job] = queue.splice(index, 1);
+      let [job] = queue.splice(index, 1);
       if (force && !scheduleAllows()) job.forced = true;
       saveQueue();
+      job = takePart(job);
       const notes = [];
       const config = pipelineConfig(job, (_level, text) => notes.push(text));
       if (job.parked && job.doneUrls) config.skipUrls = job.doneUrls;
