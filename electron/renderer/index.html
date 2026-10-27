@@ -476,6 +476,15 @@
         <div class="divider"></div>
         <label class="switch"><input type="checkbox" id="link-handler"><span class="switch-text">Open links sent from the browser<small>Lets the NEXDROP browser extension (in the browser-extension folder) send pages and links here with right-click &gt; Download with NEXDROP. Registers nexdrop:// links for this folder.</small></span></label>
         <p class="field-help">To add the extension: open chrome://extensions or edge://extensions, turn on Developer mode, choose Load unpacked and pick the browser-extension folder next to NexDrop.exe.</p>
+        <div class="divider"></div>
+        <span class="field-label">Backup and support</span>
+        <div class="field-row actions">
+          <button class="btn btn-quiet" id="btn-backup" type="button">Back up…</button>
+          <button class="btn btn-quiet" id="btn-restore" type="button">Restore…</button>
+          <button class="btn btn-quiet" id="btn-diagnostics" type="button">Save diagnostics…</button>
+        </div>
+        <p class="field-help">A backup holds your settings, queue, watched threads, history and learned names, never sign-ins or cookies. Restoring keeps your current files as ".before-restore" copies. Diagnostics is a text file for bug reports with tokens, passwords, e-mail addresses and your user name removed; read it before you share it.</p>
+        <p class="status-line" id="backup-status" role="status"></p>
       </section>
     </div>
   </aside>

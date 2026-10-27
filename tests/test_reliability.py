@@ -252,6 +252,62 @@ class HistoryTools(unittest.TestCase):
         self.assertEqual(sites["bunkr.cr"]["state"], "unstable")
 
 
+class BackupRestore(unittest.TestCase):
+    def test_backup_has_no_secrets_and_restore_keeps_the_old_files(self):
+        import json
+        import zipfile
+
+        import backup
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            src, dst = tmp / "a", tmp / "b"
+            src.mkdir()
+            (src / "gui-settings.json").write_text(json.dumps({"prefs": {"maxDownloads": 4}, "window": {"x": 1},
+                                                               "queue": [{"urls": ["https://x/1"]}]}), encoding="utf-8")
+            (src / "credentials.json").write_text('{"gofile": "SECRET"}', encoding="utf-8")
+            (src / "auth-cookies").mkdir()
+            (src / "auth-cookies" / "simpcity.txt.enc").write_bytes(b"SECRET")
+            store = JobStore(src / "jobs.sqlite")
+            job = store.start_job(["https://x/t"], "D:/dl")
+            store.note(job, {"url": "https://x/1.jpg", "event": "success", "name": "1.jpg"})
+            store.close()
+            zip_path = tmp / "nexdrop-backup.zip"
+            made = backup.create(src, zip_path)
+            self.assertEqual(sorted(made["files"]), ["gui-settings.json", "jobs.sqlite"])
+            with zipfile.ZipFile(zip_path) as zf:
+                names = zf.namelist()
+                self.assertNotIn("credentials.json", names)
+                self.assertFalse(any("cookie" in n for n in names))
+                self.assertNotIn(b"SECRET", b"".join(zf.read(n) for n in names))
+                self.assertNotIn("window", json.loads(zf.read("gui-settings.json")))
+            self.assertEqual(len(backup.inspect(zip_path)["files"]), 2)
+
+            dst.mkdir()
+            (dst / "gui-settings.json").write_text('{"prefs": {"maxDownloads": 9}}', encoding="utf-8")
+            result = backup.restore(dst, zip_path)
+            self.assertEqual(sorted(result["restored"]), ["gui-settings.json", "jobs.sqlite"])
+            self.assertEqual(len(result["keptAside"]), 1)
+            self.assertIn('"maxDownloads": 9', (dst / result["keptAside"][0]).read_text(encoding="utf-8"))
+            restored = JobStore(dst / "jobs.sqlite")
+            self.assertEqual(restored.search("", status="all")["total"], 1)
+            restored.close()
+
+    def test_restore_refuses_other_zips(self):
+        import zipfile
+
+        import backup
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "x.zip"
+            with zipfile.ZipFile(bad, "w") as zf:
+                zf.writestr("../evil.txt", "x")
+                zf.writestr("gui-settings.json", "{}")
+            with self.assertRaises(ValueError):
+                backup.restore(Path(tmp) / "data", bad)
+            self.assertFalse((Path(tmp) / "evil.txt").exists())
+
+
 class CookieCopies(unittest.TestCase):
     NETSCAPE = "# Netscape HTTP Cookie File\n.simpcity.cr\tTRUE\t/\tTRUE\t1900000000\txf_user\tsecret\n"
 

@@ -725,6 +725,119 @@ ipcMain.handle("jobs-import", async () => {
   return { ok: true, name: path.basename(file), text: fs.readFileSync(file, "utf8"), knownDirs: [downloadsDir(), ...jobDirs()] };
 });
 
+// ─── diagnostics, backup and restore (3.0) ──────────────────────────────────
+
+function savedSignIns() {
+  try {
+    return accountVault().list().filter((item) => item.configured).length;
+  } catch {
+    return "?";
+  }
+}
+
+function tailOf(file, lines) {
+  try {
+    const text = fs.readFileSync(file, "utf8");
+    return text.split(/\r?\n/).slice(-lines).join("\n");
+  } catch {
+    return "(not found)";
+  }
+}
+
+function newestFile(dir, pattern) {
+  try {
+    return fs.readdirSync(dir).filter((name) => pattern.test(name))
+      .map((name) => ({ file: path.join(dir, name), at: fs.statSync(path.join(dir, name)).mtimeMs }))
+      .sort((a, b) => b.at - a.at)[0]?.file || "";
+  } catch {
+    return "";
+  }
+}
+
+// A plain-text report to attach to a bug report. It never includes links you queued, sign-ins or
+// cookies, and everything goes through fmt.redact. The user picks where it is saved and reads it first.
+ipcMain.handle("diagnostics-export", async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+  const picked = await dialog.showSaveDialog(mainWindow, {
+    title: "Save diagnostics report",
+    defaultPath: path.join(app.getPath("documents"), `nexdrop-diagnostics-${stamp}.txt`),
+    filters: [{ name: "Text", extensions: ["txt"] }],
+  });
+  if (picked.canceled || !picked.filePath) return { ok: false, canceled: true };
+  const settings = readSettings();
+  const prefs = { ...(settings.prefs || {}) };
+  if (prefs.proxy) prefs.proxy = "(set)";
+  const health = fs.existsSync(JOBS_DB)
+    ? parseJson((await runPython([path.join(ROOT, "desktop", "job_store.py"), "health", JOBS_DB, "7"], { timeout: 30000 })).stdout.trim(), {})
+    : {};
+  const runLog = newestFile(path.join(LOG_DIR, "runs"), /\.log$/i);
+  const sections = [
+    ["NexDrop diagnostics", [
+      `version ${app.getVersion()}, Electron ${process.versions.electron}, ${os.type()} ${os.release()} ${process.arch}`,
+      `memory ${Math.round(os.totalmem() / 1073741824)} GB, ${os.cpus().length} CPU threads`,
+      `python ${fs.existsSync(PYTHON) ? "bundled" : PYTHON}, FlareSolverr ${FLARE_BIN ? "bundled" : "missing"}`,
+      `queue ${Array.isArray(settings.queue) ? settings.queue.length : 0} job(s), watched ${Array.isArray(settings.watches) ? settings.watches.length : 0}, saved sign-ins ${savedSignIns()}`,
+      "Links in the queue, sign-ins and cookies are not included. Tokens, passwords, e-mail addresses and your user name are removed.",
+    ].join("\n")],
+    ["Settings", JSON.stringify(prefs, null, 2)],
+    ["Sites, last 7 days", (health.sites || []).map((s) => `${s.host}: ${s.saved} saved, ${s.failed} failed${s.reasons?.length ? ` (${s.reasons.map((r) => `${r.label} ${r.count}`).join(", ")})` : ""}`).join("\n") || "(no history)"],
+    [`Latest run log (${runLog ? path.basename(runLog) : "none"})`, runLog ? tailOf(runLog, 400) : "(none)"],
+    ["App log", tailOf(LOG_FILE, 200)],
+    ["FlareSolverr log", tailOf(path.join(LOG_DIR, "flaresolverr.log"), 60)],
+  ];
+  const body = sections.map(([title, text]) => `===== ${title} =====\n${text}\n`).join("\n");
+  fs.writeFileSync(picked.filePath, fmt.redact(body, os.homedir()));
+  shell.showItemInFolder(picked.filePath);
+  return { ok: true, path: picked.filePath };
+});
+
+ipcMain.handle("backup-create", async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
+  const stamp = new Date().toISOString().slice(0, 10);
+  const picked = await dialog.showSaveDialog(mainWindow, {
+    title: "Back up NexDrop",
+    defaultPath: path.join(app.getPath("documents"), `nexdrop-backup-${stamp}.zip`),
+    filters: [{ name: "NexDrop backup", extensions: ["zip"] }],
+  });
+  if (picked.canceled || !picked.filePath) return { ok: false, canceled: true };
+  const result = await runPython([path.join(ROOT, "desktop", "backup.py"), "create", APPDATA, picked.filePath], { timeout: 600000 });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "Backup failed.").slice(0, 300) };
+});
+
+ipcMain.handle("backup-restore", async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
+  if (current) return { ok: false, error: "Pause or finish the running download before restoring." };
+  const picked = await dialog.showOpenDialog(mainWindow, {
+    title: "Restore a NexDrop backup",
+    properties: ["openFile"],
+    filters: [{ name: "NexDrop backup", extensions: ["zip"] }],
+  });
+  if (picked.canceled || !picked.filePaths.length) return { ok: false, canceled: true };
+  const source = picked.filePaths[0];
+  const info = parseJson((await runPython([path.join(ROOT, "desktop", "backup.py"), "inspect", source], { timeout: 60000 })).stdout.trim(), null);
+  if (!info || !info.ok) return { ok: false, error: info?.error || "That file could not be read." };
+  const answer = await dialog.showMessageBox(mainWindow, {
+    type: "question",
+    buttons: ["Restore and restart", "Cancel"],
+    defaultId: 1,
+    cancelId: 1,
+    title: "Restore backup",
+    message: `Restore the backup from ${info.created || "an unknown date"}?`,
+    detail: `It replaces: ${info.files.map((f) => f.name).join(", ")}.\nYour current copies are kept beside them as ".before-restore" files, so nothing is lost. Sign-ins are not part of a backup and stay as they are. NexDrop restarts afterwards.`,
+  });
+  if (answer.response !== 0) return { ok: false, canceled: true };
+  const result = parseJson((await runPython([path.join(ROOT, "desktop", "backup.py"), "restore", APPDATA, source], { timeout: 600000 })).stdout.trim(), null);
+  if (!result || !result.ok) return { ok: false, error: result?.error || "Restore failed." };
+  logFile.write(`[info] Restored backup ${path.basename(source)}: ${result.restored.join(", ")}`);
+  setTimeout(() => {
+    quitting = true;
+    app.relaunch();
+    app.exit(0);
+  }, 800);
+  return result;
+});
+
 function readRuns() {
   const data = parseJson((() => {
     try {

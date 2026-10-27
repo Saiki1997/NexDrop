@@ -317,5 +317,24 @@
     return out;
   }
 
-  return { cleanJob, parseJobFile, exportJob, TEMPLATE_VARS, templateProblem, renderTemplate, DOWNLOAD_MODES, modeLimits, guessMode, bytes, speed, mbps, duration, ago, parseLinks, host, finishText, compareVersions, clockMinutes, inTimeWindow, appLinkUrls, checksumFor };
+  /** Text safe to share in a diagnostics report: no tokens, passwords, cookies, e-mail addresses or user name. */
+  function redact(text, home) {
+    let out = String(text || "");
+    // cookie files: drop every cookie line, keep the comments
+    out = out.replace(/^[^\s#][^\t\n]*\t(TRUE|FALSE)\t[^\t\n]*\t(TRUE|FALSE)\t\d+\t[^\t\n]*\t[^\n]*$/gim, "[cookie removed]");
+    out = out.replace(/\b(authorization|cookie|set-cookie|x-api-key)\s*[:=]\s*[^\n]+/gi, "$1: [removed]");
+    out = out.replace(/([?&;\s"'](?:[a-z0-9_-]*(?:token|sig|signature|secret|password|passwd|pass|auth|session|sess|key|hash|code|cookie|xf_user|expires?)[a-z0-9_-]*))=([^&\s"'#]+)/gi, "$1=[removed]");
+    out = out.replace(/("(?:[a-z0-9_]*(?:token|secret|password|api_key|apikey|cookie|session)[a-z0-9_]*)"\s*:\s*)"[^"]*"/gi, '$1"[removed]"');
+    out = out.replace(/(https?:\/\/)[^/\s:@]+:[^/\s@]+@/gi, "$1[removed]@");
+    out = out.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]");
+    if (home) {
+      const escaped = String(home).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      out = out.replace(new RegExp(escaped, "gi"), "~");
+      const json = JSON.stringify(String(home)).slice(1, -1).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      out = out.replace(new RegExp(json, "gi"), "~");
+    }
+    return out;
+  }
+
+  return { redact, cleanJob, parseJobFile, exportJob, TEMPLATE_VARS, templateProblem, renderTemplate, DOWNLOAD_MODES, modeLimits, guessMode, bytes, speed, mbps, duration, ago, parseLinks, host, finishText, compareVersions, clockMinutes, inTimeWindow, appLinkUrls, checksumFor };
 });

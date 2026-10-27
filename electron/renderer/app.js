@@ -1952,6 +1952,27 @@
     else setStatus("#history-status-line", result?.error || "Export failed.", "bad");
   });
 
+  // ─── backup, restore and diagnostics (Settings > App) ─────────────────────
+  $("#btn-backup").addEventListener("click", async () => {
+    setStatus("#backup-status", "Backing up…", null);
+    const result = await api.backupCreate().catch(() => null);
+    if (result?.canceled) return setStatus("#backup-status", "", null);
+    if (result?.ok) setStatus("#backup-status", `Saved ${result.files.length} item(s) to ${result.path}.`, "ok");
+    else setStatus("#backup-status", result?.error || "Backup failed.", "bad");
+  });
+  $("#btn-restore").addEventListener("click", async () => {
+    const result = await api.backupRestore().catch(() => null);
+    if (result?.canceled) return;
+    if (result?.ok) setStatus("#backup-status", "Restored. NexDrop is restarting…", "ok");
+    else setStatus("#backup-status", result?.error || "Restore failed.", "bad");
+  });
+  $("#btn-diagnostics").addEventListener("click", async () => {
+    const result = await api.diagnosticsExport().catch(() => null);
+    if (result?.canceled) return;
+    if (result?.ok) setStatus("#backup-status", `Diagnostics saved to ${result.path}. Read it before you share it.`, "ok");
+    else setStatus("#backup-status", result?.error || "Diagnostics could not be saved.", "bad");
+  });
+
   // ─── site health (Settings > Sites) ───────────────────────────────────────
   const HEALTH_WORDS = { working: "Working", unstable: "Unstable", failing: "Failing", unknown: "No results yet" };
 

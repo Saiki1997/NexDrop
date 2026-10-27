@@ -121,3 +121,20 @@ test("job files: exports round-trip, link lists become one job, unknown folders 
   assert.deepStrictEqual(fmt.parseJobFile("l.json", '[{"url":"https://c.com/z"}]', []).jobs[0].urls, ["https://c.com/z"]);
   assert.strictEqual(fmt.parseJobFile("bad.json", "{nope", []).jobs.length, 0);
 });
+
+test("diagnostics redaction removes secrets and the user name", () => {
+  const raw = [
+    "GET https://cdn.bunkr.ru/a.mp4?token=abc123&expires=999&n=1 -> 403",
+    ".simpcity.cr\tTRUE\t/\tTRUE\t1900000000\txf_user\t12345%2Csecretvalue",
+    "Cookie: xf_user=12345; xf_session=zzz",
+    '{"api_key": "pk_live_1", "maxDownloads": 8}',
+    "proxy http://bob:hunter2@127.0.0.1:8080",
+    "mail me at saiki@example.com",
+    "Saved to C:\\Users\\Saiki\\Downloads\\x.jpg",
+  ].join("\n");
+  const out = fmt.redact(raw, "C:\\Users\\Saiki");
+  for (const secret of ["abc123", "secretvalue", "zzz", "pk_live_1", "hunter2", "saiki@example.com", "Saiki\\"]) assert.ok(!out.includes(secret), secret);
+  assert.ok(out.includes("n=1"));
+  assert.ok(out.includes('"maxDownloads": 8'));
+  assert.ok(out.includes("~\\Downloads\\x.jpg"));
+});
