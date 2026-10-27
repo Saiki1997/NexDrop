@@ -46,6 +46,7 @@ import rules as rule_engine  # noqa: E402
 from job_store import JobStore  # noqa: E402
 from scrape_status import classify_scrape_message  # noqa: E402
 from state_lock import RunningMarker, shared_state  # noqa: E402
+import stats  # noqa: E402
 import telegram_account  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +56,7 @@ VENDOR = ENGINE / "vendor"
 APPDATA = Path(os.environ.get("NEXDROP_APPDATA") or ENGINE / "appdata")  # the override is for tests
 HISTORY = APPDATA / "completed-urls.json"
 RUNS = APPDATA / "runs.json"
+STATS_RUNS = APPDATA / "stats-runs.jsonl"  # one line per run for Library > Statistics (stats.py)
 
 def _slot() -> int:
     try:
@@ -209,6 +211,8 @@ class FileTable:
         self.dirty: set[str] = set()
         self.bytes = 0
         self._samples: list[tuple[float, int]] = []
+        self.peak = 0  # highest speed seen this run, bytes per second
+        self.duplicates = 0  # files with the same content as an earlier one
         self.counts = {state: 0 for state in FINAL_STATES}
         self.on_change = None  # callback(row) when a row changes state
 
@@ -266,6 +270,7 @@ class FileTable:
             first = self._samples[0]
             span = now - first[0]
             speed = int((self.bytes - first[1]) / span) if span > 0.2 else 0
+            self.peak = max(self.peak, speed)
             payload = {"type": "files", "items": items, "bytes": self.bytes, "speed": speed,
                        "counts": dict(self.counts), "total": len(self.rows)}
         emit(payload)
@@ -1623,6 +1628,7 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
                 other = str(event.get("of") or "")
                 if url and other:
                     duplicates.append((str(event.get("path") or ""), other))
+                    FILES.duplicates += 1
                     FILES.update(url, reason=f"same content as {Path(other).name}")
             elif kind == "retry":
                 url = str(event.get("url") or "")
@@ -1792,6 +1798,9 @@ def _finish(urls, folder, saved_urls, failed, skipped_urls, started, *, stopped,
                 save_history(history)
             if urls and not PREVIEW:
                 record_runs(urls, len(saved_urls), len(failed), len(skipped_urls), stopped)
+                stats.append_run(STATS_RUNS, {"t": round(time.time()), "seconds": round(time.monotonic() - started, 1),
+                                              "bytes": FILES.bytes, "peak": FILES.peak, "saved": len(saved_urls),
+                                              "failed": len(failed), "skipped": len(skipped_urls), "duplicates": FILES.duplicates})
     except OSError as error:
         log("warning", f"Could not save history: {error}")
     if store and job_id:

@@ -554,6 +554,157 @@
     document.dispatchEvent(new CustomEvent("nexdrop-storage", { detail: result }));
   }
 
+  // ─── statistics (3.1) ─────────────────────────────────────────────────────
+  const stats = { data: null, span: "daily" };
+  const SVG = "http://www.w3.org/2000/svg";
+  const TYPE_LABEL = { image: "Images", video: "Videos", audio: "Audio", archive: "Archives", other: "Other" };
+
+  function spanLabel(key, span, short) {
+    if (span === "weekly") return short ? key.slice(5) : `Week ${key.slice(6)}, ${key.slice(0, 4)}`;
+    if (span === "monthly") {
+      const [year, month] = key.split("-").map(Number);
+      return new Date(year, month - 1, 1).toLocaleDateString([], short ? { month: "short" } : { month: "long", year: "numeric" });
+    }
+    const [year, month, day] = key.split("-").map(Number);
+    return new Date(year, month - 1, day).toLocaleDateString([], short ? { day: "numeric", month: "short" } : { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+  }
+
+  function svg(tag, attrs) {
+    const node = document.createElementNS(SVG, tag);
+    for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+    return node;
+  }
+
+  // One series of bars: files saved per day, week or month. Bars have a rounded top anchored to the
+  // baseline, a 2px gap, a recessive grid, and a tooltip on hover over a hit area wider than the bar.
+  function drawActivity() {
+    const box = $("#stats-chart");
+    box.textContent = "";
+    const rows = (stats.data && stats.data[stats.span]) || [];
+    const width = Math.max(320, box.clientWidth || 640);
+    const height = 200;
+    const pad = { top: 10, right: 8, bottom: 22, left: 36 };
+    const max = Math.max(1, ...rows.map((r) => r.saved));
+    const step = Math.pow(10, Math.floor(Math.log10(max)));
+    const top = Math.ceil(max / step) * step;
+    const plotW = width - pad.left - pad.right;
+    const plotH = height - pad.top - pad.bottom;
+    const chart = svg("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": `Files saved, ${stats.span}` });
+    for (const value of [0, top / 2, top]) {
+      const y = pad.top + plotH - (value / top) * plotH;
+      chart.append(svg("line", { class: "grid", x1: pad.left, x2: width - pad.right, y1: y, y2: y }));
+      const label = svg("text", { class: "axis-text", x: pad.left - 6, y: y + 4, "text-anchor": "end" });
+      label.textContent = Math.round(value).toLocaleString();
+      chart.append(label);
+    }
+    const slot = plotW / Math.max(1, rows.length);
+    const barW = Math.max(2, slot - 2);
+    const tip = el("div", "stats-tip");
+    tip.hidden = true;
+    const every = Math.ceil(rows.length / 8);
+    rows.forEach((row, index) => {
+      const x = pad.left + index * slot + 1;
+      const h = (row.saved / top) * plotH;
+      const base = pad.top + plotH;
+      const hit = svg("rect", { class: "hit", x: pad.left + index * slot, y: pad.top, width: slot, height: plotH });
+      const r = Math.min(4, barW / 2, h);
+      const bar = svg("path", { class: "bar", d: h <= 0 ? "" : `M${x},${base} V${base - h + r} Q${x},${base - h} ${x + r},${base - h} H${x + barW - r} Q${x + barW},${base - h} ${x + barW},${base - h + r} V${base} Z` });
+      hit.addEventListener("mouseenter", () => {
+        bar.classList.add("is-hover");
+        tip.hidden = false;
+        tip.textContent = "";
+        tip.append(document.createTextNode(`${row.saved.toLocaleString()} file${row.saved === 1 ? "" : "s"} · ${fmt.bytes(row.bytes)}`), el("small", "", spanLabel(row.key, stats.span, false)));
+        // kept inside the chart: near an edge the tip leans inwards
+        const share = (x + barW / 2) / width;
+        tip.style.left = `${share * 100}%`;
+        tip.style.transform = `translate(${share > 0.85 ? "-100%" : share < 0.15 ? "0" : "-50%"}, calc(-100% - 8px))`;
+        tip.style.top = `${((base - h) / height) * 100}%`;
+      });
+      hit.addEventListener("mouseleave", () => { bar.classList.remove("is-hover"); tip.hidden = true; });
+      chart.append(hit, bar);
+      const last = index === rows.length - 1;
+      if (last || (index % every === 0 && rows.length - 1 - index >= every / 2)) { // no label crowding the last one
+        const label = svg("text", { class: "axis-text", x: x + barW / 2, y: height - 6, "text-anchor": "middle" });
+        label.textContent = spanLabel(row.key, stats.span, true);
+        chart.append(label);
+      }
+    });
+    box.append(chart, tip);
+    const table = $("#stats-activity-table");
+    table.textContent = "";
+    const head = el("tr");
+    head.append(el("th", "", stats.span === "daily" ? "Day" : stats.span === "weekly" ? "Week" : "Month"), el("th", "", "Files saved"), el("th", "", "Data"));
+    table.append(head);
+    for (const row of [...rows].reverse()) {
+      const tr = el("tr");
+      tr.append(el("td", "", spanLabel(row.key, stats.span, false)), el("td", "", row.saved.toLocaleString()), el("td", "", fmt.bytes(row.bytes)));
+      table.append(tr);
+    }
+  }
+
+  function barList(target, rows, label, value, sub) {
+    const box = $(target);
+    box.textContent = "";
+    const max = Math.max(1, ...rows.map(value));
+    for (const row of rows) {
+      const line = el("div", "storage-row");
+      const bar = el("span", "storage-bar");
+      const fill = el("span", "storage-fill");
+      fill.style.width = `${Math.max(1, Math.round((value(row) / max) * 100))}%`;
+      bar.append(fill);
+      line.append(el("span", "lib-name", label(row)), bar, el("span", "lib-sub", sub(row)));
+      box.append(line);
+    }
+    if (!rows.length) box.append(el("p", "lib-sub", "Nothing in this period."));
+  }
+
+  async function loadStats() {
+    setStatus("#stats-status", "Counting…");
+    const result = await api.statsSummary({ days: Number($("#stats-days").value) }).catch(() => null);
+    if (!result?.ok) return setStatus("#stats-status", result?.error || "Statistics could not be read.", "bad");
+    setStatus("#stats-status", "");
+    stats.data = result;
+    const t = result.totals;
+    const hours = result.seconds / 3600;
+    const tiles = [
+      [t.saved.toLocaleString(), "Files saved"],
+      [fmt.bytes(t.bytes), "Data downloaded"],
+      [t.failed.toLocaleString(), "Failed"],
+      [t.skipped.toLocaleString(), "Skipped (already saved or filtered)"],
+      [result.duplicates.toLocaleString(), "Same content as an earlier file"],
+      [result.averageSpeed ? fmt.speed(result.averageSpeed) : "–", "Average speed"],
+      [result.peakSpeed ? fmt.speed(result.peakSpeed) : "–", "Peak speed"],
+      [result.seconds ? (hours >= 1 ? `${hours.toFixed(1)} h` : result.seconds >= 60 ? `${Math.round(result.seconds / 60)} min` : `${Math.round(result.seconds)} s`) : "–", `Downloading, over ${result.runs.toLocaleString()} run${result.runs === 1 ? "" : "s"}`],
+    ];
+    const box = $("#stats-tiles");
+    box.textContent = "";
+    for (const [value, label] of tiles) {
+      const tile = el("div", "stat-tile");
+      tile.append(el("span", "stat-value", value), el("span", "stat-label", label));
+      box.append(tile);
+    }
+    drawActivity();
+    barList("#stats-sites", result.sites, (r) => r.site, (r) => r.saved,
+      (r) => `${r.saved.toLocaleString()} saved${r.failed ? ` · ${r.failed.toLocaleString()} failed` : ""} · ${fmt.bytes(r.bytes)}`);
+    barList("#stats-types", result.types, (r) => TYPE_LABEL[r.type] || r.type, (r) => r.bytes,
+      (r) => `${fmt.bytes(r.bytes)} · ${r.saved.toLocaleString()}`);
+  }
+
+  $("#stats-days").addEventListener("change", loadStats);
+  for (const button of $$("#stats-span [role=radio]")) {
+    button.addEventListener("click", () => {
+      stats.span = button.dataset.span;
+      for (const other of $$("#stats-span [role=radio]")) other.setAttribute("aria-checked", String(other === button));
+      drawActivity();
+    });
+  }
+  $("#btn-stats-export").addEventListener("click", async () => {
+    const result = await api.statsExport({ days: Number($("#stats-days").value) });
+    if (result?.canceled) return;
+    setStatus("#stats-status", result?.ok ? `Saved ${result.path}` : result?.error || "The file could not be written.", result?.ok ? "ok" : "bad");
+  });
+  window.addEventListener("resize", () => lib.open && lib.tab === "stats" && stats.data && drawActivity());
+
   // ─── organize and rename ──────────────────────────────────────────────────
 
   let orgPlanId = "";
@@ -780,6 +931,7 @@
       loadStorage();
     }
     if (name === "files") renderFiles();
+    if (name === "stats") loadStats();
   }
 
   let textTimer = 0;

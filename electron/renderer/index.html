@@ -661,6 +661,7 @@
         <button role="tab" type="button" data-lib="files" aria-selected="true">Files</button>
         <button role="tab" type="button" data-lib="dupes" aria-selected="false">Duplicates</button>
         <button role="tab" type="button" data-lib="storage" aria-selected="false">Storage</button>
+        <button role="tab" type="button" data-lib="stats" aria-selected="false">Statistics</button>
       </nav>
       <span class="library-index" id="lib-index" role="status"></span>
       <button class="btn btn-quiet btn-small" id="btn-lib-folders" type="button" title="Folders the library looks in">Folders…</button>
@@ -743,6 +744,39 @@
         </section>
         <p class="status-line" id="storage-status" role="status"></p>
         <div class="storage" id="storage-body"></div>
+      </div>
+    </div>
+    <div class="lib-pane" data-lib="stats" hidden>
+      <div class="lib-toolbar">
+        <select class="select" id="stats-days" aria-label="Period">
+          <option value="7">Last 7 days</option>
+          <option value="30" selected>Last 30 days</option>
+          <option value="90">Last 90 days</option>
+          <option value="365">Last year</option>
+          <option value="0">All time</option>
+        </select>
+        <button class="btn btn-quiet btn-small" id="btn-stats-export" type="button">Export CSV…</button>
+        <span class="status-line" id="stats-status" role="status"></span>
+      </div>
+      <div class="lib-scroll storage" id="stats-body">
+        <div class="stat-tiles" id="stats-tiles"></div>
+        <section class="storage-block" aria-labelledby="stats-activity-title">
+          <div class="stats-head">
+            <h3 id="stats-activity-title">Files saved</h3>
+            <div class="mini-seg" role="radiogroup" aria-label="Activity by" id="stats-span">
+              <button type="button" role="radio" data-span="daily" aria-checked="true">Daily</button>
+              <button type="button" role="radio" data-span="weekly" aria-checked="false">Weekly</button>
+              <button type="button" role="radio" data-span="monthly" aria-checked="false">Monthly</button>
+            </div>
+          </div>
+          <div class="stats-chart" id="stats-chart"></div>
+          <details class="stats-table-toggle"><summary>Show as a table</summary><table class="check-table" id="stats-activity-table"></table></details>
+        </section>
+        <div class="stats-split">
+          <section class="storage-block" aria-labelledby="stats-sites-title"><h3 id="stats-sites-title">By site</h3><div id="stats-sites"></div></section>
+          <section class="storage-block" aria-labelledby="stats-types-title"><h3 id="stats-types-title">By type</h3><div id="stats-types"></div></section>
+        </div>
+        <p class="field-help">From your History and the runs NexDrop recorded on this PC. Nothing is sent anywhere. Speeds count the time runs were going; the first runs after updating to 3.1 start the speed and time figures.</p>
       </div>
     </div>
   </section>

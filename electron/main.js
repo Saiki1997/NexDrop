@@ -1855,6 +1855,25 @@ async function afterRun(after, event, slot, config) {
   }
 }
 
+// Library > Statistics (3.1): read from History and the per-run log, nothing collected during a run.
+const STATS_RUNS = path.join(APPDATA, "stats-runs.jsonl");
+ipcMain.handle("stats-summary", async (_event, body) => {
+  const days = Math.max(0, Math.min(36500, Number(body?.days) || 0));
+  const result = await runPython([path.join(ROOT, "desktop", "stats.py"), "summary", JOBS_DB, STATS_RUNS], { input: `${JSON.stringify({ days })}\n`, timeout: 120000 });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "Statistics could not be read.").slice(-300) };
+});
+ipcMain.handle("stats-export", async (_event, body) => {
+  const days = Math.max(0, Math.min(36500, Number(body?.days) || 0));
+  const picked = await dialog.showSaveDialog(mainWindow, {
+    title: "Export statistics",
+    defaultPath: path.join(app.getPath("documents"), `NexDrop statistics ${new Date().toISOString().slice(0, 10)}.csv`),
+    filters: [{ name: "CSV", extensions: ["csv"] }],
+  });
+  if (picked.canceled || !picked.filePath) return { ok: false, canceled: true };
+  const result = await runPython([path.join(ROOT, "desktop", "stats.py"), "csv", JOBS_DB, STATS_RUNS], { input: `${JSON.stringify({ days, dest: picked.filePath })}\n`, timeout: 120000 });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "The file could not be written.").slice(-300) };
+});
+
 // Settings > Sites: failed files of the last days as a Markdown report for a GitHub issue.
 ipcMain.handle("broken-report", async (_event, body) => {
   const days = Math.max(1, Math.min(365, Number(body?.days) || 30));
