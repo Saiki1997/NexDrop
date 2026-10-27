@@ -506,7 +506,7 @@ function startSession(config, slot = 0) {
     }
     if (event.type === "files") {
       send({ type: "job-event", slot, event: { type: "files", counts: event.counts, total: event.total, bytes: event.bytes, speed: event.speed } });
-    } else if (["run", "phase", "finished", "error", "exit"].includes(event.type) || (event.type === "log" && event.level !== "info")) {
+    } else if (["run", "phase", "finished", "error", "exit", "duplicates"].includes(event.type) || (event.type === "log" && event.level !== "info")) {
       send({ type: "job-event", slot, event });
       if (event.type === "finished") notifyFinished(event, true, String((config && config.label) || "").slice(0, 80));
     }
@@ -1504,6 +1504,62 @@ ipcMain.handle("history-reveal", async (_event, id) => {
   return { ok: false, error: "The file and its folder are no longer on this computer." };
 });
 
+// ─── naming preview (3.1) ───────────────────────────────────────────────────
+// The engine crawls the links and names every file without downloading anything. It runs in its
+// own slot, so it can run beside a download.
+const PREVIEW_SLOT = 8;
+let previewChild = null;
+
+ipcMain.handle("naming-preview", (_event, config) => new Promise((resolve) => {
+  if (previewChild) killTree(previewChild.pid, true);
+  const script = path.join(ROOT, "desktop", "cairn_session.py");
+  const child = spawn(PYTHON, ["-u", script], {
+    cwd: ROOT,
+    env: { ...process.env, PYTHONUNBUFFERED: "1", PYTHONIOENCODING: "utf-8", NEXDROP_PYTHON: PYTHON,
+      NEXDROP_FLARE_MANAGED: flare.child || flare.state === "ready" ? "1" : "0", NEXDROP_SLOT: String(PREVIEW_SLOT) },
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+    detached: process.platform !== "win32",
+  });
+  previewChild = child;
+  const body = { ...(config && typeof config === "object" ? config : {}), previewNames: true, redownload: true };
+  let result = null;
+  const notes = [];
+  const decoder = new StringDecoder("utf8");
+  let buffer = "";
+  child.stdout.on("data", (chunk) => {
+    buffer += decoder.write(chunk);
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      const event = parseJson(line.trim(), null);
+      if (!event) continue;
+      if (event.type === "naming-preview") result = event;
+      else if ((event.type === "log" && event.level !== "info") || event.type === "error") notes.push(String(event.message || "").slice(0, 300));
+      else if (event.type === "files" || event.type === "phase") send({ type: "preview-progress", total: event.total, message: event.message });
+    }
+  });
+  child.stderr.on("data", () => {});
+  child.on("error", (error) => resolve({ ok: false, error: String(error) }));
+  child.on("close", () => {
+    if (previewChild === child) previewChild = null;
+    if (result) resolve({ ok: true, ...result, warnings: notes.slice(0, 20) });
+    else resolve({ ok: false, stopped: true, error: notes[0] || "The preview stopped before it finished." });
+  });
+  child.stdin.write(`${JSON.stringify(body)}\n`);
+}));
+
+ipcMain.handle("naming-preview-stop", () => {
+  if (previewChild) {
+    try {
+      previewChild.stdin.end(); // the session takes a closed stdin as "stop"
+    } catch {
+      killTree(previewChild.pid, true);
+    }
+  }
+  return { ok: true };
+});
+
 // ─── media library (3.1) ────────────────────────────────────────────────────
 // One catalog of downloaded files (desktop/library.py). Thumbnails come from a cache folder and
 // previews only from files in the catalog, both through the nxlib: scheme, so the window never
@@ -1798,6 +1854,7 @@ app.on("before-quit", (event) => {
   }
   clearInterval(clip.timer);
   for (const slot of [...sessions.keys()]) killSession(true, slot);
+  if (previewChild) killTree(previewChild.pid, true);
   stopFlare();
   stopTelegramLogin();
   logFile.close();

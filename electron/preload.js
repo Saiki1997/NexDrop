@@ -47,6 +47,8 @@ contextBridge.exposeInMainWorld("api", {
   backupRestore: () => ipcRenderer.invoke("backup-restore"),
   historyRename: (body) => ipcRenderer.invoke("history-rename", body),
   namingCorrections: (body) => ipcRenderer.invoke("naming-corrections", body),
+  namingPreview: (config) => ipcRenderer.invoke("naming-preview", config),
+  namingPreviewStop: () => ipcRenderer.invoke("naming-preview-stop"),
   librarySync: () => ipcRenderer.invoke("library-sync"),
   libraryWork: (body) => ipcRenderer.invoke("library-work", body),
   libraryQuery: (body) => ipcRenderer.invoke("library-query", body),

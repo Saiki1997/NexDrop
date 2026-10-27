@@ -65,6 +65,7 @@ def _slot() -> int:
 # 0 is the job shown in the window; 1 and up are jobs running beside it (3.1). Each slot has its
 # own cookie copies and engine logs; history files are shared under a lock.
 SLOT = _slot()
+PREVIEW = False  # 3.1 naming preview: crawl and name every file, download nothing, record nothing
 RUN_COOKIES = APPDATA / "cookies" / ("run" if SLOT == 0 else f"run-{SLOT}")
 ENGINE_COOKIES = APPDATA / "cookies" / ("engine" if SLOT == 0 else f"engine-{SLOT}")
 MARKER = RunningMarker(APPDATA, SLOT)
@@ -1240,6 +1241,10 @@ class _TelegramHooks:
         log(level, text)
 
 
+class _NoHistory(Exception):
+    """A naming preview keeps no job history."""
+
+
 def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
     started = time.monotonic()
     seen: set[str] = set()
@@ -1281,15 +1286,21 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         emit({"type": "error", "message": "Last page cannot be lower than the start page."})
         return _finish(urls, folder, [], [], [], started, stopped=False)
 
+    global PREVIEW
+    PREVIEW = bool(config.get("previewNames"))
     store = None
     job_id = None
     try:
+        if PREVIEW:
+            raise _NoHistory
         store = JobStore(APPDATA / "jobs.sqlite")
         # Jobs still marked running belong to a crashed session, unless another job is running now
         recovered = [] if MARKER.others() else store.recover()
         if recovered:
             log("warning", f"Marked {len(recovered)} unfinished job(s) as interrupted. They were not started again.")
         job_id = store.start_job(urls, str(folder))
+    except _NoHistory:
+        store = None
     except Exception as error:  # noqa: BLE001
         log("warning", f"Job history could not be opened: {error}")
         store = None
@@ -1362,7 +1373,8 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         "proxy": proxy,
         "proxyScope": proxy_scope,
         "simpcityGap": _int(config.get("simpcityGap"), 2, 1, 30),
-        "ignoreHistory": redownload,
+        "ignoreHistory": redownload or PREVIEW,
+        "previewOnly": PREVIEW,
         "deepScrape": bool(config.get("deepScrape")),
         "cookieFolder": cookie_folder or "",
         "downloadFolder": str(folder),
@@ -1472,7 +1484,8 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
                     for key in ("folder", "original", "source", "confidence", "strategy", "title", "parent", "naming"):
                         if event.get(key) not in (None, ""):
                             row[key] = event[key]
-                    _write_manifest(row)
+                    if not PREVIEW:
+                        _write_manifest(row)
                     if isinstance(event.get("identity"), dict):
                         row = {**row, "identity": event["identity"]}  # job database only, not the manifest
                     NAMING_ROWS[url] = row
@@ -1582,7 +1595,7 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
     # Telegram links go through the signed-in account when there is one; the engine's
     # public t.me crawler handles them otherwise.
     account = config.get("telegram") if isinstance(config.get("telegram"), dict) else None
-    tg_urls = [u for u in urls if telegram_account.is_telegram(u)] if account else []
+    tg_urls = [u for u in urls if telegram_account.is_telegram(u)] if account and not PREVIEW else []
     if tg_urls and not telegram_account.available():
         log("warning", "The Telegram library is missing from this NEXDROP folder, so Telegram links use the public preview instead of your account.")
         tg_urls = []
@@ -1610,6 +1623,11 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         code = engine_pass(payload)
         if code not in (0, None) and not STOP.is_set() and not saved_urls and not skipped_urls:
             emit({"type": "error", "message": f"The engine exited with code {code}. See engine\\appdata\\logs for details."})
+    if PREVIEW:
+        rows = sorted(NAMING_ROWS.values(), key=lambda row: int(row.get("sequence") or 0))
+        emit({"type": "naming-preview", "items": rows[:5000], "total": len(rows), "unsupported": list(dict.fromkeys(unsupported))[:200],
+              "notes": list(dict.fromkeys(scrape_notes))[:20]})
+        return _finish(urls, folder, [], [], [], started, stopped=STOP.is_set())
 
     def fetch(url: str) -> None:
         if STOP.is_set():
@@ -1696,7 +1714,7 @@ def _finish(urls, folder, saved_urls, failed, skipped_urls, started, *, stopped,
             history.update(skipped_urls)
             if history:
                 save_history(history)
-            if urls:
+            if urls and not PREVIEW:
                 record_runs(urls, len(saved_urls), len(failed), len(skipped_urls), stopped)
     except OSError as error:
         log("warning", f"Could not save history: {error}")

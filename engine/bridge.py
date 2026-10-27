@@ -1419,6 +1419,11 @@ def _run() -> int:
     _install_segments(_bound_int(payload.get("segments"), 0, 8, 4), _bound_int(payload.get("segmentMinMB"), 1, 4096, 64))
     _install_last_post_report()
     _install_resume_skip(payload.get("skipUrls") or [])
+    if payload.get("previewOnly"):
+        # 3.1 naming preview: pages are crawled and every file is named, nothing is downloaded
+        from cyberdrop_dl.crawlers import SKIP_DOWNLOAD
+
+        SKIP_DOWNLOAD.set(True)
     # Read by the TikTok patch in engine/vendor-patches.
     os.environ["NEXDROP_TIKTOK_AUDIO"] = "1" if payload.get("tiktokAudio") else "0"
     bridge = _LogBridge()

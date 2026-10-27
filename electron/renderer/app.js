@@ -714,6 +714,101 @@
     checkLinks(false);
   });
 
+  // ─── naming preview (3.1): proposed names before downloading ──────────────
+  const SOURCE_LABEL = { "original filename": "original name", "media title": "file title", "post title": "post title",
+    "album title": "album title", "thread title": "thread title", template: "template" };
+
+  async function previewNames() {
+    const job = jobFromInput();
+    if (!job) return;
+    const dialog = $("#names-dialog");
+    if (!dialog.open) {
+      $("#names-strategy").value = prefs.nameStrategy || "auto";
+      $("#names-numbering").value = prefs.numbering || "suffix";
+      $("#names-template").value = prefs.nameTemplate || "";
+      dialog.showModal();
+    }
+    const template = $("#names-template").value.trim();
+    const problem = fmt.templateProblem(template);
+    $("#names-template-problem").textContent = problem ? `This template can't be used: ${problem}. Automatic names are shown.` : "";
+    const config = pipelineConfig({ ...job, redownload: true }, () => {});
+    config.smartNames = true;
+    config.nameStrategy = $("#names-strategy").value;
+    config.numbering = $("#names-numbering").value;
+    config.sequencePrefix = config.numbering !== "off";
+    config.nameTemplate = problem ? "" : template;
+    $("#names-rows").textContent = "";
+    $("#names-summary").textContent = "Finding the files and naming them. Nothing is downloaded…";
+    $("#btn-names-stop").hidden = false;
+    $("#btn-names-again").disabled = true;
+    const result = await api.namingPreview(config).catch((error) => ({ ok: false, error: error.message }));
+    $("#btn-names-stop").hidden = true;
+    $("#btn-names-again").disabled = false;
+    if (!result?.ok) {
+      $("#names-summary").textContent = result?.error || "The preview did not finish.";
+      return;
+    }
+    const rows = $("#names-rows");
+    for (const item of result.items) {
+      const tr = document.createElement("tr");
+      const id = item.identity || {};
+      const confidence = Number(item.confidence) || 0;
+      const from = [id.creator && `creator ${id.creator}`, id.album && `album ${id.album}`, id.thread && `thread ${id.thread}`,
+        id.post_title && `post ${id.post_title}`, id.media_title && `title ${id.media_title}`].filter(Boolean);
+      const cells = [item.sequence, item.original || "", item.name || "", item.folder || "", from.join(" · ") || (item.parent ? `page ${item.parent}` : "–")];
+      for (const value of cells) {
+        const td = document.createElement("td");
+        td.textContent = String(value);
+        td.title = String(value);
+        tr.append(td);
+      }
+      const level = document.createElement("td");
+      level.className = `names-confidence ${confidence >= 0.7 ? "is-high" : confidence >= 0.4 ? "is-mid" : "is-low"}`;
+      level.textContent = `${Math.round(confidence * 100)}%`;
+      level.title = "How sure NEXDROP is that this name describes the file";
+      const strategy = document.createElement("td");
+      strategy.textContent = SOURCE_LABEL[item.source] || item.source || item.strategy || "";
+      tr.append(level, strategy);
+      if (item.name && item.original && item.name === item.original) tr.classList.add("same-name");
+      rows.append(tr);
+    }
+    const parts = [`${result.total.toLocaleString()} file${result.total === 1 ? "" : "s"}`];
+    if (result.total > result.items.length) parts.push(`the first ${result.items.length.toLocaleString()} shown`);
+    if (result.unsupported?.length) parts.push(`${result.unsupported.length} direct link(s) keep their own names`);
+    const low = result.items.filter((i) => Number(i.confidence) < 0.4).length;
+    if (low) parts.push(`${low} with a low-confidence name`);
+    $("#names-summary").textContent = `${parts.join(" · ")}. Nothing was downloaded.`;
+    if (!result.items.length) $("#names-summary").textContent = result.notes?.[0] || result.warnings?.[0] || "No files were found on these pages.";
+  }
+
+  $("#btn-check-names").addEventListener("click", () => {
+    $("#check-dialog").close();
+    previewNames();
+  });
+  $("#btn-names-again").addEventListener("click", previewNames);
+  $("#btn-names-stop").addEventListener("click", () => api.namingPreviewStop());
+  $("#names-dialog").addEventListener("close", () => api.namingPreviewStop());
+  $("#names-template").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      previewNames();
+    }
+  });
+  $("#btn-names-use").addEventListener("click", () => {
+    const template = $("#names-template").value.trim();
+    if (fmt.templateProblem(template)) {
+      $("#names-template-problem").textContent = `Not saved: ${fmt.templateProblem(template)}.`;
+      return;
+    }
+    $("#name-strategy").value = $("#names-strategy").value;
+    $("#numbering").value = $("#names-numbering").value;
+    $("#name-template").value = template;
+    $("#smart-names").checked = true;
+    showTemplateExample();
+    savePrefsSoon();
+    $("#names-summary").textContent = "Saved. New downloads use these naming settings.";
+  });
+
   function renderQueue() {
     const box = $("#queue");
     const list = $("#queue-list");

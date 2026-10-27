@@ -731,3 +731,12 @@ svg { stroke: currentColor; stroke-width: 1.6; fill: none; stroke-linecap: round
 .storage-list { list-style: none; display: flex; flex-direction: column; gap: 3px; max-height: 200px; overflow-y: auto; }
 .storage-list li { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 #dupe-threshold { accent-color: var(--copper); width: 120px; }
+
+/* ─── naming preview (3.1) ─── */
+.names-controls { display: grid; grid-template-columns: 200px 200px 1fr; gap: 12px; margin-bottom: 12px; }
+.names-controls .field { margin: 0; }
+.names-table td { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.names-table td:nth-child(3) { color: var(--bone); font-weight: 600; }
+.names-confidence.is-high { color: var(--verdigris); }
+.names-confidence.is-mid { color: var(--brass); }
+.names-confidence.is-low { color: #e8958a; }

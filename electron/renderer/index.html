@@ -190,6 +190,32 @@
       <div class="dialog-actions">
         <button class="btn btn-quiet" id="btn-check-preview" type="button" title="Opens each link once (no download) to read its title, size and file links">Preview details</button>
         <button class="btn btn-quiet" id="btn-check-dedupe" type="button">Remove duplicates</button>
+        <button class="btn btn-quiet" id="btn-check-names" type="button" title="Find every file and show the name it will get. Nothing is downloaded.">Preview file names</button>
+        <button class="btn btn-primary" value="close" type="submit">Close</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Proposed file names before downloading (3.1 naming preview) -->
+  <dialog class="dialog dialog-wide" id="names-dialog" aria-labelledby="names-title">
+    <form method="dialog">
+      <h2 id="names-title">File names</h2>
+      <p class="dialog-text" id="names-summary"></p>
+      <div class="names-controls">
+        <label class="field"><span class="field-label">Filename strategy</span><select id="names-strategy" class="select"><option value="auto">Automatic (recommended)</option><option value="original">Original filename</option><option value="media">Media title</option><option value="post">Post title</option><option value="album">Album/collection title</option></select></label>
+        <label class="field"><span class="field-label">Sequence numbering</span><select id="names-numbering" class="select"><option value="suffix">Suffix: filename-001.jpg</option><option value="prefix">Prefix: 001_filename.jpg</option><option value="off">Disabled</option></select></label>
+        <label class="field names-template"><span class="field-label">Filename template</span><input type="text" id="names-template" placeholder="Empty: automatic names. Example: {creator}-{title}-{number}" spellcheck="false" autocomplete="off" maxlength="150"><small class="field-help" id="names-template-problem" role="status"></small></label>
+      </div>
+      <div class="check-wrap">
+        <table class="check-table names-table">
+          <thead><tr><th>#</th><th>Original</th><th>Proposed name</th><th>Folder</th><th>Source details</th><th>Confidence</th><th>Name from</th></tr></thead>
+          <tbody id="names-rows"></tbody>
+        </table>
+      </div>
+      <div class="dialog-actions">
+        <button class="btn btn-quiet" id="btn-names-stop" type="button" hidden>Stop</button>
+        <button class="btn btn-quiet" id="btn-names-again" type="button" title="Name the files again with these settings">Preview again</button>
+        <button class="btn btn-quiet" id="btn-names-use" type="button" title="Save these naming settings for downloads">Use for downloads</button>
         <button class="btn btn-primary" value="close" type="submit">Close</button>
       </div>
     </form>
