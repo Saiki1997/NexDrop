@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 MIN_SIZE = 64 * 1024 * 1024  # files smaller than this are faster as one stream
 MIN_PART = 16 * 1024 * 1024
 MAX_PARTS = 4  # set by the bridge from the download mode; 0 or 1 turns splitting off
+SEG_FILES_MAX = 16  # part files ever written are .seg1 ... .seg(MAX_PARTS - 1); the setting goes up to 8
 COPY_CHUNK = 8 * 1024 * 1024
 
 # The bridge replaces this with a check of the hosts that asked to slow down
@@ -127,9 +128,10 @@ def discard(partial_file: Path | None) -> None:
     """Delete the part files of `partial_file` (never the finished file)."""
     if partial_file is None:
         return
-    for path in partial_file.parent.glob(f"{partial_file.name}.seg*"):
+    # By name, not by listing the folder: a glob per file made each download slower as the folder filled.
+    for index in range(1, SEG_FILES_MAX + 1):
         try:
-            path.unlink(missing_ok=True)
+            seg_file(partial_file, index).unlink(missing_ok=True)
         except OSError:
             pass
     data = resume_validators.load(partial_file)

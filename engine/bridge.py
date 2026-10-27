@@ -987,7 +987,7 @@ def _install_segments(parts: int, min_mb: int) -> None:
         from cyberdrop_dl.clients import segments
     except Exception:  # noqa: BLE001
         return
-    segments.MAX_PARTS = parts
+    segments.MAX_PARTS = max(0, min(int(parts), segments.SEG_FILES_MAX))
     segments.MIN_SIZE = min_mb * 1024 * 1024
     segments.MIN_PART = max(256 * 1024, segments.MIN_SIZE // 4)
 
