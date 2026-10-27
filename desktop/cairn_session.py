@@ -1241,6 +1241,53 @@ class _TelegramHooks:
         log(level, text)
 
 
+ENGINE_MIN_FREE = 5 * 1024**3  # engine/user-config.yaml min_free_space: below this every file is refused
+LOW_FREE = 20 * 1024**3
+
+
+def destination_rules(raw: object) -> list[dict]:
+    """Settings > Downloads > Destination rules: [{"site": "bunkr.cr" | "type": "video", "folder": path}]."""
+    rules = []
+    for rule in raw if isinstance(raw, list) else []:
+        if not isinstance(rule, dict) or not str(rule.get("folder") or "").strip():
+            continue
+        site = str(rule.get("site") or "").strip().lower().removeprefix("www.")
+        kind = str(rule.get("type") or "")
+        if site and re.fullmatch(r"[a-z0-9.-]+\.[a-z]{2,}", site):
+            rules.append({"site": site, "folder": str(rule["folder"])})
+        elif kind in ("image", "video", "audio", "other"):
+            rules.append({"type": kind, "folder": str(rule["folder"])})
+    return rules[:50]
+
+
+def check_destinations(folders: list[Path]) -> str:
+    """Why the run can't start (a folder can't be written, the drive is almost full), or "".
+    Low space that still works is only a warning."""
+    seen: set[str] = set()
+    for folder in folders:
+        key = str(folder).lower() if os.name == "nt" else str(folder)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            probe = folder / f".nexdrop-write-test-{os.getpid()}"
+            probe.write_bytes(b"")
+            probe.unlink()
+        except OSError as error:
+            return f"Can't save files in {folder}: {error.strerror or error}. Choose another download folder in Settings."
+        try:
+            free = shutil.disk_usage(folder).free
+        except OSError:
+            continue
+        if free < ENGINE_MIN_FREE:
+            return (f"Only {free / 1024**3:.1f} GB is free on the drive of {folder}. NEXDROP needs at least 5 GB free "
+                    "so files are never cut off by a full disk. Free up space or choose another folder.")
+        if free < LOW_FREE:
+            log("warning", f"The drive of {folder} has {free / 1024**3:.1f} GB free. Downloads stop when it gets below 5 GB.")
+    return ""
+
+
 class _NoHistory(Exception):
     """A naming preview keeps no job history."""
 
@@ -1288,6 +1335,12 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
 
     global PREVIEW
     PREVIEW = bool(config.get("previewNames"))
+    rules = destination_rules(config.get("destinationRules"))
+    if not PREVIEW:
+        problem = check_destinations([folder, *[Path(rule["folder"]) for rule in rules]])
+        if problem:
+            emit({"type": "error", "message": problem})
+            return _finish(urls, folder, [], [], [], started, stopped=False)
     store = None
     job_id = None
     try:
@@ -1363,6 +1416,7 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         "siteLimits": config.get("siteLimits") if isinstance(config.get("siteLimits"), dict) else {},
         "tiktokAudio": bool(config.get("tiktokAudio")),
         "typeFolders": bool(config.get("typeFolders")),
+        "destinationRules": rules,
         "fileTypes": config.get("fileTypes") if isinstance(config.get("fileTypes"), dict) else {},
         "minImageKB": _int(config.get("minImageKB"), 0, 0, 100_000),
         "skipUrls": [str(u) for u in (config.get("skipUrls") or [])][:200_000],

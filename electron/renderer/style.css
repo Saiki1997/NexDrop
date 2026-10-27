@@ -740,3 +740,11 @@ svg { stroke: currentColor; stroke-width: 1.6; fill: none; stroke-linecap: round
 .names-confidence.is-high { color: var(--verdigris); }
 .names-confidence.is-mid { color: var(--brass); }
 .names-confidence.is-low { color: #e8958a; }
+
+/* ─── destination rules (3.1) ─── */
+.rule-list { list-style: none; display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.rule { display: grid; grid-template-columns: 150px auto minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.rule input[type="text"] { min-width: 0; padding: 6px 9px; border: 1px solid var(--shale-2); border-radius: var(--r-control); background: var(--basalt); }
+.rule-arrow { color: var(--ash-dim); }
+.rule-folder { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; justify-content: flex-start; font-family: var(--font-mono); font-size: 11.5px; }
+.rule.is-incomplete .rule-folder { color: var(--copper-hi); }

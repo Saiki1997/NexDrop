@@ -1024,6 +1024,56 @@ def _install_type_folders(enabled: bool) -> None:
     dl.DownloadClient._download = download
 
 
+def _rule_matches(rule: dict, host: str, kind: str) -> bool:
+    site = str(rule.get("site") or "").lower().removeprefix("www.")
+    if site:
+        return host == site or host.endswith("." + site)
+    return str(rule.get("type") or "") == kind
+
+
+def _install_destination_rules(rules: object, root: Path) -> None:
+    """Settings > Downloads > Destination rules (3.1): files from a site, or of a type, go to another
+    folder. The file keeps its place under the run's folder: <rule folder>/<album>/<name>.
+
+    The first matching rule wins. Folders were chosen in a folder dialog on this PC (checked by the
+    app before the run), so a rule can't point anywhere else."""
+    clean = []
+    for rule in rules if isinstance(rules, list) else []:
+        if not isinstance(rule, dict) or not rule.get("folder"):
+            continue
+        if not (rule.get("site") or rule.get("type") in ("image", "video", "audio", "other")):
+            continue
+        clean.append({"site": str(rule.get("site") or "").strip().lower(), "type": str(rule.get("type") or ""),
+                      "folder": Path(str(rule["folder"])).resolve()})
+    if not clean:
+        return
+    try:
+        from cyberdrop_dl.clients import downloads as dl
+        from cyberdrop_dl.constants import FileExt
+    except Exception:  # noqa: BLE001
+        return
+    original = dl.DownloadClient._download
+    root = root.resolve()
+
+    async def download(self, domain, media_item):
+        folder = getattr(media_item, "download_folder", None)
+        if folder is not None and not getattr(media_item, "is_segment", False):
+            ext = str(getattr(media_item, "ext", "") or "").lower()
+            kind = "image" if ext in FileExt.IMAGE else "video" if ext in FileExt.VIDEO else "audio" if ext in FileExt.AUDIO else "other"
+            host = str(getattr(getattr(media_item, "url", None), "host", "") or "").lower().removeprefix("www.")
+            rule = next((r for r in clean if _rule_matches(r, host, kind)), None)
+            if rule is not None:
+                try:
+                    relative = Path(folder).resolve().relative_to(root)
+                except ValueError:
+                    relative = None
+                if relative is not None and ".." not in relative.parts:
+                    media_item.download_folder = rule["folder"] / relative
+        return await original(self, domain, media_item)
+
+    dl.DownloadClient._download = download
+
+
 def _install_last_post_report() -> None:
     """Report the last forum post reached, so a watched thread can continue from it."""
     try:
@@ -1416,6 +1466,7 @@ def _run() -> int:
     SITE_LIMITS.configure(payload.get("siteLimits"))
     _install_retry_policy(_bound_int(payload.get("retryMaxDelay"), 2, 120, 20), _bound_int(payload.get("retryAfterCap"), 5, 600, 60))
     _install_type_folders(bool(payload.get("typeFolders")))
+    _install_destination_rules(payload.get("destinationRules"), destination)
     _install_segments(_bound_int(payload.get("segments"), 0, 8, 4), _bound_int(payload.get("segmentMinMB"), 1, 4096, 64))
     _install_last_post_report()
     _install_resume_skip(payload.get("skipUrls") or [])

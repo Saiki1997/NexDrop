@@ -71,6 +71,7 @@
     autoRetry: { el: "#auto-retry", type: "check", def: true },
     typeFolders: { el: "#type-folders", type: "check", def: false },
     duplicateAction: { el: "#duplicate-action", type: "text", def: "keep", max: 10 },
+    destinationRules: { get: () => destRules.slice(0, 50), set: (v) => { destRules = cleanRules(v); renderRules(); } },
     typeImages: { el: "#type-images", type: "check", def: true },
     typeVideos: { el: "#type-videos", type: "check", def: true },
     typeAudio: { el: "#type-audio", type: "check", def: true },
@@ -408,6 +409,7 @@
       autoRetry: prefs.autoRetry,
       typeFolders: prefs.typeFolders,
       duplicateAction: prefs.duplicateAction,
+      destinationRules: (prefs.destinationRules || []).filter((rule) => rule.folder && (rule.site || rule.type)),
       fileTypes: { images: prefs.typeImages, videos: prefs.typeVideos, audio: prefs.typeAudio, other: prefs.typeOther },
       minImageKB: prefs.minImageKB,
       skipUrls: job.doneUrls || [],
@@ -712,6 +714,87 @@
     autoGrow();
     log("info", `Removed ${checked.length - keep.length} duplicate ${checked.length - keep.length === 1 ? "link" : "links"}.`);
     checkLinks(false);
+  });
+
+  // ─── destination rules (3.1) ──────────────────────────────────────────────
+  let destRules = [];
+  const RULE_TYPES = { image: "Images", video: "Videos", audio: "Audio", other: "Other files" };
+
+  function cleanRules(value) {
+    return (Array.isArray(value) ? value : []).filter((rule) => rule && typeof rule === "object").map((rule) => ({
+      site: String(rule.site || "").trim().toLowerCase().slice(0, 100),
+      type: RULE_TYPES[rule.type] ? rule.type : "",
+      folder: String(rule.folder || "").slice(0, 500),
+    })).filter((rule) => rule.site || rule.type).slice(0, 50);
+  }
+
+  function renderRules() {
+    const list = $("#dest-rules");
+    if (!list) return;
+    list.textContent = "";
+    destRules.forEach((rule, index) => {
+      const li = document.createElement("li");
+      li.className = "rule";
+      let what;
+      if (rule.type) {
+        what = document.createElement("select");
+        what.className = "select";
+        for (const [value, label] of Object.entries(RULE_TYPES)) what.append(new Option(label, value));
+        what.value = rule.type;
+        what.addEventListener("change", () => { rule.type = what.value; savePrefsSoon(); });
+      } else {
+        what = document.createElement("input");
+        what.type = "text";
+        what.placeholder = "site, e.g. bunkr.cr";
+        what.spellcheck = false;
+        what.value = rule.site;
+        what.addEventListener("change", () => {
+          const site = fmt.host(what.value.includes("://") ? what.value : `https://${what.value}`).replace(/^www\./, "");
+          rule.site = site || what.value.trim().toLowerCase();
+          what.value = rule.site;
+          savePrefsSoon();
+        });
+      }
+      const arrow = document.createElement("span");
+      arrow.className = "rule-arrow";
+      arrow.textContent = "→";
+      const folder = document.createElement("button");
+      folder.type = "button";
+      folder.className = "btn btn-quiet btn-small rule-folder";
+      folder.textContent = rule.folder || "Choose folder…";
+      folder.title = rule.folder || "";
+      folder.addEventListener("click", async () => {
+        const picked = await api.pickJobDir();
+        if (!picked?.ok) return;
+        rule.folder = picked.path;
+        renderRules();
+        savePrefsSoon();
+      });
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "btn btn-icon btn-icon-small";
+      remove.setAttribute("aria-label", "Remove rule");
+      remove.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 6l8 8M14 6l-8 8"/></svg>';
+      remove.addEventListener("click", () => {
+        destRules.splice(index, 1);
+        renderRules();
+        savePrefsSoon();
+      });
+      li.append(what, arrow, folder, remove);
+      if (!rule.folder) li.classList.add("is-incomplete");
+      list.append(li);
+    });
+  }
+
+  $("#btn-rule-site").addEventListener("click", () => {
+    destRules.push({ site: "", type: "", folder: "" });
+    renderRules();
+    $("#dest-rules li:last-child input")?.focus();
+  });
+  $("#btn-rule-type").addEventListener("click", () => {
+    destRules.push({ site: "", type: "video", folder: "" });
+    renderRules();
+    savePrefsSoon();
   });
 
   // ─── naming preview (3.1): proposed names before downloading ──────────────

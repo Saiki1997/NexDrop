@@ -339,6 +339,15 @@
           </select>
           <small class="field-help">Found by content (same size and hash), even under another name or from another site. Nothing is ever deleted without asking; the Recycle Bin always asks first.</small>
         </label>
+        <div class="field">
+          <span class="field-label">Destination rules</span>
+          <ul class="rule-list" id="dest-rules"></ul>
+          <div class="field-row">
+            <button class="btn btn-quiet btn-small" id="btn-rule-site" type="button">Add a site rule</button>
+            <button class="btn btn-quiet btn-small" id="btn-rule-type" type="button">Add a file type rule</button>
+          </div>
+          <small class="field-help">Files from a site, or of a type, go to their own folder instead of the download folder, keeping their album folders. The first rule that fits is used.</small>
+        </div>
         <label class="switch"><input type="checkbox" id="type-folders"><span class="switch-text">Sort into Images, Videos, Audio and Other folders<small>New files only. Files from earlier runs stay where they are.</small></span></label>
         <label class="switch"><input type="checkbox" id="auto-retry" checked><span class="switch-text">Retry temporary errors automatically<small>Files that fail because a server is busy or times out are tried once more, 45 seconds after the run.</small></span></label>
         <label class="switch"><input type="checkbox" id="tiktok-audio"><span class="switch-text">TikTok sounds<small>Also saves each TikTok post's background sound as an .mp3. Off saves time; the videos keep their audio either way.</small></span></label>

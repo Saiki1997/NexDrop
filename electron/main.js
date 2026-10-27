@@ -113,6 +113,13 @@ function samePath(a, b) {
   return process.platform === "win32" ? x.toLowerCase() === y.toLowerCase() : x === y;
 }
 
+/** Destination rules whose folder was chosen in a folder dialog on this PC (3.1). */
+function trustedRules(rules) {
+  if (!Array.isArray(rules)) return [];
+  const known = [downloadsDir(), ...jobDirs()];
+  return rules.filter((rule) => rule && typeof rule.folder === "string" && known.some((dir) => samePath(dir, rule.folder))).slice(0, 50);
+}
+
 function runFolder(requested) {
   const main = downloadsDir();
   if (!requested || typeof requested !== "string") return main;
@@ -469,6 +476,33 @@ function accountVault() {
   );
 }
 
+/** What a session gets: folders checked, accounts and cookies from the vault, never from the window. */
+function runConfig(config) {
+  const outgoing = { ...(config || {}) };
+  outgoing.downloadsDir = runFolder(outgoing.downloadsDir);
+  outgoing.destinationRules = trustedRules(outgoing.destinationRules);
+  for (const key of ["auth", "apiKey", "password", "cookieFolder", "accountCookies"]) delete outgoing[key];
+  try {
+    const saved = accountVault().engineAuth();
+    if (Object.keys(saved).length) outgoing.auth = saved;
+  } catch {
+    /* a missing vault must not block a download that needs no account */
+  }
+  try {
+    const telegram = accountVault().telegramAuth();
+    if (telegram) outgoing.telegram = telegram;
+  } catch {
+    /* without it, Telegram links use the public preview */
+  }
+  try {
+    const cookies = accountCookieTexts();
+    if (Object.keys(cookies).length) outgoing.accountCookies = cookies;
+  } catch (error) {
+    logFile.write(`[security] saved site cookies could not be read: ${error.message}`);
+  }
+  return outgoing;
+}
+
 function startSession(config, slot = 0) {
   if (sessions.has(slot)) killSession(true, slot);
   const script = path.join(ROOT, "desktop", "cairn_session.py");
@@ -558,27 +592,7 @@ function startSession(config, slot = 0) {
   });
   child.on("close", (code) => reportExit(code));
 
-  const outgoing = { ...(config || {}) };
-  outgoing.downloadsDir = runFolder(outgoing.downloadsDir);
-  for (const key of ["auth", "apiKey", "password", "cookieFolder", "accountCookies"]) delete outgoing[key];
-  try {
-    const saved = accountVault().engineAuth();
-    if (Object.keys(saved).length) outgoing.auth = saved;
-  } catch {
-    /* a missing vault must not block a download that needs no account */
-  }
-  try {
-    const telegram = accountVault().telegramAuth();
-    if (telegram) outgoing.telegram = telegram;
-  } catch {
-    /* without it, Telegram links use the public preview */
-  }
-  try {
-    const cookies = accountCookieTexts();
-    if (Object.keys(cookies).length) outgoing.accountCookies = cookies;
-  } catch (error) {
-    logFile.write(`[security] saved site cookies could not be read: ${error.message}`);
-  }
+  const outgoing = runConfig(config);
   // stdin stays open so "stop" can be sent later.
   child.stdin.on("error", () => {});
   child.stdin.write(`${JSON.stringify(outgoing)}\n`);
@@ -1522,7 +1536,7 @@ ipcMain.handle("naming-preview", (_event, config) => new Promise((resolve) => {
     detached: process.platform !== "win32",
   });
   previewChild = child;
-  const body = { ...(config && typeof config === "object" ? config : {}), previewNames: true, redownload: true };
+  const body = { ...runConfig(config && typeof config === "object" ? config : {}), previewNames: true, redownload: true };
   let result = null;
   const notes = [];
   const decoder = new StringDecoder("utf8");
