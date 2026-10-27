@@ -206,7 +206,31 @@
     return added.length;
   }
 
-  $("#btn-import").addEventListener("click", () => $("#import-file").click());
+  // Import: a NexDrop jobs export goes into the queue; a link list (.txt, .csv, .m3u, JSON) fills the links box.
+  $("#btn-import").addEventListener("click", async () => {
+    if (!api.jobsImport) return $("#import-file").click();
+    const file = await api.jobsImport();
+    if (!file || !file.ok) {
+      if (file && file.error) log("warning", file.error);
+      return;
+    }
+    const { jobs, dropped, kind } = fmt.parseJobFile(file.name, file.text, file.knownDirs || []);
+    if (!jobs.length) return log("warning", `${file.name} has no links.`);
+    if (kind === "links") {
+      const added = addLinks(jobs[0].urls.concat(jobs[0].unsupported).join("\n"), false);
+      return log(added ? "info" : "warning", added ? `Added ${added} links from ${file.name}.` : `Every link in ${file.name} is already in the box.`);
+    }
+    let added = 0;
+    for (const job of jobs) {
+      if (queue.some((q) => q.urls.join("\n") === job.urls.join("\n"))) continue;
+      queue.push({ ...job, id: newJobId(), label: job.label || jobLabel(job.urls) });
+      added += 1;
+    }
+    saveQueue();
+    const note = dropped ? ` ${dropped} job folder(s) or empty job(s) were left out (a folder must be chosen on this PC).` : "";
+    const how = run.running ? "They start after the current run." : "Press Start with an empty links box to begin.";
+    log("info", `Imported ${added} job(s) from ${file.name}${added < jobs.length ? `; ${jobs.length - added} were already queued` : ""}. ${how}${note}`);
+  });
   $("#import-file").addEventListener("change", async (event) => {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -261,7 +285,7 @@
       return null;
     }
     return {
-      id: `j${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      id: newJobId(),
       urls,
       unsupported,
       label: jobLabel(urls),
@@ -316,12 +340,19 @@
       log("phase", job.watchId ? `Checking watched thread: ${job.label}` : `Starting: ${job.label}`);
     }
     const quiet = quietActive();
-    const speedMB = quiet ? (prefs.speedLimitMB ? Math.min(prefs.speedLimitMB, prefs.quietSpeedMB) : prefs.quietSpeedMB) : prefs.speedLimitMB;
+    // A job's own speed cap and download mode win over Settings (3.0 job manager).
+    const capMB = Number.isFinite(job.speedMB) ? job.speedMB : prefs.speedLimitMB;
+    const speedMB = quiet ? (capMB ? Math.min(capMB, prefs.quietSpeedMB) : prefs.quietSpeedMB) : capMB;
     if (quiet) log("info", `Quiet hours (${prefs.quietFrom}–${prefs.quietTo}): this run is capped at ${speedMB} MB/s.`);
+    const mode = job.mode || prefs.downloadMode;
+    if (job.folder || job.mode || Number.isFinite(job.speedMB)) {
+      const own = [job.folder && `folder ${job.folder}`, job.mode && `${job.mode} mode`, Number.isFinite(job.speedMB) && (job.speedMB ? `${job.speedMB} MB/s cap` : "no speed cap")];
+      log("info", `This job's own settings: ${own.filter(Boolean).join(", ")}.`);
+    }
     api.startPipeline({
       urls: job.urls,
       unsupported: job.unsupported || [],
-      downloadsDir,
+      downloadsDir: job.folder || downloadsDir,
       redownload: Boolean(job.redownload),
       startPage: job.startPage || 1,
       endPage: job.endPage || null,
@@ -346,8 +377,8 @@
       deepScrape: prefs.deepScrape,
       flareSolver: prefs.flareSolver,
       threadDepth: prefs.threadDepth,
-      downloadMode: prefs.downloadMode,
-      ...fmt.modeLimits(prefs.downloadMode, prefs),
+      downloadMode: mode,
+      ...fmt.modeLimits(mode, prefs),
       tiktokAudio: prefs.tiktokAudio,
       attempts: prefs.attempts,
       autoRetry: prefs.autoRetry,
@@ -406,14 +437,16 @@
     }
   }
 
-  // force: the user pressed Start, so the download hours don't apply.
+  // force: the user pressed Start, so the download hours don't apply. Held jobs are passed over.
   function startNextInQueue(force = false) {
     if (run.running || !queue.length) return;
-    if (!$("#resume").hidden) return; // a paused run waits for Resume or Discard first
+    if (!$("#resume").hidden) return; // a paused run waits for Resume, Queue it or Discard first
     if (!force && !scheduleAllows()) return;
-    const next = queue.shift();
+    const index = queue.findIndex((q) => !q.hold);
+    if (index < 0) return;
+    const [next] = queue.splice(index, 1);
     saveQueue();
-    runJob(next);
+    runJob(next.parked ? { ...next, resumed: true } : next);
   }
 
   function renderQueue() {
@@ -422,9 +455,22 @@
     list.textContent = "";
     for (const item of queue) {
       const li = document.createElement("li");
-      const name = document.createElement("span");
+      li.classList.toggle("held", Boolean(item.hold));
+      li.classList.toggle("parked", Boolean(item.parked) && !item.hold);
+      const name = document.createElement("button");
+      name.type = "button";
+      name.className = "queue-open";
       name.textContent = item.label;
-      name.title = item.urls.join("\n");
+      const own = [item.folder && `Folder: ${item.folder}`, item.mode && `Mode: ${item.mode}`, Number.isFinite(item.speedMB) && `Speed cap: ${item.speedMB || "none"} MB/s`];
+      name.title = [...item.urls.slice(0, 20), ...own.filter(Boolean), "Click to rename, reorder, hold or change this job's folder and speed."].join("\n");
+      name.addEventListener("click", () => editJob(item.id));
+      li.appendChild(name);
+      if (item.folder || item.mode || Number.isFinite(item.speedMB)) {
+        const tag = document.createElement("span");
+        tag.className = "queue-tag";
+        tag.textContent = "custom";
+        li.appendChild(tag);
+      }
       const remove = document.createElement("button");
       remove.type = "button";
       remove.className = "queue-remove";
@@ -434,13 +480,88 @@
         queue = queue.filter((q) => q.id !== item.id);
         saveQueue();
       });
-      li.append(name, remove);
+      li.appendChild(remove);
       list.appendChild(li);
     }
-    $("#queue-count").textContent = queue.length === 1 ? "1 link waiting" : `${queue.length} waiting`;
+    const held = queue.filter((q) => q.hold).length;
+    const waiting = queue.length === 1 ? "1 link waiting" : `${queue.length} waiting`;
+    $("#queue-count").textContent = held ? `${waiting}, ${held} held` : waiting;
     box.hidden = !queue.length;
     $("#btn-queue").hidden = !run.running;
   }
+
+  function newJobId() {
+    return `j${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  }
+
+  // ─── one job: name, order, hold, folder, mode, speed cap ───────────────────
+  let editing = null;
+
+  function editJob(id) {
+    const item = queue.find((q) => q.id === id);
+    if (!item) return;
+    editing = { id, folder: item.folder || "" };
+    $("#job-links").textContent = item.urls.length === 1 ? item.urls[0] : `${item.urls.length} links, starting with ${item.urls[0]}`;
+    $("#job-name").value = item.label;
+    $("#job-mode").value = item.mode || "";
+    $("#job-speed").value = Number.isFinite(item.speedMB) ? item.speedMB : "";
+    $("#job-hold").checked = Boolean(item.hold);
+    showJobFolder();
+    $("#job-dialog").showModal();
+  }
+
+  function showJobFolder() {
+    $("#job-folder").textContent = editing.folder || `Main folder (${downloadsDir})`;
+    $("#job-folder").title = editing.folder || downloadsDir;
+    $("#btn-job-folder-main").hidden = !editing.folder;
+  }
+
+  $("#btn-job-folder").addEventListener("click", async () => {
+    const picked = await api.pickJobDir();
+    if (picked && picked.ok && editing) {
+      editing.folder = picked.path;
+      showJobFolder();
+    }
+  });
+  $("#btn-job-folder-main").addEventListener("click", () => {
+    if (!editing) return;
+    editing.folder = "";
+    showJobFolder();
+  });
+
+  $("#job-dialog").addEventListener("close", () => {
+    const action = $("#job-dialog").returnValue;
+    const state = editing;
+    editing = null;
+    const index = state ? queue.findIndex((q) => q.id === state.id) : -1;
+    if (index < 0 || action === "cancel" || !action) return;
+    const item = queue[index];
+    // Every action except Remove keeps what was typed in the dialog.
+    const name = $("#job-name").value.trim().slice(0, 120);
+    if (name && name !== item.label) {
+      item.label = name;
+      item.named = true;
+    }
+    item.mode = $("#job-mode").value || undefined;
+    const speed = parseInt($("#job-speed").value, 10);
+    item.speedMB = Number.isFinite(speed) ? Math.max(0, Math.min(1000, speed)) : undefined;
+    item.hold = $("#job-hold").checked || undefined;
+    item.folder = state.folder || undefined;
+    if (action === "remove") queue.splice(index, 1);
+    else if (action === "top") queue.unshift(...queue.splice(index, 1));
+    else if (action === "bottom") queue.push(...queue.splice(index, 1));
+    else if (action === "copy") {
+      const copy = { ...item, id: newJobId(), label: `${item.label} (copy)`, named: true, parked: undefined, doneUrls: undefined };
+      queue.splice(index + 1, 0, copy);
+    }
+    saveQueue();
+  });
+
+  $("#btn-queue-export").addEventListener("click", async () => {
+    if (!queue.length) return;
+    const result = await api.jobsExport(queue.map(fmt.exportJob));
+    if (result && result.ok) log("info", `Exported ${result.count} job(s) to ${result.path}. Progress and paused state are not part of the file.`);
+  });
 
   $("#btn-queue").addEventListener("click", () => addToQueue());
   $("#btn-queue-clear").addEventListener("click", () => {
@@ -467,6 +588,18 @@
     if (!pausedJob || run.running) return;
     // History skips finished files; half-downloaded files continue where they stopped.
     runJob({ ...pausedJob, resumed: true });
+  });
+  // "Queue it": the paused job waits at the end of the queue (resumes where it stopped) and the next job starts.
+  $("#btn-park").addEventListener("click", () => {
+    if (!pausedJob || run.running) return;
+    const parked = { ...pausedJob, parked: true, resumed: undefined };
+    hideResume();
+    api.saveGuiSetting({ active_run: null });
+    queue = queue.filter((q) => q.id !== parked.id);
+    queue.push(parked);
+    saveQueue();
+    log("info", `${parked.label} is paused in the queue. It continues where it stopped when its turn comes.`);
+    if (queue.some((q) => q.id !== parked.id && !q.hold)) startNextInQueue(true);
   });
   $("#btn-discard").addEventListener("click", () => {
     hideResume();

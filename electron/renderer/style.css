@@ -192,6 +192,16 @@ svg { stroke: currentColor; stroke-width: 1.6; fill: none; stroke-linecap: round
 .queue-remove { width: 20px; height: 20px; border-radius: 4px; color: var(--ash); display: inline-flex; align-items: center; justify-content: center; }
 .queue-remove:hover { background: var(--shale-2); color: var(--bone); }
 .queue-remove svg { width: 12px; height: 12px; }
+.queue-open { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; text-align: left; }
+.queue-open:hover { color: var(--bone); text-decoration: underline; text-underline-offset: 3px; }
+.queue-list li.held { opacity: .6; box-shadow: none; }
+.queue-list li.held .queue-open::before { content: "Held · "; color: var(--ash); }
+.queue-list li.parked .queue-open::before { content: "Paused · "; color: var(--ash); }
+.queue-tag { font-size: 11px; color: var(--ash); white-space: nowrap; }
+.dialog-job { width: min(560px, calc(100vw - 32px)); }
+.dialog-job .field, .dialog-job .switch { margin-bottom: 12px; }
+.dialog-job .dialog-actions + .dialog-actions { margin-top: 10px; }
+.job-folder { flex: 1; min-width: 0; font: 400 12px var(--font-mono); color: var(--ash); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ─── phases: a real 4-step sequence ─── */
 .phases {

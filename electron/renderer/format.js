@@ -242,5 +242,80 @@
     return stem;
   }
 
-  return { TEMPLATE_VARS, templateProblem, renderTemplate, DOWNLOAD_MODES, modeLimits, guessMode, bytes, speed, mbps, duration, ago, parseLinks, host, finishText, compareVersions, clockMinutes, inTimeWindow, appLinkUrls, checksumFor };
+  /* Jobs (3.0 job manager): what is kept in an export, and reading an export or a link list back. */
+  const JOB_FIELDS = ["label", "urls", "unsupported", "startPage", "endPage", "redownload", "folder", "mode", "speedMB", "hold", "named"];
+  const MAX_JOBS = 500;
+  const MAX_JOB_URLS = 20000;
+
+  function sameFolder(a, b) {
+    const norm = (p) => String(p || "").replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
+    return Boolean(a) && norm(a) === norm(b);
+  }
+
+  /** A queued job as it is saved and exported: only known fields, checked. Returns null when it has no links. */
+  function cleanJob(raw, knownDirs) {
+    if (!raw || typeof raw !== "object") return null;
+    const links = parseLinks([...(Array.isArray(raw.urls) ? raw.urls : []), ...(Array.isArray(raw.unsupported) ? raw.unsupported : [])].map(String).join("\n"));
+    const urls = links.urls.slice(0, MAX_JOB_URLS);
+    if (!urls.length && !links.unsupported.length) return null;
+    const int = (v, lo, hi) => {
+      const n = parseInt(v, 10);
+      return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : null;
+    };
+    const job = { urls, unsupported: links.unsupported.slice(0, 1000) };
+    if (typeof raw.label === "string" && raw.label.trim()) job.label = raw.label.trim().slice(0, 120);
+    job.startPage = int(raw.startPage, 1, 100000) || 1;
+    job.endPage = int(raw.endPage, 1, 100000);
+    if (job.endPage && job.endPage < job.startPage) job.endPage = null;
+    job.redownload = Boolean(raw.redownload);
+    if (typeof raw.folder === "string" && raw.folder && (!knownDirs || knownDirs.some((d) => sameFolder(d, raw.folder)))) job.folder = raw.folder;
+    if (DOWNLOAD_MODES[raw.mode]) job.mode = raw.mode;
+    const speed = int(raw.speedMB, 0, 1000);
+    if (speed !== null && raw.speedMB !== "" && raw.speedMB !== null) job.speedMB = speed;
+    if (raw.hold) job.hold = true;
+    if (raw.named) job.named = true;
+    return job;
+  }
+
+  /** Jobs from an imported file: a NexDrop jobs export, a JSON list of links, or any text with links in it
+   * (.txt, .csv, .m3u). `dropped` counts jobs without links and folders not chosen on this PC. */
+  function parseJobFile(name, text, knownDirs) {
+    const body = String(text || "").replace(/^\uFEFF/, "");
+    let data = null;
+    if (/\.json$/i.test(name || "") || /^\s*[[{]/.test(body)) {
+      try {
+        data = JSON.parse(body);
+      } catch {
+        data = null;
+      }
+    }
+    const jobs = [];
+    let dropped = 0;
+    if (data && typeof data === "object" && !Array.isArray(data) && Array.isArray(data.jobs)) {
+      for (const raw of data.jobs.slice(0, MAX_JOBS)) {
+        const job = cleanJob(raw, knownDirs);
+        if (!job) dropped += 1;
+        else {
+          if (raw && raw.folder && !job.folder) dropped += 1;
+          jobs.push(job);
+        }
+      }
+      return { jobs, dropped, kind: "jobs" };
+    }
+    let lines = [];
+    if (Array.isArray(data)) lines = data.map((item) => (item && typeof item === "object" ? item.url : item)).filter((v) => typeof v === "string");
+    else lines = body.match(/https?:\/\/[^\s"'<>,;]+/gi) || [];
+    const job = cleanJob({ urls: lines });
+    if (job) jobs.push(job);
+    return { jobs, dropped, kind: "links" };
+  }
+
+  /** The fields of a job worth keeping in an export. */
+  function exportJob(job) {
+    const out = {};
+    for (const key of JOB_FIELDS) if (job[key] !== undefined && job[key] !== null && job[key] !== "") out[key] = job[key];
+    return out;
+  }
+
+  return { cleanJob, parseJobFile, exportJob, TEMPLATE_VARS, templateProblem, renderTemplate, DOWNLOAD_MODES, modeLimits, guessMode, bytes, speed, mbps, duration, ago, parseLinks, host, finishText, compareVersions, clockMinutes, inTimeWindow, appLinkUrls, checksumFor };
 });

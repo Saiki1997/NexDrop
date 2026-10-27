@@ -97,3 +97,27 @@ test("filename templates match the engine's rules", () => {
   assert.match(fmt.templateProblem("{date}-{number}"), /no name variable/);
   assert.match(fmt.templateProblem("{title}/{number}"), /Windows/);
 });
+
+test("job files: exports round-trip, link lists become one job, unknown folders are dropped", () => {
+  const job = { id: "j1", label: "Lala", urls: ["https://simpcity.cr/threads/a.1/"], unsupported: [], startPage: 2, endPage: 1,
+    redownload: false, folder: "D:\\Media\\Lala", mode: "low", speedMB: 5, hold: true, resumed: true, doneUrls: ["x"] };
+  const exported = fmt.exportJob(job);
+  assert.strictEqual(exported.id, undefined);
+  assert.strictEqual(exported.doneUrls, undefined);
+  const text = JSON.stringify({ format: "nexdrop-jobs", version: 1, jobs: [exported, { urls: [] }] });
+  const back = fmt.parseJobFile("jobs.json", text, ["d:/media/lala/"]);
+  assert.strictEqual(back.kind, "jobs");
+  assert.strictEqual(back.jobs.length, 1);
+  assert.strictEqual(back.dropped, 1);
+  assert.deepStrictEqual(back.jobs[0], { urls: ["https://simpcity.cr/threads/a.1/"], unsupported: [], label: "Lala", startPage: 2,
+    endPage: null, redownload: false, folder: "D:\\Media\\Lala", mode: "low", speedMB: 5, hold: true });
+  const elsewhere = fmt.parseJobFile("jobs.json", text, ["C:/Downloads"]);
+  assert.strictEqual(elsewhere.jobs[0].folder, undefined);
+  assert.strictEqual(elsewhere.dropped, 2);
+  const m3u = fmt.parseJobFile("list.m3u", "#EXTM3U\n#EXTINF:-1,One\nhttps://a.com/1.mp4\nhttps://a.com/2.mp4\n", []);
+  assert.deepStrictEqual(m3u.jobs[0].urls, ["https://a.com/1.mp4", "https://a.com/2.mp4"]);
+  const csv = fmt.parseJobFile("l.csv", "name,url\none,https://b.com/x\ntwo,\"https://b.com/y\"\n", []);
+  assert.deepStrictEqual(csv.jobs[0].urls, ["https://b.com/x", "https://b.com/y"]);
+  assert.deepStrictEqual(fmt.parseJobFile("l.json", '[{"url":"https://c.com/z"}]', []).jobs[0].urls, ["https://c.com/z"]);
+  assert.strictEqual(fmt.parseJobFile("bad.json", "{nope", []).jobs.length, 0);
+});

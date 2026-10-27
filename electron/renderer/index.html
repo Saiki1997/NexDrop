@@ -72,11 +72,13 @@
     <div class="notice" id="resume" role="status" hidden>
       <span class="notice-text" id="resume-text"></span>
       <button class="btn btn-primary btn-small" id="btn-resume" type="button">Resume</button>
+      <button class="btn btn-quiet btn-small" id="btn-park" type="button" title="Keep it paused in the queue and start the next job">Queue it</button>
       <button class="btn btn-quiet btn-small" id="btn-discard" type="button">Discard</button>
     </div>
     <div class="queue" id="queue" hidden>
       <span class="queue-title">Up next <span id="queue-count"></span></span>
       <ol class="queue-list" id="queue-list"></ol>
+      <button class="btn btn-quiet btn-small" id="btn-queue-export" type="button" title="Save these jobs to a file">Export</button>
       <button class="btn btn-quiet btn-small" id="btn-queue-clear" type="button">Clear</button>
     </div>
 
@@ -162,6 +164,38 @@
         <button class="btn btn-quiet" value="cancel" type="submit">Cancel</button>
         <button class="btn btn-quiet" value="again" type="submit">Download everything again</button>
         <button class="btn btn-primary" value="new" type="submit" autofocus>Get new files only</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- One queued job -->
+  <dialog class="dialog dialog-job" id="job-dialog" aria-labelledby="job-title">
+    <form method="dialog">
+      <h2 id="job-title">Job</h2>
+      <p class="dialog-text" id="job-links"></p>
+      <label class="field"><span class="field-label">Name</span><input type="text" id="job-name" maxlength="120" spellcheck="false" autocomplete="off"></label>
+      <div class="field">
+        <span class="field-label">Download folder</span>
+        <div class="field-row">
+          <span class="job-folder" id="job-folder"></span>
+          <button class="btn btn-quiet btn-small" id="btn-job-folder" type="button">Choose…</button>
+          <button class="btn btn-quiet btn-small" id="btn-job-folder-main" type="button">Main folder</button>
+        </div>
+      </div>
+      <div class="field-grid">
+        <label class="field"><span class="field-label">Download mode</span><select id="job-mode" class="select"><option value="">As in Settings</option><option value="auto">Auto</option><option value="balanced">Balanced</option><option value="max">Maximum speed</option><option value="low">Low resource</option></select></label>
+        <label class="field"><span class="field-label">Speed cap, MB/s</span><input type="number" id="job-speed" min="0" max="1000" placeholder="As in Settings"><small class="field-help">0 means no cap.</small></label>
+      </div>
+      <label class="switch"><input type="checkbox" id="job-hold"><span class="switch-text">Hold<small>Stays in the queue but doesn't start until you release it.</small></span></label>
+      <div class="dialog-actions">
+        <button class="btn btn-quiet btn-small" value="top" type="submit">Move to top</button>
+        <button class="btn btn-quiet btn-small" value="bottom" type="submit">Move to bottom</button>
+        <button class="btn btn-quiet btn-small" value="copy" type="submit">Duplicate</button>
+        <button class="btn btn-quiet btn-small" value="remove" type="submit">Remove</button>
+      </div>
+      <div class="dialog-actions">
+        <button class="btn btn-quiet" value="cancel" type="submit">Cancel</button>
+        <button class="btn btn-primary" value="save" type="submit">Save</button>
       </div>
     </form>
   </dialog>

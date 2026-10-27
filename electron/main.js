@@ -97,6 +97,29 @@ function downloadsDir() {
   return dir;
 }
 
+// Folders chosen for single jobs (3.0 job manager). Only these and the main download folder
+// can be a run's destination or be opened from the app.
+const JOB_DIRS_MAX = 50;
+
+function jobDirs() {
+  const saved = readSettings().job_dirs;
+  return Array.isArray(saved) ? saved.filter((dir) => typeof dir === "string" && dir).slice(0, JOB_DIRS_MAX) : [];
+}
+
+function samePath(a, b) {
+  const x = path.resolve(a);
+  const y = path.resolve(b);
+  return process.platform === "win32" ? x.toLowerCase() === y.toLowerCase() : x === y;
+}
+
+function runFolder(requested) {
+  const main = downloadsDir();
+  if (!requested || typeof requested !== "string") return main;
+  if (samePath(requested, main) || jobDirs().some((dir) => samePath(dir, requested))) return requested;
+  sendLog("That job's folder was not chosen on this PC, so it downloads to the main download folder.", "warning");
+  return main;
+}
+
 function existingFile(target) {
   try {
     return target && typeof target === "string" && fs.statSync(target).isFile() ? target : "";
@@ -509,6 +532,7 @@ function startSession(config) {
   child.on("close", (code) => reportExit(code));
 
   const outgoing = { ...(config || {}) };
+  outgoing.downloadsDir = runFolder(outgoing.downloadsDir);
   for (const key of ["auth", "apiKey", "password", "cookieFolder", "accountCookies"]) delete outgoing[key];
   try {
     const saved = accountVault().engineAuth();
@@ -546,7 +570,7 @@ ipcMain.handle("stop-pipeline", () => {
 });
 
 function allowedRoots() {
-  const roots = [ROOT, downloadsDir()];
+  const roots = [ROOT, downloadsDir(), ...jobDirs()];
   return roots.map((dir) => path.resolve(dir));
 }
 
@@ -657,6 +681,48 @@ ipcMain.handle("pick-download-dir", async () => {
   if (result.canceled || !result.filePaths.length) return { ok: false, canceled: true, path: "" };
   writeSettings({ downloads_dir: result.filePaths[0] });
   return { ok: true, canceled: false, path: result.filePaths[0] };
+});
+
+ipcMain.handle("pick-job-dir", async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false, canceled: true, path: "" };
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Choose a folder for this job",
+    defaultPath: downloadsDir(),
+    properties: ["openDirectory", "createDirectory"],
+  });
+  if (result.canceled || !result.filePaths.length) return { ok: false, canceled: true, path: "" };
+  const chosen = result.filePaths[0];
+  const dirs = [chosen, ...jobDirs().filter((dir) => !samePath(dir, chosen))].slice(0, JOB_DIRS_MAX);
+  writeSettings({ job_dirs: dirs });
+  return { ok: true, canceled: false, path: chosen };
+});
+
+// Jobs to and from a file. Parsing and checking happen in the window (format.js parseJobFile).
+ipcMain.handle("jobs-export", async (_event, jobs) => {
+  if (!mainWindow || mainWindow.isDestroyed() || !Array.isArray(jobs)) return { ok: false };
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: "Export jobs",
+    defaultPath: path.join(app.getPath("documents"), "nexdrop-jobs.json"),
+    filters: [{ name: "NexDrop jobs", extensions: ["json"] }],
+  });
+  if (result.canceled || !result.filePath) return { ok: false, canceled: true };
+  const body = { format: "nexdrop-jobs", version: 1, exported: new Date().toISOString(), jobs: jobs.slice(0, 500) };
+  fs.writeFileSync(result.filePath, JSON.stringify(body, null, 2));
+  return { ok: true, path: result.filePath, count: body.jobs.length };
+});
+
+ipcMain.handle("jobs-import", async () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false };
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Import jobs or links",
+    properties: ["openFile"],
+    filters: [{ name: "Jobs or link lists", extensions: ["json", "txt", "csv", "m3u", "m3u8"] }],
+  });
+  if (result.canceled || !result.filePaths.length) return { ok: false, canceled: true };
+  const file = result.filePaths[0];
+  const size = fs.statSync(file).size;
+  if (size > 20 * 1024 * 1024) return { ok: false, error: "That file is larger than 20 MB." };
+  return { ok: true, name: path.basename(file), text: fs.readFileSync(file, "utf8"), knownDirs: [downloadsDir(), ...jobDirs()] };
 });
 
 function readRuns() {
