@@ -211,7 +211,7 @@ def _walk(root: Path, limit: int):
         for entry in entries:
             try:
                 if entry.is_dir(follow_symlinks=False):
-                    if not entry.name.startswith(".") and entry.name != "_nexdrop_trash":
+                    if not entry.name.startswith("."):
                         stack.append(Path(entry.path))
                 elif entry.is_file(follow_symlinks=False) and not entry.name.lower().endswith(SKIP_SUFFIXES) \
                         and ".part.seg" not in entry.name:
@@ -339,6 +339,8 @@ def probe(path: Path, ffprobe: str | None) -> dict:
     audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
     main = video or audio or {}
     out: dict = {}
+    still = video is not None and audio is None and video.get("codec_name") in ("mjpeg", "png", "webp", "gif", "bmp", "tiff", "jpegxl", "av1") \
+        and int(video.get("nb_frames") or 1) <= 1 and float(fmt.get("duration") or 0) < 0.5
     if video:
         width, height = int(video.get("width") or 0), int(video.get("height") or 0)
         rotation = 0
@@ -349,7 +351,7 @@ def probe(path: Path, ffprobe: str | None) -> dict:
         out.update(width=width, height=height)
     codecs = [s.get("codec_name") for s in (video, audio) if s and s.get("codec_name")]
     out["codec"] = "/".join(codecs)[:60]
-    for value in (fmt.get("duration"), main.get("duration")):
+    for value in () if still else (fmt.get("duration"), main.get("duration")):
         try:
             if value and float(value) > 0:
                 out["duration"] = round(float(value), 3)
@@ -510,6 +512,9 @@ def _filters(query: dict) -> tuple[str, list]:
         where.append("(name LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\' OR creator LIKE ? ESCAPE '\\' "
                      "OR album LIKE ? ESCAPE '\\' OR host LIKE ? ESCAPE '\\' OR url LIKE ? ESCAPE '\\')")
         args += [pattern] * 6
+    if query.get("date"):
+        where.append("date(saved_at, 'unixepoch', 'localtime') = ?")
+        args.append(str(query["date"])[:10])
     if query.get("minWidth"):
         where.append("width >= ?")
         args.append(int(query["minWidth"]))
@@ -664,7 +669,7 @@ def similar_groups(conn: sqlite3.Connection, threshold: int = SIMILAR_IMAGE) -> 
                     union.join(a, b)
                     for x in pair:
                         distance[x] = max(distance.get(x, 0), bits)
-    out += _collect(union, "similar-image", "Similar images", lambda ids: f"up to {max(distance.get(i, 0) for i in ids)} of 64 bits differ")
+    out += _collect(union, "similar-image", "Similar images", _image_detail(distance))
 
     videos = conn.execute("SELECT id, vhash, duration FROM files WHERE vhash != '' AND missing = 0 ORDER BY duration").fetchall()
     union = _Union()
@@ -687,6 +692,13 @@ def similar_groups(conn: sqlite3.Connection, threshold: int = SIMILAR_IMAGE) -> 
                 union.join(int(a["id"]), int(b["id"]))
     out += _collect(union, "similar-audio", "Same recording (loudness pattern and length match)", lambda ids: "")
     return out
+
+
+def _image_detail(distance: dict[int, int]):
+    def detail(ids: list[int]) -> str:
+        bits = max(distance.get(i, 0) for i in ids)
+        return "the same picture at another size or quality" if bits == 0 else f"up to {bits} of 64 picture bits differ"
+    return detail
 
 
 def audio_distance(a: str, b: str, shift: int = 5) -> float:

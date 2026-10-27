@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: nxlib:; media-src nxlib:; style-src 'self'; script-src 'self'; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NEXDROP</title>
   <link rel="stylesheet" href="style.css">
@@ -29,6 +29,7 @@
         <button class="btn btn-primary" id="btn-start" type="button">Start</button>
         <button class="btn btn-quiet" id="btn-queue" type="button" hidden title="Download these links after the current run">Add to queue</button>
         <button class="btn btn-stop" id="btn-stop" type="button" hidden title="Stop for now. Resume continues where it left off, even after closing NEXDROP.">Pause</button>
+        <button class="btn btn-quiet" id="btn-library" type="button" title="Everything you downloaded: gallery, search, duplicates and storage">Library</button>
         <button class="btn btn-icon" id="btn-settings" type="button" aria-label="Settings" title="Settings">
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h9M15 5h2M3 10h3M9 10h8M3 15h7M13 15h4"/><circle cx="13.5" cy="5" r="1.6"/><circle cx="7.5" cy="10" r="1.6"/><circle cx="11.5" cy="15" r="1.6"/></svg>
         </button>
@@ -301,6 +302,17 @@
           <input type="number" id="min-image-kb" min="0" max="100000" value="0">
           <small class="field-help">Skips thumbnails and icons. 0 keeps every image.</small>
         </label>
+        <label class="field">
+          <span class="field-label">Same content as a file you already had</span>
+          <select id="duplicate-action" class="select">
+            <option value="keep">Keep both (nothing is touched)</option>
+            <option value="rename">Keep both, add "(duplicate)" to the new name</option>
+            <option value="skip">Skip: move the new copy to a _duplicates folder</option>
+            <option value="ask">Ask after the run</option>
+            <option value="replace">Ask, and offer to replace the older copy</option>
+          </select>
+          <small class="field-help">Found by content (same size and hash), even under another name or from another site. Nothing is ever deleted without asking; the Recycle Bin always asks first.</small>
+        </label>
         <label class="switch"><input type="checkbox" id="type-folders"><span class="switch-text">Sort into Images, Videos, Audio and Other folders<small>New files only. Files from earlier runs stay where they are.</small></span></label>
         <label class="switch"><input type="checkbox" id="auto-retry" checked><span class="switch-text">Retry temporary errors automatically<small>Files that fail because a server is busy or times out are tried once more, 45 seconds after the run.</small></span></label>
         <label class="switch"><input type="checkbox" id="tiktok-audio"><span class="switch-text">TikTok sounds<small>Also saves each TikTok post's background sound as an .mp3. Off saves time; the videos keep their audio either way.</small></span></label>
@@ -548,8 +560,106 @@
     </div>
   </aside>
 
+
+  <!-- Media library (3.1): an extra view over downloaded files, the download window stays as it is -->
+  <section class="library" id="library" aria-labelledby="library-title" hidden>
+    <header class="library-head">
+      <h2 id="library-title">Library</h2>
+      <nav class="sheet-tabs library-tabs" role="tablist" id="library-tabs">
+        <button role="tab" type="button" data-lib="files" aria-selected="true">Files</button>
+        <button role="tab" type="button" data-lib="dupes" aria-selected="false">Duplicates</button>
+        <button role="tab" type="button" data-lib="storage" aria-selected="false">Storage</button>
+      </nav>
+      <span class="library-index" id="lib-index" role="status"></span>
+      <button class="btn btn-quiet btn-small" id="btn-lib-folders" type="button" title="Folders the library looks in">Folders…</button>
+      <button class="btn btn-quiet btn-small" id="btn-lib-refresh" type="button" title="Look for new, moved, renamed and missing files">Refresh</button>
+      <button class="btn btn-icon" id="btn-library-close" type="button" aria-label="Close the library">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>
+      </button>
+    </header>
+
+    <div class="lib-pane" data-lib="files">
+      <div class="lib-toolbar">
+        <input type="text" id="lib-text" class="history-search" placeholder="Search names, titles, creators, albums, sites…" spellcheck="false" autocomplete="off" aria-label="Search the library">
+        <select class="select" id="lib-kind" aria-label="Type"><option value="">All types</option><option value="image">Images</option><option value="video">Videos</option><option value="audio">Audio</option><option value="archive">Archives</option><option value="other">Other</option></select>
+        <select class="select" id="lib-host" aria-label="Site"><option value="">All sites</option></select>
+        <select class="select" id="lib-creator" aria-label="Creator"><option value="">All creators</option></select>
+        <select class="select" id="lib-album" aria-label="Album"><option value="">All albums</option></select>
+        <select class="select" id="lib-sort" aria-label="Sort"><option value="newest">Newest</option><option value="oldest">Oldest</option><option value="name">Name</option><option value="largest">Largest</option><option value="smallest">Smallest</option><option value="longest">Longest</option></select>
+        <select class="select" id="lib-group" aria-label="Browse by"><option value="">No groups</option><option value="creator">By creator</option><option value="album">By album</option><option value="host">By site</option><option value="date">By date</option><option value="kind">By type</option><option value="folder">By folder</option></select>
+        <select class="select" id="lib-missing" aria-label="Missing files"><option value="">Files on disk</option><option value="only">Missing files</option></select>
+        <div class="mini-seg" role="radiogroup" aria-label="View" id="lib-view">
+          <button type="button" role="radio" data-view="grid" aria-checked="true">Grid</button>
+          <button type="button" role="radio" data-view="list" aria-checked="false">List</button>
+        </div>
+      </div>
+      <div class="lib-groups" id="lib-groups" hidden></div>
+      <p class="status-line" id="lib-status" role="status"></p>
+      <div class="lib-scroll" id="lib-scroll" tabindex="0" aria-label="Files">
+        <div class="lib-spacer" id="lib-spacer"></div>
+        <div class="lib-items" id="lib-items"></div>
+      </div>
+    </div>
+
+    <div class="lib-pane" data-lib="dupes" hidden>
+      <div class="lib-toolbar">
+        <div class="mini-seg" role="radiogroup" aria-label="Kind of duplicate" id="dupe-kind">
+          <button type="button" role="radio" data-kind="exact" aria-checked="true" title="Same size, then the same SHA-256: identical content under any name or site">Identical</button>
+          <button type="button" role="radio" data-kind="similar" aria-checked="false" title="Images that look the same after resizing or re-encoding, the same video at another quality, the same recording in another format">Similar</button>
+        </div>
+        <label class="opt" id="dupe-threshold-box" hidden title="How many of the 64 picture bits may differ. Lower is stricter.">Closeness
+          <input type="range" id="dupe-threshold" min="0" max="12" value="6"><span id="dupe-threshold-text">6</span>
+        </label>
+        <input type="text" id="dupe-text" class="history-search" placeholder="Search groups…" spellcheck="false" autocomplete="off" aria-label="Search duplicate groups">
+        <button class="btn btn-primary btn-small" id="btn-dupe-find" type="button">Find duplicates</button>
+      </div>
+      <p class="status-line" id="dupe-status" role="status">Nothing is deleted. Set aside moves a copy to the _duplicates folder; the Recycle Bin always asks first.</p>
+      <div class="lib-scroll lib-dupes" id="dupe-list"></div>
+    </div>
+
+    <div class="lib-pane" data-lib="storage" hidden>
+      <p class="status-line" id="storage-status" role="status"></p>
+      <div class="lib-scroll storage" id="storage-body"></div>
+    </div>
+  </section>
+
+  <!-- One file from the library -->
+  <dialog class="dialog dialog-wide lib-preview" id="lib-preview" aria-labelledby="lib-preview-title">
+    <form method="dialog">
+      <h2 id="lib-preview-title">File</h2>
+      <div class="lib-preview-body">
+        <div class="lib-preview-media" id="lib-preview-media"></div>
+        <dl class="lib-preview-meta" id="lib-preview-meta"></dl>
+      </div>
+      <div class="lib-archive" id="lib-archive" hidden></div>
+      <p class="status-line" id="lib-preview-status" role="status"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-quiet" id="btn-prev-inspect" type="button" hidden>Look inside</button>
+        <button class="btn btn-quiet" id="btn-prev-test" type="button" hidden title="Read every file in the archive and check its checksum">Check archive</button>
+        <button class="btn btn-quiet" id="btn-prev-extract" type="button" hidden title="Into a new folder you choose. Nothing inside is run.">Extract…</button>
+        <button class="btn btn-quiet" id="btn-prev-reveal" type="button">Show in folder</button>
+        <button class="btn btn-quiet" id="btn-prev-open" type="button">Open</button>
+        <button class="btn btn-primary" value="close" type="submit">Close</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- After a run with "Ask" or "Replace after confirmation" -->
+  <dialog class="dialog dialog-wide" id="dupes-dialog" aria-labelledby="dupes-title">
+    <form method="dialog">
+      <h2 id="dupes-title">Files you already had</h2>
+      <p class="dialog-text" id="dupes-text"></p>
+      <ul class="dupes-pairs" id="dupes-pairs"></ul>
+      <div class="dialog-actions">
+        <button class="btn btn-quiet" id="btn-dupes-aside-all" type="button" title="Move every new copy to the _duplicates folder">Set all new copies aside</button>
+        <button class="btn btn-primary" value="close" type="submit">Done</button>
+      </div>
+    </form>
+  </dialog>
+
   <input type="file" id="import-file" accept=".txt,text/plain" hidden>
   <script src="format.js"></script>
   <script src="app.js"></script>
+  <script src="library.js"></script>
 </body>
 </html>

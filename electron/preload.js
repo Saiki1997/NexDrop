@@ -47,6 +47,17 @@ contextBridge.exposeInMainWorld("api", {
   backupRestore: () => ipcRenderer.invoke("backup-restore"),
   historyRename: (body) => ipcRenderer.invoke("history-rename", body),
   namingCorrections: (body) => ipcRenderer.invoke("naming-corrections", body),
+  librarySync: () => ipcRenderer.invoke("library-sync"),
+  libraryWork: (body) => ipcRenderer.invoke("library-work", body),
+  libraryQuery: (body) => ipcRenderer.invoke("library-query", body),
+  libraryFacets: () => ipcRenderer.invoke("library-facets"),
+  libraryGroups: (body) => ipcRenderer.invoke("library-groups", body),
+  libraryStorage: () => ipcRenderer.invoke("library-storage"),
+  libraryFolders: () => ipcRenderer.invoke("library-folders"),
+  libraryAddFolder: () => ipcRenderer.invoke("library-add-folder"),
+  libraryRemoveFolder: (dir) => ipcRenderer.invoke("library-remove-folder", dir),
+  libraryAction: (body) => ipcRenderer.invoke("library-action", body),
+  duplicateAction: (body) => ipcRenderer.invoke("duplicate-action", body),
   onPipelineEvent: (callback) => {
     const listener = (_event, data) => callback(data);
     ipcRenderer.on("pipeline-event", listener);

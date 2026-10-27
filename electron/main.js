@@ -1,6 +1,7 @@
 "use strict";
 
-const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell, session, safeStorage, nativeImage, Notification, Tray } = require("electron");
+const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, net, protocol, shell, session, safeStorage, nativeImage, Notification, Tray } = require("electron");
+const { pathToFileURL } = require("url");
 const { spawn, spawnSync } = require("child_process");
 const { StringDecoder } = require("string_decoder");
 const fs = require("fs");
@@ -1503,6 +1504,218 @@ ipcMain.handle("history-reveal", async (_event, id) => {
   return { ok: false, error: "The file and its folder are no longer on this computer." };
 });
 
+// ─── media library (3.1) ────────────────────────────────────────────────────
+// One catalog of downloaded files (desktop/library.py). Thumbnails come from a cache folder and
+// previews only from files in the catalog, both through the nxlib: scheme, so the window never
+// gets general file access.
+
+const LIBRARY_DB = path.join(APPDATA, "library.sqlite");
+const THUMBS = path.join(APPDATA, "thumbs");
+const LIBRARY_SCRIPT = path.join(ROOT, "desktop", "library.py");
+const MEDIA_OPEN = new Set(["jpg", "jpeg", "png", "gif", "webp", "avif", "bmp", "heic", "heif", "tif", "tiff", "jxl", "mp4", "m4v",
+  "mov", "mkv", "webm", "avi", "wmv", "flv", "mpg", "mpeg", "3gp", "ts", "mp3", "m4a", "aac", "flac", "wav", "ogg", "opus", "wma", "txt", "pdf"]);
+const libraryPaths = new Map(); // id -> path, for files the window has been shown
+let libraryBusy = false;
+
+protocol.registerSchemesAsPrivileged([{ scheme: "nxlib", privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } }]);
+
+function libraryDirs() {
+  const saved = readSettings().library_dirs;
+  return Array.isArray(saved) ? saved.filter((dir) => typeof dir === "string" && dir).slice(0, 50) : [];
+}
+
+function libraryRoots() {
+  const roots = [downloadsDir(), ...jobDirs(), ...libraryDirs()].map((dir) => path.resolve(dir));
+  return roots.filter((dir, index) => roots.findIndex((other) => samePath(other, dir)) === index);
+}
+
+async function library(command, body = {}, timeout = 120000) {
+  if (!fs.existsSync(LIBRARY_SCRIPT)) return { ok: false, error: "The library is not part of this build." };
+  const result = await runPython([LIBRARY_SCRIPT, command, LIBRARY_DB], { input: `${JSON.stringify(body)}\n`, timeout });
+  const parsed = parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "The library could not be read.").slice(-300) };
+  for (const item of parsed.items || []) if (item && item.id && item.path) libraryPaths.set(Number(item.id), item.path);
+  for (const group of parsed.groups || []) for (const item of group.files || []) if (item.id && item.path) libraryPaths.set(Number(item.id), item.path);
+  if (parsed.file?.id && parsed.file.path) libraryPaths.set(Number(parsed.file.id), parsed.file.path);
+  return parsed;
+}
+
+function registerLibraryScheme() {
+  protocol.handle("nxlib", async (request) => {
+    const url = new URL(request.url);
+    if (url.hostname === "thumb") {
+      const name = path.basename(decodeURIComponent(url.pathname));
+      if (!/^\d+\.jpg$/.test(name)) return new Response("", { status: 404 });
+      const file = path.join(THUMBS, name);
+      if (!existingFile(file)) return new Response("", { status: 404 });
+      return net.fetch(pathToFileURL(file).toString());
+    }
+    if (url.hostname === "file") {
+      const id = Number(path.basename(url.pathname));
+      let target = libraryPaths.get(id);
+      if (!target) target = (await library("file", { id }))?.file?.path;
+      if (!target) return new Response("", { status: 404 });
+      const resolved = path.resolve(target);
+      const ext = path.extname(resolved).slice(1).toLowerCase();
+      if (!MEDIA_OPEN.has(ext) || !libraryRoots().some((dir) => isInside(resolved, dir)) || !existingFile(resolved)) {
+        return new Response("", { status: 404 });
+      }
+      return net.fetch(pathToFileURL(resolved).toString(), { headers: request.headers });
+    }
+    return new Response("", { status: 404 });
+  });
+}
+
+ipcMain.handle("library-sync", async () => {
+  if (libraryBusy) return { ok: true, busy: true };
+  libraryBusy = true;
+  try {
+    return await library("sync", { jobs: JOBS_DB, roots: libraryRoots() }, 600000);
+  } finally {
+    libraryBusy = false;
+  }
+});
+
+// Metadata, fingerprints and thumbnails for a few seconds at a time; the window calls it again
+// while the Library is open and files are left.
+ipcMain.handle("library-work", async (_event, body) => {
+  if (libraryBusy) return { ok: true, busy: true, left: -1 };
+  libraryBusy = true;
+  try {
+    const seconds = Math.max(2, Math.min(60, Number(body?.seconds) || 15));
+    return await library("work", { seconds, thumbs: THUMBS, fingerprints: body?.fingerprints !== false }, (seconds + 90) * 1000);
+  } finally {
+    libraryBusy = false;
+  }
+});
+
+ipcMain.handle("library-query", (_event, body) => library("query", body && typeof body === "object" ? body : {}));
+ipcMain.handle("library-facets", () => library("facets"));
+ipcMain.handle("library-groups", (_event, body) => library("groups", {
+  kind: body?.kind === "similar" ? "similar" : "exact",
+  text: String(body?.text || "").slice(0, 200),
+  threshold: Math.max(0, Math.min(12, Number(body?.threshold) || 6)),
+  seconds: 90,
+}, 300000));
+ipcMain.handle("library-storage", () => library("storage", { roots: libraryRoots() }, 300000));
+ipcMain.handle("library-folders", () => ({ ok: true, roots: libraryRoots(), extra: libraryDirs() }));
+ipcMain.handle("library-add-folder", async () => {
+  if (!mainWindow) return { ok: false };
+  const picked = await dialog.showOpenDialog(mainWindow, { title: "Add a folder to the library", properties: ["openDirectory"] });
+  if (picked.canceled || !picked.filePaths[0]) return { ok: false, canceled: true };
+  const dirs = [...libraryDirs().filter((dir) => !samePath(dir, picked.filePaths[0])), picked.filePaths[0]];
+  writeSettings({ library_dirs: dirs });
+  return { ok: true, extra: dirs };
+});
+ipcMain.handle("library-remove-folder", (_event, dir) => {
+  const dirs = libraryDirs().filter((item) => !samePath(item, String(dir || "")));
+  writeSettings({ library_dirs: dirs });
+  return { ok: true, extra: dirs };
+});
+
+async function libraryFile(id) {
+  const n = Number(id);
+  if (!Number.isInteger(n) || n < 1) return null;
+  const found = (await library("file", { id: n }))?.file;
+  if (!found?.path) return null;
+  const resolved = path.resolve(found.path);
+  if (!libraryRoots().some((dir) => isInside(resolved, dir))) return null;
+  return { ...found, path: resolved, root: libraryRoots().find((dir) => isInside(resolved, dir)) };
+}
+
+/** Move a file to the Recycle Bin, only after the person confirms it. */
+async function confirmTrash(target, reason) {
+  if (!mainWindow || !existingFile(target)) return { ok: false, error: "The file is not there any more." };
+  const answer = await dialog.showMessageBox(mainWindow, {
+    type: "warning",
+    buttons: ["Move to Recycle Bin", "Cancel"],
+    defaultId: 1,
+    cancelId: 1,
+    title: "Move to Recycle Bin",
+    message: `Move ${path.basename(target)} to the Recycle Bin?`,
+    detail: `${reason}\n\n${target}\n\nYou can restore it from the Recycle Bin.`,
+  });
+  if (answer.response !== 0) return { ok: false, canceled: true };
+  try {
+    await shell.trashItem(target);
+    return { ok: true, trashed: true };
+  } catch (error) {
+    return { ok: false, error: `Could not move it to the Recycle Bin: ${error.message || error}` };
+  }
+}
+
+async function dupMove(command, target, root) {
+  const result = await runPython([path.join(ROOT, "desktop", "dup_actions.py"), command, JOBS_DB],
+    { input: `${JSON.stringify({ path: target, root })}\n`, timeout: 60000 });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "The file could not be moved.").slice(-300) };
+}
+
+async function archiveCall(command, body, timeout = 600000) {
+  const result = await runPython([path.join(ROOT, "desktop", "archives.py"), command], { input: `${JSON.stringify(body)}\n`, timeout });
+  return parseJson((result.stdout || "").trim(), null) || { ok: false, error: (result.stderr || "The archive could not be read.").slice(-300) };
+}
+
+ipcMain.handle("library-action", async (_event, body) => {
+  const file = await libraryFile(body?.id);
+  if (!file) return { ok: false, error: "That file is not in the library." };
+  const action = String(body?.action || "");
+  if (action === "reveal") {
+    shell.showItemInFolder(file.path);
+    return { ok: true };
+  }
+  if (action === "open") {
+    // Media and documents open in their usual app; anything else is only shown in its folder,
+    // so a downloaded program is never started from here.
+    const ext = path.extname(file.path).slice(1).toLowerCase();
+    if (!MEDIA_OPEN.has(ext)) {
+      shell.showItemInFolder(file.path);
+      return { ok: true, revealed: true };
+    }
+    const error = await shell.openPath(file.path);
+    return { ok: !error, error: error || null };
+  }
+  if (action === "aside" || action === "rename") {
+    const result = await dupMove(action, file.path, file.root);
+    if (result.ok) await library("moved", { id: file.id, path: result.path });
+    return result;
+  }
+  if (action === "trash") {
+    const result = await confirmTrash(file.path, String(body?.reason || "It has the same content as another file in the library."));
+    if (result.ok) await library("moved", { id: file.id, path: file.path });
+    return result;
+  }
+  if (action === "inspect" || action === "test") return archiveCall(action, { path: file.path });
+  if (action === "extract") {
+    if (!mainWindow) return { ok: false };
+    const stem = path.basename(file.path).replace(/(\.tar)?\.[^.]+$/i, "");
+    const picked = await dialog.showSaveDialog(mainWindow, {
+      title: "Extract to a new folder",
+      defaultPath: path.join(path.dirname(file.path), stem),
+      buttonLabel: "Extract here",
+      properties: ["createDirectory", "showOverwriteConfirmation"],
+    });
+    if (picked.canceled || !picked.filePath) return { ok: false, canceled: true };
+    const result = await archiveCall("extract", { path: file.path, dest: picked.filePath });
+    if (result.ok) shell.openPath(result.dest);
+    return result;
+  }
+  return { ok: false, error: "Unknown action." };
+});
+
+// After a run with "Ask" or "Replace after confirmation": one pair at a time from the list.
+ipcMain.handle("duplicate-action", async (_event, body) => {
+  const target = path.resolve(String(body?.path || ""));
+  const root = allowedRoots().find((dir) => dir !== path.resolve(ROOT) && isInside(target, dir));
+  if (!root || !existingFile(target)) return { ok: false, error: "That file is not in a download folder any more." };
+  const action = String(body?.action || "");
+  if (action === "aside" || action === "rename") return dupMove(action, target, root);
+  if (action === "trash") return confirmTrash(target, String(body?.reason || "Another file has the same content."));
+  if (action === "reveal") {
+    shell.showItemInFolder(target);
+    return { ok: true };
+  }
+  return { ok: false, error: "Unknown action." };
+});
+
 // ─── app lifecycle ──────────────────────────────────────────────────────────
 
 try {
@@ -1527,6 +1740,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(async () => {
+    registerLibraryScheme();
     session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
       callback(permission === "clipboard-sanitized-write" || permission === "clipboard-read");
     });
