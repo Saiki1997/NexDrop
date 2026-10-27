@@ -377,11 +377,13 @@ class EngineSafeguards(unittest.TestCase):
         since = slots.reduced["s1.cdn"]
         slots.ok("s1.cdn", now=since + 10)
         self.assertEqual(slot.limit, 1)  # too soon
-        slots.ok("s1.cdn", now=since + slots.RECOVER_AFTER)
+        # +1 s margins: monotonic() is large on a long-running machine, so since + 240 - (since + 120)
+        # can round to just under 120
+        slots.ok("s1.cdn", now=since + slots.RECOVER_AFTER + 1)
         self.assertEqual(slot.limit, 2)
         slots.ok("s1.cdn", now=since + slots.RECOVER_AFTER + 10)
         self.assertEqual(slot.limit, 2)  # each step waits its own quiet spell
-        slots.ok("s1.cdn", now=since + 2 * slots.RECOVER_AFTER)
+        slots.ok("s1.cdn", now=since + 2 * slots.RECOVER_AFTER + 2)
         self.assertEqual(slot.limit, 3)
         self.assertNotIn("s1.cdn", slots.reduced)
 
