@@ -297,6 +297,46 @@ class _ProgressTracker:
 
 
 TRACKER = _ProgressTracker()
+
+
+class _Duplicates:
+    """Finds an earlier file with the same content (xxh128 and size) as a new download.
+
+    Report only: both files are kept. The engine has already stored the new file's hash."""
+
+    def __init__(self) -> None:
+        self.conn = None
+        self.reported: set[frozenset[str]] = set()
+
+    def find(self, xxh128: str | None, path: Path, size: int) -> Path | None:
+        if not xxh128 or not size:
+            return None
+        try:
+            if self.conn is None:
+                import sqlite3
+
+                db = PORTABLE / "cyberdrop.db"
+                if not db.is_file():
+                    return None
+                self.conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True, timeout=5, check_same_thread=False)
+            rows = self.conn.execute(
+                "SELECT folder, download_filename FROM hash WHERE hash_type = 'xxh128' AND hash = ? LIMIT 20", (xxh128,)
+            ).fetchall()
+        except Exception:  # noqa: BLE001 - a duplicate check never costs a download
+            return None
+        here = os.path.normcase(str(path.resolve()))
+        for folder, name in rows:
+            other = Path(folder) / name
+            try:
+                if os.path.normcase(str(other.resolve())) == here or not other.is_file() or other.stat().st_size != size:
+                    continue
+            except OSError:
+                continue
+            return other
+        return None
+
+
+DUPLICATES = _Duplicates()
 _SEEN: dict[str, bool] = {}
 
 
@@ -377,22 +417,32 @@ def _install_download_clearance() -> None:
             site = ""
         if UNREACHABLE.is_down(site):
             raise DownloadError("Server unreachable", f"{site}'s file servers could not be reached earlier in this run")
+        wait = BREAKER.blocked_for(site)
+        if wait:
+            raise DownloadError("Site Paused", f"{site} is paused for {int(wait)} s after repeated server errors")
+        try:
+            host = (await media_item.resolve()).host or ""
+        except Exception:  # noqa: BLE001
+            host = ""
         try:
             result = await download(self, domain, media_item)
         except Exception as error:
             text = str(error)
             if "429" in text or "503" in text:
-                try:
-                    host = (await media_item.resolve()).host or ""
-                except Exception:  # noqa: BLE001
-                    host = ""
                 SERVER_SLOTS.back_off(host)
             if UNREACHABLE.failed(site, text):
                 emit({"type": "log", "level": "warning", "message": (
                     f"Can't connect to {site}'s file servers: {UNREACHABLE.limit} downloads in a row timed out before the server answered. "
                     f"Skipping the rest of {site}'s files this run, so they show as failed and Retry unfinished can get them later.")})
+            opened = BREAKER.failed(site, text)
+            if opened:
+                emit({"type": "log", "level": "warning", "message": (
+                    f"{site} failed {BREAKER.threshold} downloads in a row with server errors. Pausing it for {int(opened)} s; "
+                    "other sites keep downloading. Its paused files are tried again by the retry pass.")})
             raise
         UNREACHABLE.ok(site)
+        BREAKER.ok(site)
+        SERVER_SLOTS.ok(host)
         return result
 
     dl.DownloadClient._download = download_with_backoff
@@ -748,6 +798,58 @@ class _UnreachableSites:
 UNREACHABLE = _UnreachableSites()
 
 
+class _SiteBreaker:
+    """Pauses one site that keeps failing with server errors, so the rest of the run carries on.
+
+    After `threshold` downloads in a row from a site fail with a busy or rate-limit answer
+    (429, 5xx), the site is paused: its files fail at once as "Site Paused" for `cooldown`
+    seconds (doubling on each new pause, at most 10 minutes) and the retry pass gets them later.
+    When the pause ends, the next download is a probe: one success closes the breaker, one more
+    failure opens it again."""
+
+    _SERVER_ERRORS = re.compile(r"\b(429|500|502|503|504|52[0-4])\b")
+
+    def __init__(self, threshold: int = 6, cooldown: float = 60.0, ceiling: float = 600.0) -> None:
+        self.threshold = threshold
+        self.cooldown = cooldown
+        self.ceiling = ceiling
+        self.streak: dict[str, int] = {}
+        self.opens: dict[str, int] = {}
+        self.until: dict[str, float] = {}
+
+    def blocked_for(self, site: str, now: float | None = None) -> float:
+        until = self.until.get(site)
+        if not site or until is None:
+            return 0.0
+        left = until - (time.monotonic() if now is None else now)
+        return left if left > 0 else 0.0
+
+    def failed(self, site: str, text: str, now: float | None = None) -> float:
+        """Count one failure; returns the pause in seconds when this one opens the breaker."""
+        if not site or not self._SERVER_ERRORS.search(text or "") or "Site Paused" in (text or ""):
+            if site and "Site Paused" not in (text or ""):
+                self.streak.pop(site, None)
+            return 0.0
+        self.streak[site] = self.streak.get(site, 0) + 1
+        probing = site in self.until  # a failure right after a pause ends opens it again
+        if self.streak[site] < self.threshold and not probing:
+            return 0.0
+        if self.blocked_for(site, now):
+            return 0.0
+        self.opens[site] = self.opens.get(site, 0) + 1
+        pause = min(self.cooldown * 2 ** (self.opens[site] - 1), self.ceiling)
+        self.until[site] = (time.monotonic() if now is None else now) + pause
+        self.streak[site] = 0
+        return pause
+
+    def ok(self, site: str) -> None:
+        self.streak.pop(site, None)
+        self.until.pop(site, None)
+
+
+BREAKER = _SiteBreaker()
+
+
 class _ServerSlots:
     """Replaces the engine's one-download-per-server lock (used for Bunkr and a few others).
 
@@ -757,10 +859,12 @@ class _ServerSlots:
     it answers 429 (too many requests) or 503.
     """
 
+    RECOVER_AFTER = 120.0  # seconds without a slow-down answer before a server gets one connection back
+
     def __init__(self) -> None:
         self.per_server = 3
         self.hosts: dict[str, _HostSlots] = {}
-        self.reduced: set[str] = set()
+        self.reduced: dict[str, float] = {}  # host -> when it last asked to slow down
 
     def get(self, host: str) -> _HostSlots:
         slot = self.hosts.get(host)
@@ -770,11 +874,30 @@ class _ServerSlots:
 
     def back_off(self, host: str) -> None:
         slot = self.hosts.get(host)
-        if not host or slot is None or host in self.reduced or slot.limit <= 1:
+        if not host or slot is None:
             return
-        self.reduced.add(host)
+        first = host not in self.reduced
+        self.reduced[host] = time.monotonic()
+        if slot.limit <= 1:
+            return
         slot.limit = 1
-        emit({"type": "log", "level": "warning", "message": f"{host} asked to slow down. Using one connection for it from now on."})
+        if first:
+            emit({"type": "log", "level": "warning", "message": f"{host} asked to slow down. Using one connection for it for now."})
+
+    def ok(self, host: str, now: float | None = None) -> None:
+        """A download from a slowed-down server worked: after a quiet spell, allow one more connection."""
+        since = self.reduced.get(host)
+        slot = self.hosts.get(host)
+        if since is None or slot is None:
+            return
+        now = time.monotonic() if now is None else now
+        if now - since < self.RECOVER_AFTER:
+            return
+        slot.limit = min(self.per_server, slot.limit + 1)
+        if slot.limit >= self.per_server:
+            del self.reduced[host]
+        else:
+            self.reduced[host] = now  # the next step up waits another quiet spell
 
 
 SERVER_SLOTS = _ServerSlots()
@@ -987,6 +1110,12 @@ def _install_progress() -> None:
             emit({"type": "saved", "url": str(media_item.url), "filename": path.name, "bytes": size, "path": str(path)})
         except Exception:  # noqa: BLE001
             emit({"type": "saved", "url": str(getattr(media_item, "url", "")), "filename": "", "bytes": 0})
+            return
+        same = DUPLICATES.find(getattr(media_item, "xxhash", None), path, size)
+        pair = frozenset((os.path.normcase(str(path)), os.path.normcase(str(same))))
+        if same and pair not in DUPLICATES.reported:  # two copies finishing together match each other
+            DUPLICATES.reported.add(pair)
+            emit({"type": "duplicate", "url": str(media_item.url), "path": str(path), "of": str(same)})
 
     Manager.add_completed = add_completed
 

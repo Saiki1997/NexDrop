@@ -4,6 +4,7 @@ Every file's bytes are a pure function of its name and version, so a test can ch
 file holds exactly one version of one file. Routes, all GET:
 
   /ok/<name>?size=N                 a file with Range, ETag and Last-Modified support
+                                    (&as=<other> serves the bytes of <other> under this name)
   /trunc/<name>?size=N              no range support; announces N bytes, sends half, then drops (every time)
   /drop-once/<name>?size=N          the first request drops half way, later ones behave like /ok
   /flaky/<name>?size=N&fail=K       the first K requests answer 503 (Retry-After: 0), then /ok
@@ -119,7 +120,8 @@ class LocalServer:
                     return await self._send(request, new, etag='"v2"', ranges=False)
                 return await self._send(request, new, etag='"v2"')
             return await self._send(request, new, etag='"v2"')  # ignores If-Range
-        return await self._send(request, content(name, size), etag=f'"{name}-{size}"')
+        same = request.query.get("as", name)  # /ok/<name>?as=<other> serves <other>'s bytes
+        return await self._send(request, content(same, size), etag=f'"{same}-{size}"')
 
     async def _send(self, request: web.Request, data: bytes, *, etag: str | None, drop_at: int | None = None,
                     ranges: bool = True, force_range_start: int | None = None) -> web.StreamResponse:

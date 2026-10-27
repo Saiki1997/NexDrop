@@ -1384,6 +1384,7 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
     saved_urls: list[str] = []
     failed: list[str] = list(rejected)
     skipped_urls: list[str] = []
+    duplicates: list[tuple[str, str]] = []  # (new file, the earlier file with the same content)
     unsupported: list[str] = []
     scrape_notes: list[str] = []
     referers: dict[str, str] = {}
@@ -1495,6 +1496,13 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
                     if reason.startswith(("already", "same hash")):
                         skipped_urls.append(url)  # only real duplicates go into history
                     FILES.update(url, state="skipped", reason=reason, speed=0)
+            elif kind == "duplicate":
+                # same bytes as a file saved earlier; both are kept, the user decides
+                url = str(event.get("url") or "")
+                other = str(event.get("of") or "")
+                if url and other:
+                    duplicates.append((str(event.get("path") or ""), other))
+                    FILES.update(url, reason=f"same content as {Path(other).name}")
             elif kind == "retry":
                 url = str(event.get("url") or "")
                 if url and FILES.state(url) not in FINAL_STATES:
@@ -1604,6 +1612,11 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
 
     for text in hints.summary():
         log("warning", text)
+    if duplicates:
+        log("info", f"{len(duplicates)} saved file(s) have the same content as files you already had. "
+                    "Both copies were kept; nothing was deleted.")
+        for path, other in duplicates[:20]:
+            log("info", f"  {path}  =  {other}")
     with FILES.lock:
         needs_account = sum(1 for row in FILES.rows.values() if "sign in to Telegram" in (row.get("reason") or ""))
     if needs_account:

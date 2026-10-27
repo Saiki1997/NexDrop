@@ -126,6 +126,7 @@ class EngineDownloads(unittest.TestCase):
         stamp = str(time.time_ns())
         cls.urls = {
             "ok": s.url("ok", f"ok{stamp}.mp4", size=300_000),
+            "copy": s.url("ok", f"cp{stamp}.mp4", size=300_000, **{"as": f"ok{stamp}.mp4"}),
             "trunc": s.url("trunc", f"tr{stamp}.mp4", size=300_000),
             "drop": s.url("drop-once", f"dr{stamp}.mp4", size=300_000),
             "flaky": s.url("flaky", f"fl{stamp}.mp4", size=50_000, fail=1),
@@ -156,6 +157,14 @@ class EngineDownloads(unittest.TestCase):
 
     def test_plain_file_is_saved_whole(self):
         self.assertEqual(self.saved_bytes("ok"), content(self.name("ok"), 300_000))
+
+    def test_same_content_under_another_name_is_reported_not_deleted(self):
+        copy = self.saved_bytes("copy")
+        self.assertEqual(copy, self.saved_bytes("ok"))
+        dupes = [e for e in self.events if e.get("type") == "duplicate"]
+        self.assertEqual(len(dupes), 1, dupes)  # whichever of the two finished second
+        self.assertIn(dupes[0]["url"], (self.urls["ok"], self.urls["copy"]))
+        self.assertTrue(Path(dupes[0]["path"]).exists() and Path(dupes[0]["of"]).exists())
 
     def test_truncated_transfer_is_never_saved(self):
         self.assertNotIn(self.urls["trunc"], self.saved)

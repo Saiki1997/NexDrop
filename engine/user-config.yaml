@@ -142,7 +142,7 @@ hashing:
   - md5
   - sha256
   dedupe:
-    enabled: true
+    enabled: false
     use_trash_bin: true
   mode: in_place
 ignore_hashes: false

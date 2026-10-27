@@ -137,6 +137,7 @@ def classify(reason: str, url: str = "") -> str:
     if status in (401, 403) or "do not have permission" in low or "forbidden" in low:
         return "auth_required"
     if status in (500, 502, 503, 504, 520, 521, 522, 523, 524) or "oops! we ran into some problems" in low \
+            or "site paused" in low or "is paused for" in low \
             or "service unavailable" in low or "bad gateway" in low or "maintenance" in low:
         return "server_busy"
     if "timeout" in low or "timed out" in low or status == 408:

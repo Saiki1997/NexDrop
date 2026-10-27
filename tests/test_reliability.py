@@ -192,9 +192,6 @@ class JobDatabase(unittest.TestCase):
         store.close()
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class CookieCopies(unittest.TestCase):
     NETSCAPE = "# Netscape HTTP Cookie File\n.simpcity.cr\tTRUE\t/\tTRUE\t1900000000\txf_user\tsecret\n"
@@ -218,3 +215,86 @@ class CookieCopies(unittest.TestCase):
                 self.assertNotIn(b"secret", path.read_bytes())  # DPAPI-encrypted for this Windows user
             path.write_text(self.NETSCAPE, encoding="utf-8")  # a 2.x plain file still reads
             self.assertEqual(bridge.read_protected(path), self.NETSCAPE)
+
+
+class EngineSafeguards(unittest.TestCase):
+    """The 3.0 bridge additions: per-site pause, slot recovery and duplicate-content reports."""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(ROOT / "engine"))
+        import bridge
+
+        cls.bridge = bridge
+
+    def test_site_pauses_after_repeated_server_errors_and_reopens_on_success(self):
+        breaker = self.bridge._SiteBreaker(threshold=3, cooldown=60, ceiling=600)
+        for _ in range(2):
+            self.assertEqual(breaker.failed("bunkr", "503 Service Unavailable", now=0), 0)
+        self.assertEqual(breaker.failed("bunkr", "503 Service Unavailable", now=0), 60)
+        self.assertEqual(breaker.blocked_for("bunkr", now=30), 30)
+        self.assertEqual(breaker.blocked_for("gofile", now=30), 0)  # other sites carry on
+        self.assertEqual(breaker.failed("bunkr", "Site Paused", now=30), 0)  # paused files don't count
+        # the probe after the pause fails: paused again, twice as long
+        self.assertEqual(breaker.failed("bunkr", "502 Bad Gateway", now=61), 120)
+        breaker.ok("bunkr")
+        self.assertEqual(breaker.blocked_for("bunkr", now=500), 0)
+        self.assertEqual(breaker.failed("bunkr", "500", now=500), 0)  # streak starts over
+
+    def test_other_errors_break_the_streak(self):
+        breaker = self.bridge._SiteBreaker(threshold=2)
+        breaker.failed("x", "503", now=0)
+        breaker.failed("x", "404 Not Found", now=0)
+        self.assertEqual(breaker.failed("x", "503", now=0), 0)
+        self.assertEqual(breaker.failed("x", "503", now=0), 60)
+
+    def test_site_paused_is_a_temporary_server_problem(self):
+        reason = "Site Paused: bunkr is paused for 60 s after repeated server errors"
+        self.assertEqual(error_classes.classify(reason), "server_busy")
+        self.assertTrue(error_classes.is_retryable("server_busy"))
+
+    def test_slowed_down_server_gets_connections_back_after_quiet_spells(self):
+        slots = self.bridge._ServerSlots()
+        slots.per_server = 3
+        slot = slots.get("s1.cdn")
+        slots.back_off("s1.cdn")
+        self.assertEqual(slot.limit, 1)
+        since = slots.reduced["s1.cdn"]
+        slots.ok("s1.cdn", now=since + 10)
+        self.assertEqual(slot.limit, 1)  # too soon
+        slots.ok("s1.cdn", now=since + slots.RECOVER_AFTER)
+        self.assertEqual(slot.limit, 2)
+        slots.ok("s1.cdn", now=since + slots.RECOVER_AFTER + 10)
+        self.assertEqual(slot.limit, 2)  # each step waits its own quiet spell
+        slots.ok("s1.cdn", now=since + 2 * slots.RECOVER_AFTER)
+        self.assertEqual(slot.limit, 3)
+        self.assertNotIn("s1.cdn", slots.reduced)
+
+    def test_duplicate_content_is_reported_and_both_files_kept(self):
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            first, second, other_size = tmp / "a.mp4", tmp / "b.mp4", tmp / "c.mp4"
+            first.write_bytes(b"same" * 100)
+            second.write_bytes(b"same" * 100)
+            other_size.write_bytes(b"same" * 50)
+            db = tmp / "cyberdrop.db"
+            conn = sqlite3.connect(db)
+            conn.execute("CREATE TABLE hash (folder TEXT, download_filename TEXT, hash_type TEXT, hash TEXT)")
+            for path in (first, second, other_size):
+                conn.execute("INSERT INTO hash VALUES (?, ?, 'xxh128', 'h1')", (str(path.parent), path.name))
+            conn.commit()
+            conn.close()
+            finder = self.bridge._Duplicates()
+            finder.conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+            self.assertEqual(finder.find("h1", second, 400), first)
+            self.assertIsNone(finder.find("h1", other_size, 200))  # same hash row, different size
+            self.assertIsNone(finder.find("h2", second, 400))
+            self.assertIsNone(finder.find(None, second, 400))
+            finder.conn.close()
+            self.assertTrue(first.exists() and second.exists())
+
+
+if __name__ == "__main__":
+    unittest.main()
