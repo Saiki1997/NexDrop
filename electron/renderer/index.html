@@ -248,6 +248,17 @@
       </section>
 
       <section class="pane" data-pane="network" hidden>
+        <label class="field">
+          <span class="field-label">Download mode</span>
+          <select id="download-mode" class="select">
+            <option value="auto">Auto (recommended): 16 at once, 6 per site</option>
+            <option value="balanced">Balanced: 8 at once, 4 per site</option>
+            <option value="max">Maximum speed: 24 at once, 10 per site</option>
+            <option value="low">Low resource: 3 at once, 2 per site</option>
+            <option value="custom">Custom: use the numbers below</option>
+          </select>
+          <small class="field-help">In every mode NexDrop slows down a site that answers "too many requests" and pauses one that keeps failing, while other sites keep going. Maximum speed is more likely to be refused by strict hosts.</small>
+        </label>
         <div class="field-grid">
           <label class="field"><span class="field-label">Downloads at once</span><input type="number" id="max-downloads" min="1" max="32" value="16"><small class="field-help">Up to 32. Page order always uses 1.</small></label>
           <label class="field"><span class="field-label">Per site</span><input type="number" id="per-host" min="1" max="16" value="6"><small class="field-help">Up to 16. Lower it if a site starts refusing (429 errors).</small></label>

@@ -57,6 +57,7 @@
     deepScrape: { el: "#deep-scrape", type: "check", def: false },
     flareSolver: { el: "#flare", type: "check", def: true },
     threadDepth: { el: "#thread-depth", type: "int", def: 0, min: 0, max: 3 },
+    downloadMode: { el: "#download-mode", type: "text", def: "auto", max: 20 },
     maxDownloads: { el: "#max-downloads", type: "int", def: 16, min: 1, max: 32 },
     perHost: { el: "#per-host", type: "int", def: 6, min: 1, max: 16 },
     serverSlots: { el: "#server-slots", type: "int", def: 3, min: 1, max: 6 },
@@ -98,7 +99,8 @@
     if (spec.type === "check") return el.checked;
     if (spec.type === "text") return String(el.value || "").trim().slice(0, spec.max);
     if (spec.type === "time") return fmt.clockMinutes(el.value) === null ? spec.def : el.value;
-    const n = parseInt(el.value, 10);
+    // a limit field locked by a download mode keeps the user's own number for Custom
+    const n = parseInt(el.disabled && el.dataset.custom !== undefined ? el.dataset.custom : el.value, 10);
     return Number.isFinite(n) ? Math.max(spec.min, Math.min(spec.max, n)) : spec.def;
   }
 
@@ -125,6 +127,23 @@
       if ((before.updateCheck !== false) !== prefs.updateCheck) api.updateAuto(prefs.updateCheck);
       showSchedule();
     }, 300);
+  }
+
+  // The three limit fields show the mode's numbers and can be edited only in Custom.
+  function showDownloadMode() {
+    const mode = $("#download-mode").value;
+    const custom = mode === "custom" || !fmt.DOWNLOAD_MODES[mode];
+    const limits = custom ? null : fmt.modeLimits(mode);
+    for (const [key, id] of [["maxDownloads", "#max-downloads"], ["perHost", "#per-host"], ["serverSlots", "#server-slots"]]) {
+      const input = $(id);
+      if (!custom) {
+        if (input.disabled === false) input.dataset.custom = input.value;  // keep the user's own numbers
+        input.value = limits[key];
+      } else if (input.disabled && input.dataset.custom) {
+        input.value = input.dataset.custom;
+      }
+      input.disabled = !custom;
+    }
   }
 
   function setOrder(mode) {
@@ -301,9 +320,8 @@
       deepScrape: prefs.deepScrape,
       flareSolver: prefs.flareSolver,
       threadDepth: prefs.threadDepth,
-      maxDownloads: prefs.maxDownloads,
-      perHost: prefs.perHost,
-      serverSlots: prefs.serverSlots,
+      downloadMode: prefs.downloadMode,
+      ...fmt.modeLimits(prefs.downloadMode, prefs),
       tiktokAudio: prefs.tiktokAudio,
       attempts: prefs.attempts,
       autoRetry: prefs.autoRetry,
@@ -1219,6 +1237,7 @@
       openSheet();
     }
   });
+  $("#download-mode").addEventListener("change", showDownloadMode);
   sheet.addEventListener("change", savePrefsSoon);
   $("#order-seg").addEventListener("click", (event) => {
     const button = event.target.closest("[data-order]");
@@ -1781,7 +1800,11 @@
     if (prefs.numbering === undefined && prefs.sequencePrefix === false) prefs.numbering = "off";
     // Test build 2: linked files are kept apart by host again unless asked otherwise.
     if (prefs.namingVersion !== 2) prefs.replaceGenericFolders = false;
+    // 3.0: download modes. Settings left at the old defaults become Auto; changed ones stay as Custom.
+    if (!prefs.downloadMode) prefs.downloadMode = fmt.guessMode(prefs);
     for (const [key, spec] of Object.entries(PREF_FIELDS)) writeField(spec, prefs[key]);
+    for (const id of ["#max-downloads", "#per-host", "#server-slots"]) $(id).dataset.custom = $(id).value;
+    showDownloadMode();
     prefs = collectPrefs();
     showSchedule();
     $("#app-version").textContent = `NEXDROP ${defaults.version || ""}`.trim();

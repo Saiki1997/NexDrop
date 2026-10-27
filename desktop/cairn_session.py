@@ -462,6 +462,10 @@ def _numbering(config: dict) -> str:
     return "suffix"
 
 
+DOWNLOAD_MODE_LABELS = {"auto": "Auto", "balanced": "Balanced", "max": "Maximum speed", "low": "Low resource",
+                        "custom": "Custom"}
+
+
 def _choice(value: object, allowed: tuple[str, ...], default: str) -> str:
     text = str(value or "").lower()
     return text if text in allowed else default
@@ -1365,6 +1369,10 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         "namingCorrections": str(CORRECTIONS) if config.get("learnNames") is not False else "",
         "embeddedTitles": bool(config.get("embeddedTitles")),
     }
+    if order_mode != "source":
+        mode = _choice(config.get("downloadMode"), tuple(DOWNLOAD_MODE_LABELS), "custom")
+        log("info", f"Download mode: {DOWNLOAD_MODE_LABELS[mode]}, {payload['maxDownloads']} at once, "
+                    f"{payload['perHost']} per site, {payload['serverSlots']} per server.")
     maintain_engine_db()  # tidy up after an earlier crash or forced stop
     env = os.environ.copy()
     env.update({

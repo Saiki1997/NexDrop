@@ -172,5 +172,32 @@
     return "";
   }
 
-  return { bytes, speed, mbps, duration, ago, parseLinks, host, finishText, compareVersions, clockMinutes, inTimeWindow, appLinkUrls, checksumFor };
+  /* Download modes: how many files at once, per site and per server. "custom" keeps the user's own numbers. */
+  const DOWNLOAD_MODES = {
+    auto: { maxDownloads: 16, perHost: 6, serverSlots: 3 },
+    balanced: { maxDownloads: 8, perHost: 4, serverSlots: 2 },
+    max: { maxDownloads: 24, perHost: 10, serverSlots: 4 },
+    low: { maxDownloads: 3, perHost: 2, serverSlots: 1 },
+  };
+
+  /** The limits a run uses for `mode`; custom (or an unknown mode) uses the numbers in `custom`. */
+  function modeLimits(mode, custom) {
+    const preset = DOWNLOAD_MODES[mode];
+    if (preset) return { ...preset };
+    const pick = (value, def, max) => {
+      const n = parseInt(value, 10);
+      return Number.isFinite(n) ? Math.max(1, Math.min(max, n)) : def;
+    };
+    const own = custom || {};
+    return { maxDownloads: pick(own.maxDownloads, 16, 32), perHost: pick(own.perHost, 6, 16), serverSlots: pick(own.serverSlots, 3, 6) };
+  }
+
+  /** The mode for settings saved before 3.0: the old defaults are Auto, anything changed is Custom. */
+  function guessMode(prefs) {
+    const p = prefs || {};
+    const same = ["maxDownloads", "perHost", "serverSlots"].every((k) => p[k] === undefined || p[k] === DOWNLOAD_MODES.auto[k]);
+    return same ? "auto" : "custom";
+  }
+
+  return { DOWNLOAD_MODES, modeLimits, guessMode, bytes, speed, mbps, duration, ago, parseLinks, host, finishText, compareVersions, clockMinutes, inTimeWindow, appLinkUrls, checksumFor };
 });
