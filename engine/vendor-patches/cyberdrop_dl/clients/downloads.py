@@ -142,12 +142,20 @@ class DownloadClient:
                 media_item.size = parsed[2]  # NEXDROP patch: part 1 of a split file asks for less than the rest
         elif not media_item.is_segment and media_item.partial_file:
             await aio.to_thread(segments.discard)(media_item.partial_file)  # parts of an older copy are useless now
-            resume_validators.save(media_item.partial_file, resp.headers, media_item.size, str(media_item.url))
         _set_upload_date(media_item, resp.headers)
         if not media_item.path:
+            first_partial = media_item.partial_file
             downloaded = await self._predownload_skip(media_item, domain)
             if downloaded is not None:
+                # NEXDROP patch: nothing to resume, so a sidecar an older version left beside the file goes too
+                for partial in {first_partial, media_item.partial_file}:
+                    if partial and not await aio.exists(partial):
+                        resume_validators.forget(partial)
                 return downloaded
+        if resp.status != HTTPStatus.PARTIAL_CONTENT and not media_item.is_segment and media_item.partial_file:
+            # NEXDROP patch: written once the file is really started, beside the ".part" it belongs to.
+            # Written before the skip checks above, a file found already downloaded left it behind.
+            resume_validators.save(media_item.partial_file, resp.headers, media_item.size, str(media_item.url))
 
         layout = self._segment_layout(media_item, resp, resume_point)
         hook = self._make_hook(media_item)

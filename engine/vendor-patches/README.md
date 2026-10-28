@@ -164,6 +164,13 @@ Smart naming V2 (2.5.0):
 - `cyberdrop_dl/clients/downloads.py` (3.1): a file a size rule skips before any byte is written no longer leaves its
   `.part.nxmeta` sidecar behind (`resume_validators.forget`).
 
+3.1.2:
+- `cyberdrop_dl/clients/downloads.py`: the resume sidecar (`.part.nxmeta`) is written after the "already downloaded"
+  checks, beside the `.part` file the download really uses; a skipped file removes a sidecar an older version left.
+- `cyberdrop_dl/smart_naming.py`: `context_folder()` gives a post without a usable title a `Post <id>` folder;
+  `clean_title()` drops download prompts, `@@`, inner file extensions and sizes; more junk titles ("discussion thread");
+  `embedded_name()` takes dates out like the other names.
+
 3.1.1:
 - `cyberdrop_dl/name_dates.py` (new): `strip_dates()` removes whole calendar dates from a name.
 - `cyberdrop_dl/smart_naming.py`: "Take dates out of names" (`stripDates`, applied to the title before numbering and to
