@@ -1,4 +1,4 @@
-# NEXDROP (unreleased)
+# NEXDROP 3.1.4
 
 ## Download order
 - **File numbers follow the post's layout, also for images hosted on other sites.** A post is read left to right, then down. Images uploaded to the forum were already numbered in that order, but images on other sites (jpg5, imgbox, pixhost, Cyberdrop…) got their number when that site answered, so `-001`, `-002`… could come out shuffled. Each link now gets its number when the post lists it, in **Page order** and **Parallel**. A link that turns out to hold several files (an album) gives its first file that number; the rest are numbered after the others. A link that fails leaves a gap in the numbers. **Fastest** is unchanged.
