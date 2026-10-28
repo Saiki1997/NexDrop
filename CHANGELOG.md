@@ -1,3 +1,10 @@
+# NEXDROP 3.1.3
+
+## Folders and names
+- **Folders for untitled posts are named like their files.** In 3.1.2, a post with no usable title got a folder called `Post 114048`. Now the folder takes the name its files got. Files saved as `Lala kudo-001.jpg`, `Lala kudo-002.jpg`… go into a `Lala kudo` folder, even when the thread folder has the same name. Another untitled post in the same thread gets `Lala kudo (2)`, and running the job again uses the same folders. `Post <number>` is used only when the files have no name in common (for example, files that keep their camera names in a thread with no usable title).
+
+Folders already on disk are not renamed. **Library → Organize and rename** can move files, with a preview and undo.
+
 # NEXDROP 3.1.2
 
 ## Fixes
