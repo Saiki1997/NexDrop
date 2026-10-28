@@ -456,6 +456,29 @@ def _pick_name(original: str, final: str, disposition: str | None) -> str:
 
 _NAME_LOCK = threading.Lock()
 TYPE_FOLDERS_ON = False
+STRIP_DATES = False  # "Take dates out of names" (3.1.1), also for direct files
+
+
+_NAME_DATES = None
+
+
+def _strip_dates(name: str) -> str:
+    """The file name without whole dates in its stem (engine patch cyberdrop_dl/name_dates.py)."""
+    global _NAME_DATES
+    try:
+        if _NAME_DATES is None:
+            import importlib.util
+
+            spec = importlib.util.spec_from_file_location("nexdrop_name_dates", VENDOR / "cyberdrop_dl" / "name_dates.py")
+            _NAME_DATES = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(_NAME_DATES)
+    except Exception:  # noqa: BLE001 - a name with a date is better than no file
+        _NAME_DATES = None
+        return name
+    module = _NAME_DATES
+    path = Path(name)
+    stem = module.strip_dates(path.stem)
+    return stem + path.suffix if stem else name
 _IMAGE = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".bmp", ".heic", ".jxl", ".tif", ".tiff"}
 _VIDEO = {".mp4", ".webm", ".mkv", ".mov", ".m4v", ".avi", ".ts", ".m3u8", ".flv", ".wmv", ".mpg", ".mpeg"}
 _AUDIO = {".mp3", ".m4a", ".flac", ".wav", ".ogg", ".opus", ".aac"}
@@ -640,6 +663,8 @@ def _http_save(url: str, folder: Path, *, in_slot: bool) -> dict:
             response.close()
             raise ValueError("File exceeds the 80 MB transfer limit")
         name_guess = _pick_name(url, current, response.headers.get("Content-Disposition"))
+        if STRIP_DATES:
+            name_guess = _strip_dates(name_guess)
         verdict = rule_engine.decide(RULES, rule_engine.facts(url, name_guess, size=total)) if RULES else {}
         if verdict.get("skip"):
             response.close()
@@ -1436,8 +1461,9 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
     if STOP.is_set():
         return _finish(urls, folder, [], rejected, [], started, stopped=True, store=store, job_id=job_id)
 
-    global NUMBERED, NUMBER_MODE, JOB_KEY, TYPE_FOLDERS_ON
+    global NUMBERED, NUMBER_MODE, JOB_KEY, TYPE_FOLDERS_ON, STRIP_DATES
     TYPE_FOLDERS_ON = bool(config.get("typeFolders"))
+    STRIP_DATES = (config.get("stripDates") is not False) and config.get("smartNames") is not False
     NUMBER_MODE = _numbering(config)
     NUMBERED = NUMBER_MODE != "off"
     JOB_KEY = job_key(urls)
@@ -1497,6 +1523,8 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         "siteInFolder": bool(config.get("siteInFolder")),
         "replaceGenericFolders": bool(config.get("replaceGenericFolders")),
         "titleFolders": True if config.get("titleFolders") is None else bool(config.get("titleFolders")),
+        "contextFolders": True if config.get("contextFolders") is None else bool(config.get("contextFolders")),
+        "stripDates": True if config.get("stripDates") is None else bool(config.get("stripDates")),
         "keepMeaningfulNames": True if config.get("keepMeaningfulNames") is None else bool(config.get("keepMeaningfulNames")),
         "maxNameLength": _int(config.get("maxNameLength"), 120, 20, 200),
         "jobKey": JOB_KEY,

@@ -133,7 +133,8 @@ class CrossDomain(SmartCase):
             self.save(host, child, f"https://cdn.bunkr.ru/{name}?n={name}&token=SECRET", name)
         self.assertEqual([m.filename for m in saved], ["Summer Beach Collection-001.jpg", "Sunset at Beach-002.jpg"])
         self.assertEqual(saved[0].download_folder.relative_to(self.root).as_posix(), "Lala Kudo/a827fc8b/Summer Beach Collection")
-        self.assertEqual(saved[1].download_folder.relative_to(self.root).as_posix(), "Lala Kudo/a827fc8b")  # its own name
+        # its own name, and with "Folder for each post or album" (3.1.1) the same post's folder
+        self.assertEqual(saved[1].download_folder.relative_to(self.root).as_posix(), "Lala Kudo/a827fc8b/Summer Beach Collection")
 
     def test_a_post_without_text_does_not_inherit_the_previous_posts_caption(self):
         from cyberdrop_dl.crawlers.xenforo.simpcity import SimpCityCrawler

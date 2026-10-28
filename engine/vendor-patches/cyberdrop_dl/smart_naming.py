@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from cyberdrop_dl import source_order
+from cyberdrop_dl.name_dates import strip_dates
 
 if TYPE_CHECKING:
     from bs4 import BeautifulSoup
@@ -47,6 +48,8 @@ class NamingSettings:
     group_titles: bool = False  # Folder for each title: "Leaked set pics-193.jpg" in "Leaked set pics/"
     template: str = ""  # Filename template (3.0), "" for the automatic name
     width: int = 3  # digits in the sequence number (3.0)
+    context_folders: bool = False  # Folder for each post or album (3.1.1), also for files that keep their own name
+    strip_dates: bool = False  # Take dates out of file and folder names (3.1.1)
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> NamingSettings:
@@ -83,6 +86,8 @@ class NamingSettings:
             group_titles=flag("titleFolders", True),
             template=clean_template(payload.get("nameTemplate")),
             width=width if width in (3, 4, 5) else 3,
+            context_folders=flag("contextFolders", True),
+            strip_dates=flag("stripDates", True),
         )
 
     def fingerprint(self) -> str:
@@ -95,6 +100,8 @@ class NamingSettings:
             base += f".w{self.width}"
         if self.template:
             base += ".t" + "".join(f"{ord(c):x}" for c in self.template)[:64]
+        if self.strip_dates:
+            base += ".nd"  # 3.1.1: names kept from an older run may still have their dates
         return base
 
     def describe(self) -> str:
@@ -104,7 +111,8 @@ class NamingSettings:
                    "original": "original folders"}[self.folders]
         site = ", site name in folders" if self.site_in_folder else ""
         template = f", template {self.template}" if self.template else ""
-        return f"{names}, {number}, {folders}{site}{template}"
+        extra = (", a folder for each post or album" if self.context_folders else "") + (", no dates in names" if self.strip_dates else "")
+        return f"{names}, {number}, {folders}{site}{template}{extra}"
 
 
 SETTINGS: ContextVar[NamingSettings] = ContextVar("NEXDROP_NAMING", default=NamingSettings())
@@ -1121,7 +1129,8 @@ def name_file(
         title = str(row.get("title") or "")
         return Decision(name, number, title, "kept from this job", float(row.get("confidence") or 1),
                         chosen, str(row.get("strategy") or settings.strategy), "same file as earlier in this job",
-                        group=title_folder(title, str(row.get("source") or ""), folder, settings))
+                        group=title_folder(title, str(row.get("source") or ""), folder, settings)
+                        or context_folder(naming, folder, settings))
     if thumbnail or is_multipart_archive(chosen):
         why = "thumbnail" if thumbnail else "parts of a split archive must keep one name"
         return Decision(chosen, number, chosen, "original filename", 1.0, chosen, "original", why)
@@ -1140,6 +1149,8 @@ def name_file(
     if room < limit:
         limit = max(16, room)
     title = windows_safe(sanitize(title + extension).removesuffix(extension) or stem, stem or "file")
+    if settings.strip_dates:
+        title = strip_dates(title)
     shaped = ""
     if settings.template:
         values = template_values(title, stem, extension, naming, page_url, date)
@@ -1160,7 +1171,8 @@ def name_file(
         UNNAMED[str(url)] = number
     return Decision(name, number, title, source, round(confidence, 2), chosen,
                     settings.strategy if settings.smart else "off", reason, candidates,
-                    group=title_folder(title, source, folder, settings) if settings.smart else "")
+                    group=(title_folder(title, source, folder, settings) if settings.smart else "")
+                    or context_folder(naming, folder, settings))
 
 
 # Titles that several files share (a post's caption, an album): with "Folder for each title" on,
@@ -1179,11 +1191,32 @@ def title_folder(title: str, source: str, folder: Path, settings: NamingSettings
     the name is the file's own, or the folder it is in (or one above) already has that title."""
     if not settings.group_titles or not title or source not in _GROUP_SOURCES:
         return ""
+    return _folder_name(title, folder, settings)
+
+
+def _folder_name(title: str, folder: Path, settings: NamingSettings) -> str:
+    if settings.strip_dates:
+        title = strip_dates(title)
     name = windows_safe(_fit(title, "", 80), "")
     key = _norm(name)
-    if not key or any(_folder_base(part) == key for part in folder.parts[-6:]):
+    if not key or any(_folder_base(part) == key or _folder_base(strip_dates(part)) == key for part in folder.parts[-6:]):
         return ""
     return name
+
+
+def context_folder(naming: dict[str, str], folder: Path, settings: NamingSettings) -> str:
+    """"Folder for each post or album" (3.1.1): the folder named after the post or album a file came
+    from, also when the file keeps its own name. "" when the setting is off, the file has no post or
+    album title worth a folder, or the folder it is in (or one above) already has that title."""
+    if not settings.context_folders:
+        return ""
+    for value, post_text in ((naming.get("post_title"), False), (naming.get("caption"), True), (naming.get("album"), False)):
+        title = clean_title(value, 80, post_text=post_text) if value else ""
+        if settings.strip_dates:
+            title = strip_dates(title)
+        if title and assess(title)[0] >= ACCEPT:
+            return _folder_name(title, folder, settings)
+    return ""
 
 
 UNNAMED: dict[str, int] = {}  # file url -> its number, for files that kept a meaningless original name

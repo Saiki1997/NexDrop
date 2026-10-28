@@ -51,7 +51,10 @@ class Templates(unittest.TestCase):
         old = NamingSettings.from_payload({})
         self.assertEqual(old.template, "")
         self.assertEqual(old.width, 3)
-        self.assertEqual(old.fingerprint(), "1.auto.suffix.1.120")  # 2.5 names of a resumed job are kept
+        # 3.1.1 takes dates out of names, so names an older version kept are made again...
+        self.assertEqual(old.fingerprint(), "1.auto.suffix.1.120.nd")
+        # ...unless that is turned off: then 2.5 names of a resumed job are kept
+        self.assertEqual(NamingSettings.from_payload({"stripDates": False}).fingerprint(), "1.auto.suffix.1.120")
         new = NamingSettings.from_payload({"nameTemplate": "{creator}-{title}", "numberWidth": 4})
         self.assertNotEqual(new.fingerprint(), old.fingerprint())
         self.assertEqual(NamingSettings.from_payload({"numberWidth": 9}).width, 3)
