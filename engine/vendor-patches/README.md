@@ -164,6 +164,11 @@ Smart naming V2 (2.5.0):
 - `cyberdrop_dl/clients/downloads.py` (3.1): a file a size rule skips before any byte is written no longer leaves its
   `.part.nxmeta` sidecar behind (`resume_validators.forget`).
 
+3.1.3:
+- `cyberdrop_dl/smart_naming.py`: `context_folder()` names the folder of an untitled post after the title its files got
+  (when that title is shared, such as the thread title), claimed in the folder registry per post so a second such post
+  gets "(2)"; "Post <id>" only when there is no shared title.
+
 3.1.2:
 - `cyberdrop_dl/clients/downloads.py`: the resume sidecar (`.part.nxmeta`) is written after the "already downloaded"
   checks, beside the `.part` file the download really uses; a skipped file removes a sidecar an older version left.

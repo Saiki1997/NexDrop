@@ -1150,7 +1150,7 @@ def name_file(
         return Decision(name, number, title, "kept from this job", float(row.get("confidence") or 1),
                         chosen, str(row.get("strategy") or settings.strategy), "same file as earlier in this job",
                         group=title_folder(title, str(row.get("source") or ""), folder, settings)
-                        or context_folder(naming, folder, settings))
+                        or context_folder(naming, folder, settings, title, str(row.get("source") or "")))
     if thumbnail or is_multipart_archive(chosen):
         why = "thumbnail" if thumbnail else "parts of a split archive must keep one name"
         return Decision(chosen, number, chosen, "original filename", 1.0, chosen, "original", why)
@@ -1192,7 +1192,7 @@ def name_file(
     return Decision(name, number, title, source, round(confidence, 2), chosen,
                     settings.strategy if settings.smart else "off", reason, candidates,
                     group=(title_folder(title, source, folder, settings) if settings.smart else "")
-                    or context_folder(naming, folder, settings))
+                    or context_folder(naming, folder, settings, title if settings.smart else "", source))
 
 
 # Titles that several files share (a post's caption, an album): with "Folder for each title" on,
@@ -1224,7 +1224,8 @@ def _folder_name(title: str, folder: Path, settings: NamingSettings) -> str:
     return name
 
 
-def context_folder(naming: dict[str, str], folder: Path, settings: NamingSettings) -> str:
+def context_folder(naming: dict[str, str], folder: Path, settings: NamingSettings, file_title: str = "",
+                   source: str = "") -> str:
     """"Folder for each post or album" (3.1.1): the folder named after the post or album a file came
     from, also when the file keeps its own name. "" when the setting is off, the file has no post or
     album title worth a folder, or the folder it is in (or one above) already has that title."""
@@ -1236,11 +1237,19 @@ def context_folder(naming: dict[str, str], folder: Path, settings: NamingSetting
             title = strip_dates(title)
         if title and assess(title)[0] >= ACCEPT:
             return _folder_name(title, folder, settings)
-    # 3.1.2: a post without a title worth a folder still gets one, so its files are kept together
-    # instead of loose in the thread's folder
-    if post_id := re.sub(r"\D", "", str(naming.get("post_id") or "")):
+    # A post without a title worth a folder still gets one, so its files are kept together instead of
+    # loose in the thread's folder. 3.1.3: named like its files ("Lala kudo-001.jpg" -> "Lala kudo"),
+    # also when the thread has that name; another such post gets "Lala kudo (2)". "Post <number>"
+    # only when the files have no shared name.
+    post_id = re.sub(r"\D", "", str(naming.get("post_id") or ""))
+    if not post_id:
+        return ""
+    if settings.strip_dates:
+        file_title = strip_dates(file_title)
+    name = windows_safe(_fit(file_title, "", 80), "") if file_title and source in _GROUP_SOURCES else ""
+    if not name or assess(name)[0] < ACCEPT:
         return _folder_name(f"Post {post_id}", folder, settings)
-    return ""
+    return REGISTRY.claim(str(folder), name, naming.get("post_key") or f"post:{post_id}", folder)
 
 
 UNNAMED: dict[str, int] = {}  # file url -> its number, for files that kept a meaningless original name

@@ -41,7 +41,7 @@ class StripDates(unittest.TestCase):
 
 
 class InARun(SmartCase):
-    def _post_files(self, caption: str, names: tuple[str, ...], **payload):
+    def _post_files(self, caption: str, names: tuple[str, ...], thread_title: str = "JAV", post_id: str = "9", **payload):
         from cyberdrop_dl.crawlers.bunkr import BunkrCrawler
         from cyberdrop_dl.crawlers.xenforo.simpcity import SimpCityCrawler
 
@@ -51,12 +51,12 @@ class InARun(SmartCase):
             host, saved = _crawler(BunkrCrawler, self.root)
             thread = self.item("https://simpcity.cr/threads/jav.123/")
             thread.setup_as_forum("")
-            thread.append_folders(forum.create_title("JAV", thread_id=123))
-            post = thread.create_new(thread.url, add_parent=URL("https://simpcity.cr/threads/jav.123/post-9"))
+            thread.append_folders(forum.create_title(thread_title, thread_id=123))
+            post = thread.create_new(thread.url, add_parent=URL(f"https://simpcity.cr/threads/jav.123/post-{post_id}"))
             post.setup_as_post("")
-            post.append_folders(forum.create_separate_post_title(None, "9", None, caption=caption))
+            post.append_folders(forum.create_separate_post_title(None, post_id, None, caption=caption))
             for n, name in enumerate(names, 1):
-                link = post.create_child(URL(f"https://bunkr.cr/f/{n}"))
+                link = post.create_child(URL(f"https://bunkr.cr/f/{post_id}-{n}"))
                 link.reset()  # handle_external_links
                 self.save(host, link, f"https://cdn.bunkr.ru/{name}", name)
             return saved
@@ -80,12 +80,23 @@ class InARun(SmartCase):
         self.assertEqual(saved[0].download_folder.relative_to(self.root).as_posix(), "JAV")
 
 
-    def test_a_post_without_a_usable_title_still_gets_its_own_folder(self):
+    def test_an_untitled_post_folder_is_named_like_its_files(self):
+        # 3.1.3: "Lala kudo-001.jpg" goes into "Lala kudo", not "Post 114048"; the next such post gets "(2)"
+        first = self._post_files("", ("IMG_1234.jpg", "a8f9c0d1e2.jpg"), thread_title="Lala kudo", post_id="114048")
+        second = self._post_files("thanks!", ("IMG_5678.jpg",), thread_title="Lala kudo", post_id="232714")
+        again = self._post_files("", ("IMG_1234.jpg",), thread_title="Lala kudo", post_id="114048")
+        rel = lambda m: m.download_folder.relative_to(self.root).as_posix()  # noqa: E731
+        self.assertEqual({rel(m) for m in first}, {"Lala kudo/Lala kudo"})
+        self.assertEqual([m.filename for m in first], ["Lala kudo-001.jpg", "Lala kudo-002.jpg"])
+        self.assertEqual(rel(second[0]), "Lala kudo/Lala kudo (2)")
+        self.assertEqual(rel(again[0]), "Lala kudo/Lala kudo")  # the same post keeps its folder
+
+    def test_a_post_without_any_usable_name_gets_a_numbered_folder(self):
         # 3.1.2: these files stayed loose in the thread folder ("Discussion Thread-003.jpg")
         for caption in ("", None, "Discussion Thread", "thanks!", "https://bunkr.cr/a/xyz"):
-            saved = self._post_files(caption, ("IMG_1234.jpg", "a8f9c0d1e2.jpg", "video.mp4"))
+            saved = self._post_files(caption, ("IMG_1234.jpg", "a8f9c0d1e2.jpg", "video.mp4"), thread_title="Discussion Thread")
             folders = {m.download_folder.relative_to(self.root).as_posix() for m in saved}
-            self.assertEqual(folders, {"JAV/Post 9"}, caption)
+            self.assertEqual(folders, {"Discussion Thread/Post 9"}, caption)
 
     def test_download_prompts_sizes_and_extensions_leave_the_title(self):
         saved = self._post_files("Download @@PIYO-116 Some Title.mp4 (1.2 GB)", ("a8f9c0d1e2.jpg", "video.mp4"))
