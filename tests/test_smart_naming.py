@@ -265,10 +265,14 @@ class FolderNames(SmartCase):
         self.assertEqual(self._linked_file(), "Model ABC - Photoshoot Collection/Summer Photoshoot 2026")
 
     def test_files_linked_from_a_thread_never_get_a_loose_files_folder(self):
-        self.assertEqual(self._linked_file(titleFolders=False), "Model ABC - Photoshoot Collection")
+        self.assertEqual(self._linked_file(titleFolders=False, contextFolders=False), "Model ABC - Photoshoot Collection")
 
     def test_replace_generic_folders_puts_linked_files_in_the_thread_folder(self):
-        self.assertEqual(self._linked_file(replaceGenericFolders=True, titleFolders=False), "Model ABC - Photoshoot Collection")
+        self.assertEqual(self._linked_file(replaceGenericFolders=True, titleFolders=False, contextFolders=False),
+                         "Model ABC - Photoshoot Collection")
+
+    def test_folder_for_each_post_works_without_title_folders(self):
+        self.assertEqual(self._linked_file(titleFolders=False), "Model ABC - Photoshoot Collection/Summer Photoshoot 2026")
 
     def test_a_file_with_no_title_anywhere_goes_to_the_download_folder(self):
         from cyberdrop_dl.crawlers.gofile import GoFileCrawler

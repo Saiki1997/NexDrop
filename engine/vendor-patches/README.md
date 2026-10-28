@@ -163,3 +163,10 @@ Smart naming V2 (2.5.0):
   marks the link "one stream" for the run and retries it whole. Hosts that asked to slow down get one stream.
 - `cyberdrop_dl/clients/downloads.py` (3.1): a file a size rule skips before any byte is written no longer leaves its
   `.part.nxmeta` sidecar behind (`resume_validators.forget`).
+
+3.1.1:
+- `cyberdrop_dl/name_dates.py` (new): `strip_dates()` removes whole calendar dates from a name.
+- `cyberdrop_dl/smart_naming.py`: "Take dates out of names" (`stripDates`, applied to the title before numbering and to
+  title folders; part of the fingerprint as `.nd` so names kept from an older run are made again) and "Folder for each post
+  or album" (`contextFolders`, `context_folder()`: the post title, caption or album title of a file that would otherwise
+  get no folder, when it scores as a real title).

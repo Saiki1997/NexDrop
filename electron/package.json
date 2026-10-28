@@ -1,7 +1,7 @@
 {
   "name": "nexdrop",
   "productName": "NEXDROP",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "private": true,
   "description": "NexDrop desktop download manager powered by patched Cyberdrop-DL 10.10.0",
   "main": "main.js",
