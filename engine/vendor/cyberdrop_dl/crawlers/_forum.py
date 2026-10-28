@@ -18,7 +18,7 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, final
 
 from cyberdrop_dl import aio
-from cyberdrop_dl.source_order import ORDER_MODE, order_urls
+from cyberdrop_dl.source_order import ORDER_MODE, POST_GATE, PostGate, order_urls, reserve
 from cyberdrop_dl.smart_naming import forum_caption  # NEXDROP patch
 from cyberdrop_dl.crawlers.crawler import Crawler
 from cyberdrop_dl.exceptions import LoginError, MaxChildrenError, ScrapeError
@@ -295,23 +295,27 @@ class MessageBoardCrawler(Crawler, is_abc=True):
 
     @final
     @error_handling_wrapper
-    async def handle_link(self, scrape_item: ScrapeItem, link: AbsoluteHttpURL) -> None:
+    async def handle_link(self, scrape_item: ScrapeItem, link: AbsoluteHttpURL, *, slot: int | None = None) -> None:
         if link == self.PRIMARY_URL:
             return None
         if self.is_attachment(link):
-            return await self.handle_internal_link(scrape_item, link)
+            return await self.handle_internal_link(scrape_item, link, slot=slot)
         if self.PRIMARY_URL.host == link.host:
             self.create_task(self.run(scrape_item.create_child(link)))
             return None
         new_scrape_item = scrape_item.create_child(link)
+        new_scrape_item.sequence_slot = slot
         self.handle_external_links(new_scrape_item)
         scrape_item.add_children()
 
     @error_handling_wrapper
-    async def handle_internal_link(self, scrape_item: ScrapeItem, link: AbsoluteHttpURL | None = None) -> None:
+    async def handle_internal_link(
+        self, scrape_item: ScrapeItem, link: AbsoluteHttpURL | None = None, *, slot: int | None = None
+    ) -> None:
         link = link or scrape_item.url
         filename, ext = self.get_filename_and_ext(link.name)
         new_scrape_item = scrape_item.copy()
+        new_scrape_item.sequence_slot = slot
         new_scrape_item.append_folders("Attachments")
         new_scrape_item.part_of_album = True
         await self.handle_file(link, new_scrape_item, filename, ext)
@@ -492,14 +496,23 @@ class HTMLMessageBoardCrawler(MessageBoardCrawler, is_abc=True):
         ordered = self._collect_post_urls(post)
         self.log.info("Ordering method document for post %s (%s item(s))", post.id, len(ordered))
         embedded = self._embedded_urls(post)
+        # NEXDROP patch (3.1.4): numbers follow the post's layout even when links on other sites answer late
+        slots = {url: reserve(url) for url in ordered} if ORDER_MODE.get() != "fastest" else {}
         if ORDER_MODE.get() == "source":
-            for url in ordered:
-                await self.process_child(scrape_item, url, embeds=url in embedded)
-                scrape_item.add_children()
+            # Page order: this post's files, links on other sites included, finish before the next post
+            gate = PostGate()
+            token = POST_GATE.set(gate)
+            try:
+                for url in ordered:
+                    await self.process_child(scrape_item, url, embeds=url in embedded, slot=slots.get(url))
+                    scrape_item.add_children()
+            finally:
+                POST_GATE.reset(token)
+            await gate.wait()
         else:
             async with self.new_task_group() as tg:
                 for url in ordered:
-                    tg.create_task(self.process_child(scrape_item, url, embeds=url in embedded))
+                    tg.create_task(self.process_child(scrape_item, url, embeds=url in embedded, slot=slots.get(url)))
                     scrape_item.add_children()
 
     def _collect_post_urls(self, post: ForumPostProtocol) -> list[str]:
@@ -570,7 +583,9 @@ class HTMLMessageBoardCrawler(MessageBoardCrawler, is_abc=True):
 
     @final
     @error_handling_wrapper
-    async def process_child(self, scrape_item: ScrapeItem, link_str: str, *, embeds: bool = False) -> None:
+    async def process_child(
+        self, scrape_item: ScrapeItem, link_str: str, *, embeds: bool = False, slot: int | None = None
+    ) -> None:
         link_str_ = pre_process_child(link_str, embeds=embeds)
         if not link_str_:
             return None
@@ -581,7 +596,7 @@ class HTMLMessageBoardCrawler(MessageBoardCrawler, is_abc=True):
             link = self.thumbnail_to_img(link)
             if not link:
                 return self.log.info(f"Skipping thumbnail: {link}")
-        await self.handle_link(scrape_item, link)
+        await self.handle_link(scrape_item, link, slot=slot)
 
     async def get_absolute_link(self, link: str | AbsoluteHttpURL) -> AbsoluteHttpURL | None:
         absolute_link = link if type(link) is AbsoluteHttpURL else self.parse_url(clean_link_str(link))
@@ -608,13 +623,17 @@ class HTMLMessageBoardCrawler(MessageBoardCrawler, is_abc=True):
         return await self.get_absolute_link(new_link)
 
     @error_handling_wrapper
-    async def handle_internal_link(self, scrape_item: ScrapeItem, link: AbsoluteHttpURL | None = None) -> None:
+    async def handle_internal_link(
+        self, scrape_item: ScrapeItem, link: AbsoluteHttpURL | None = None, *, slot: int | None = None
+    ) -> None:
         link = link or scrape_item.url
         slug = link.name or link.parent.name
         if slug.isdigit():
-            return await self.follow_redirect(scrape_item.create_new(link))
+            redirect = scrape_item.create_new(link)
+            redirect.sequence_slot = slot
+            return await self.follow_redirect(redirect)
 
-        await super().handle_internal_link(scrape_item, link)
+        await super().handle_internal_link(scrape_item, link, slot=slot)
 
     @classmethod
     def is_username_or_attachment(cls, link_obj: Tag) -> bool:

@@ -47,11 +47,13 @@ class DiscourseCrawler(MessageBoardCrawler, is_generic=True):
         return "uploads" in AbsoluteHttpURL(link).parts
 
     @error_handling_wrapper
-    async def handle_internal_link(self, scrape_item: ScrapeItem, link: AbsoluteHttpURL | None = None) -> None:
+    async def handle_internal_link(
+        self, scrape_item: ScrapeItem, link: AbsoluteHttpURL | None = None, *, slot: int | None = None
+    ) -> None:  # NEXDROP patch (3.1.4): passes on the page-order number
         link = link or scrape_item.url
         if len(link.parts) < 5 and not link.suffix:
             return
-        await super().handle_internal_link(scrape_item, link)
+        await super().handle_internal_link(scrape_item, link, slot=slot)
 
     async def fetch(self, scrape_item: ScrapeItem) -> None:
         match scrape_item.url.parts[1:]:

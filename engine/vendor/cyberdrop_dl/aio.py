@@ -16,6 +16,7 @@ from weakref import WeakValueDictionary
 from aiolimiter.leakybucket import AsyncLimiter
 
 from cyberdrop_dl.constants import MISSING
+from cyberdrop_dl.source_order import track
 
 if TYPE_CHECKING:
     from collections.abc import (
@@ -44,17 +45,18 @@ class EagerTaskGroup(asyncio.TaskGroup):
         super().__init__()
         self.done: asyncio.Event = asyncio.Event()
 
-    if sys.version_info < (3, 14, 0):
-
-        @override
-        def create_task(
-            self,
-            coro: Coroutine[Any, Any, _T_co],
-            *,
-            name: str | None = None,
-            context: Context | None = None,
-            eager_start: bool | None = None,
-        ) -> asyncio.Task[_T_co]:
+    @override
+    def create_task(
+        self,
+        coro: Coroutine[Any, Any, _T_co],
+        *,
+        name: str | None = None,
+        context: Context | None = None,
+        eager_start: bool | None = None,
+    ) -> asyncio.Task[_T_co]:
+        if sys.version_info >= (3, 14, 0):
+            task = super().create_task(coro, name=name, context=context, eager_start=eager_start)
+        else:
             if eager_start is False:
 
                 async def lazy() -> _T_co:
@@ -65,7 +67,9 @@ class EagerTaskGroup(asyncio.TaskGroup):
             else:
                 run = coro
 
-            return super().create_task(run, name=name, context=context)
+            task = super().create_task(run, name=name, context=context)
+        track(task)  # NEXDROP patch (3.1.4): Page order waits for everything a post started
+        return task
 
     async def __aexit__(
         self,

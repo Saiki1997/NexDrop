@@ -267,6 +267,8 @@ class ScrapeItem:
     album_title: str | None = None
     album_index: int | None = None
     _album_children: int = 0
+    # NEXDROP patch (3.1.4): the number this link got where a post listed it (source_order.reserve)
+    sequence_slot: int | None = None
     # NEXDROP patch (smart naming): what the pages said about this file (album, thread, post,
     # caption...) and, for each entry in `folders`, its kind and owner key.
     naming: dict[str, str] = dataclasses.field(default_factory=dict)

@@ -1137,12 +1137,14 @@ def name_file(
     *,
     thumbnail: bool = False,
     date: str = "",
+    slot: int | None = None,
 ) -> Decision:
     """The saved filename for one file, numbered in source order for this job.
 
-    `date` is the upload date ("2026-10-27") for a filename template's {date}, or ""."""
+    `date` is the upload date ("2026-10-27") for a filename template's {date}, or "".
+    `slot` is the number the file's link got where the page listed it (source_order.reserve)."""
     settings = SETTINGS.get()
-    number = source_order.assign(str(url))
+    number = source_order.assign(str(url), slot)
     row = source_order.stored(str(url))
     if row and row.get("naming") == settings.fingerprint():
         name = str(row.get("name"))

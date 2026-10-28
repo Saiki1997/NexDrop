@@ -603,6 +603,7 @@ class Crawler(HTTPMixin, HLSMixin, ABC):
                 lambda name: sanitize_filename(name, "-"),
                 thumbnail=frag == "thumbnail",
                 date=_upload_date(uploaded_at or scrape_item.uploaded_at),
+                slot=scrape_item.sequence_slot,
             )
             number, chosen = decision.number, decision.filename
             if decision.group and not (scrape_item.retry_info and USE_RETRY_PATH.get()):
@@ -623,7 +624,9 @@ class Crawler(HTTPMixin, HLSMixin, ABC):
                 "-",
             )
         if decision is None:
-            number, chosen = numbered_filename(str(url), chosen, enabled=False if use_album else None)
+            number, chosen = numbered_filename(
+                str(url), chosen, enabled=False if use_album else None, slot=scrape_item.sequence_slot
+            )
         _log_order(number, url, chosen, download_folder, self.config.download_folder, filename, decision, scrape_item,
                    file_naming, ext or Path(filename).suffix)
         media_item = MediaItem(
