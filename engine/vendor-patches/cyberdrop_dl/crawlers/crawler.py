@@ -588,6 +588,9 @@ class Crawler(HTTPMixin, HLSMixin, ABC):
         file_naming = scrape_item.naming
         if media_title or media_caption:
             file_naming = {**file_naming, "media_title": media_title or "", "media_caption": media_caption or ""}
+        levels = scrape_item.folder_levels()
+        if levels and levels[-1][1] == "post":  # NEXDROP patch (3.1.2): the post already has its own folder
+            file_naming = {**file_naming, "in_post_folder": "1"}
         if naming.smart or naming.numbering == "suffix":
             # NEXDROP patch: smart naming picks the name from the crawl's metadata
             decision = smart_naming.name_file(

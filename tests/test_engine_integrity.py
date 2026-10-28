@@ -114,6 +114,24 @@ class RetryDelay(unittest.TestCase):
         self.assertEqual(retry_after_seconds("Mon, 26 Oct 2020 10:00:00 GMT"), 0.0)
 
 
+class RerunLeavesNoSidecars(unittest.TestCase):
+    """3.1.2: running links again whose files are already saved left "<name>.part.nxmeta" beside them."""
+
+    def test_second_run_of_the_same_links(self):
+        with LocalServer() as s, tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            stamp = str(time.time_ns())
+            urls = [s.url("ok", f"r{stamp}-{i}.jpg", size=20_000) for i in range(3)]
+            run_bridge(urls, folder)
+            saved = sorted(p for p in folder.rglob("*") if p.is_file())
+            self.assertEqual(len(saved), 3, saved)
+            old = saved[0].with_name(saved[0].name + ".part.nxmeta")  # what 3.1.1 left behind
+            old.write_text(json.dumps({"url": "x", "etag": "", "last_modified": "", "size": 20_000}))
+            for extra in ({}, {"ignoreHistory": False}):
+                run_bridge(urls, folder, **extra)
+                self.assertEqual(sorted(p for p in folder.rglob("*") if p.is_file()), saved, extra)
+
+
 class EngineDownloads(unittest.TestCase):
     """One engine run over every server behaviour; each test checks its own files."""
 

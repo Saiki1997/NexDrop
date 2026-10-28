@@ -224,8 +224,9 @@ _JUNK_TITLES = frozenset(
     """pics pic video videos vids more here link links enjoy thanks thank you thx ty source sauce
     credit credits update updates new part bump repost reupload mirror mirrors album gallery set
     sets download downloads file files leak leaks leaked enjoy! thanks! see more click here
-    untitled loose files no title media image images""".split()
-)
+    untitled loose files no title media image images discussion thread threads general request requests""".split()
+) | {"see more", "click here", "thank you", "no title", "loose files", "discussion thread", "general discussion",
+     "main thread", "media thread", "the thread", "this thread", "new thread"}  # 3.1.2: whole phrases too
 _HEX = re.compile(r"^[0-9a-f]+$", re.I)
 _UUID = re.compile(r"^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$", re.I)
 _DATE_STAMP = re.compile(r"^\d{4}[-_.]?\d{2}[-_.]?\d{2}([-_ t.]?\d{2}[-_.:]?\d{2}([-_.:]?\d{2})?)?$", re.I)
@@ -443,9 +444,28 @@ def clean_title(text: str | None, limit: int = 120, *, post_text: bool = True) -
         cut = line[:limit]
         line = cut.rsplit(" ", 1)[0] if " " in cut[limit // 2 :] else cut
     line = _balance(line.strip(_EDGE), line)
+    line = _tidy_title(line)
     if sum(c.isalpha() for c in line) < 2 or line.casefold() in _JUNK_TITLES:
         return ""
     return line
+
+
+_LEAD_DOWNLOAD = re.compile(r"^(?:free\s+)?(?:download(?:ing)?|dl)\s*[:\-]?\s+", re.I)
+_SIZE_NOTE = re.compile(r"\s*[\[(]?\s*\b\d+(?:[.,]\d+)?\s*(?:[kmgt]i?b|bytes)\b\s*[\])]?", re.I)
+_INNER_EXT = re.compile(r"\.(?:mp4|mkv|mov|avi|wmv|webm|m4v|flv|jpe?g|png|gif|webp|heic|zip|rar|7z)\b", re.I)
+_AT_RUN = re.compile(r"@{2,}")
+
+
+def _tidy_title(line: str) -> str:
+    """3.1.2: "Download @@PIYO-116 Title.mp4 (1.2 GB)" -> "PIYO-116 Title": the words around a title
+    in a post are not part of it (a download prompt, a file extension, a size, "@@" markers)."""
+    tidy = _LEAD_DOWNLOAD.sub("", line)
+    tidy = _AT_RUN.sub("", tidy)
+    tidy = _INNER_EXT.sub("", tidy)
+    tidy = _SIZE_NOTE.sub("", tidy)
+    tidy = re.sub(r"[(\[]\s*[)\]]", "", tidy)  # brackets the size was in
+    tidy = _edge(re.sub(r"\s+", " ", tidy))
+    return tidy if sum(c.isalpha() for c in tidy) >= 2 else line
 
 
 _LEAD_TAG = re.compile(r"^\s*[\[(][^\[\]()]{1,12}[\])]\s*")  # "[HQ] Beach", "(NEW) Set"
@@ -1208,7 +1228,7 @@ def context_folder(naming: dict[str, str], folder: Path, settings: NamingSetting
     """"Folder for each post or album" (3.1.1): the folder named after the post or album a file came
     from, also when the file keeps its own name. "" when the setting is off, the file has no post or
     album title worth a folder, or the folder it is in (or one above) already has that title."""
-    if not settings.context_folders:
+    if not settings.context_folders or naming.get("in_post_folder"):
         return ""
     for value, post_text in ((naming.get("post_title"), False), (naming.get("caption"), True), (naming.get("album"), False)):
         title = clean_title(value, 80, post_text=post_text) if value else ""
@@ -1216,6 +1236,10 @@ def context_folder(naming: dict[str, str], folder: Path, settings: NamingSetting
             title = strip_dates(title)
         if title and assess(title)[0] >= ACCEPT:
             return _folder_name(title, folder, settings)
+    # 3.1.2: a post without a title worth a folder still gets one, so its files are kept together
+    # instead of loose in the thread's folder
+    if post_id := re.sub(r"\D", "", str(naming.get("post_id") or "")):
+        return _folder_name(f"Post {post_id}", folder, settings)
     return ""
 
 
@@ -1235,6 +1259,8 @@ def embedded_name(url: str, path: Path, settings: NamingSettings) -> tuple[str, 
         return "", ""
     title, where = media_tags.read_title(path)
     title = clean_title(title, settings.max_len, post_text=False)
+    if settings.strip_dates:
+        title = strip_dates(title)
     quality, _why = assess(title)
     if quality * _BASE["embedded title"] < ACCEPT:
         return "", ""

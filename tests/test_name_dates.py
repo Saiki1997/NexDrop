@@ -80,5 +80,39 @@ class InARun(SmartCase):
         self.assertEqual(saved[0].download_folder.relative_to(self.root).as_posix(), "JAV")
 
 
+    def test_a_post_without_a_usable_title_still_gets_its_own_folder(self):
+        # 3.1.2: these files stayed loose in the thread folder ("Discussion Thread-003.jpg")
+        for caption in ("", None, "Discussion Thread", "thanks!", "https://bunkr.cr/a/xyz"):
+            saved = self._post_files(caption, ("IMG_1234.jpg", "a8f9c0d1e2.jpg", "video.mp4"))
+            folders = {m.download_folder.relative_to(self.root).as_posix() for m in saved}
+            self.assertEqual(folders, {"JAV/Post 9"}, caption)
+
+    def test_download_prompts_sizes_and_extensions_leave_the_title(self):
+        saved = self._post_files("Download @@PIYO-116 Some Title.mp4 (1.2 GB)", ("a8f9c0d1e2.jpg", "video.mp4"))
+        self.assertEqual({m.download_folder.relative_to(self.root).as_posix() for m in saved}, {"JAV/PIYO-116 Some Title"})
+        self.assertEqual(saved[0].filename, "PIYO-116 Some Title-001.jpg")
+
+    def test_no_second_folder_when_posts_already_have_folders(self):
+        from cyberdrop_dl.crawlers.bunkr import BunkrCrawler
+        from cyberdrop_dl.crawlers.xenforo.simpcity import SimpCityCrawler
+
+        forum, _ = _crawler(SimpCityCrawler, self.root, separate_posts=True)
+        host, saved = _crawler(BunkrCrawler, self.root)
+        thread = self.item("https://simpcity.cr/threads/jav.123/")
+        thread.setup_as_forum("")
+        thread.append_folders(forum.create_title("JAV", thread_id=123))
+        post = thread.create_new(thread.url, add_parent=URL("https://simpcity.cr/threads/jav.123/post-9"))
+        post.setup_as_post("")
+        post.append_folders(forum.create_separate_post_title(None, "9", None, caption=""))
+        link = post.create_child(URL("https://bunkr.cr/f/1"))
+        link.reset()
+        self.save(host, link, "https://cdn.bunkr.ru/a8f9c0d1e2.jpg", "a8f9c0d1e2.jpg")
+        self.assertEqual(saved[0].download_folder.parent.relative_to(self.root).as_posix(), "JAV")
+
+    def test_post_folder_fallback_follows_the_setting(self):
+        saved = self._post_files("", ("IMG_1234.jpg",), contextFolders=False)
+        self.assertEqual(saved[0].download_folder.relative_to(self.root).as_posix(), "JAV")
+
+
 if __name__ == "__main__":
     unittest.main()
