@@ -164,6 +164,17 @@ Smart naming V2 (2.5.0):
 - `cyberdrop_dl/clients/downloads.py` (3.1): a file a size rule skips before any byte is written no longer leaves its
   `.part.nxmeta` sidecar behind (`resume_validators.forget`).
 
+Unreleased (page order):
+- `cyberdrop_dl/source_order.py`: `reserve()` numbers each link a forum post lists, in page order, before it is crawled;
+  `assign(url, slot)` gives the first file under that link its number (more files from one link count on from the end).
+  `POST_GATE`, `PostGate` and `track()` collect every task started while one post is handled.
+- `cyberdrop_dl/aio.py`: `EagerTaskGroup.create_task` hands each new task to `source_order.track()`.
+- `cyberdrop_dl/crawlers/_forum.py`: `post()` reserves the numbers (Page order and Parallel) and passes them down through
+  `process_child`, `handle_link` and `handle_internal_link` as `slot`. In Page order it waits for everything the post started,
+  links on other sites and their downloads included, before the next post.
+- `cyberdrop_dl/url_objects.py`: `ScrapeItem.sequence_slot`. `cyberdrop_dl/crawlers/crawler.py` and `smart_naming.py`
+  (`name_file(slot=)`) number the file with it. `crawlers/discourse/__init__.py` passes `slot` on.
+
 3.1.3:
 - `cyberdrop_dl/smart_naming.py`: `context_folder()` names the folder of an untitled post after the title its files got
   (when that title is shared, such as the thread title), claimed in the folder registry per post so a second such post

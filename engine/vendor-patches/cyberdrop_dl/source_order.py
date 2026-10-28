@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from contextvars import ContextVar
@@ -17,9 +18,16 @@ POST_FOLDERS: ContextVar[bool] = ContextVar("POST_FOLDERS", default=True)
 NUMBER_MODE: ContextVar[str] = ContextVar("NUMBER_MODE", default="prefix")
 # NEXDROP 3.0: digits in the sequence number (3 is "001", 4 "0001", 5 "00001"). Bigger numbers still grow.
 NUMBER_WIDTH: ContextVar[int] = ContextVar("NUMBER_WIDTH", default=3)
+# NEXDROP patch (3.1.4): Page order finishes one post, links on other sites and downloads included,
+# before the next post starts. `aio.EagerTaskGroup` adds every task started inside a post to its gate.
+POST_GATE: ContextVar["PostGate | None"] = ContextVar("POST_GATE", default=None)
 _SENSITIVE = ("password", "token", "auth", "cookie", "session", "sig", "key", "secret")
 _sequences: dict[str, int] = {}
 _next = 1
+# NEXDROP patch (3.1.4): numbers handed out when a post lists its links, before any file is known.
+# A link hosted on another site gets its file URL much later; the first file under it takes the number.
+_slots: dict[str, int] = {}
+_used: set[int] = set()
 _titles: dict[str, str] = {}  # folder title -> album name as the site shows it
 _albums: dict[str, dict[str, int]] = {}  # album folder -> {file URL: number}
 _ALBUM_NAME_MAX = 120
@@ -37,6 +45,8 @@ def reset(manifest: str | None = None, job: str | None = None) -> None:
     """
     global _next, _job
     _sequences.clear()
+    _slots.clear()
+    _used.clear()
     _albums.clear()
     _names.clear()
     _earlier.clear()
@@ -65,6 +75,7 @@ def reset(manifest: str | None = None, job: str | None = None) -> None:
             continue
         if url and number > 0:
             _sequences[url] = number
+            _used.add(number)
             _next = max(_next, number + 1)
             if _job and item.get("name"):
                 _names[url] = item
@@ -90,14 +101,33 @@ def public_url(url: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, parts.path, query, ""))
 
 
-def assign(url: str) -> int:
+def assign(url: str, slot: int | None = None) -> int:
+    """The file's number. `slot` is the number its link got in the page listing (see `reserve`):
+    the first file under that link takes it, any more files from the same link count on from the end."""
     global _next
     key = public_url(url)
     if key in _sequences:
         return _sequences[key]
-    _sequences[key] = _next
-    _next += 1
-    return _sequences[key]
+    if slot and slot not in _used:
+        number = slot
+    else:
+        number = _next
+        _next += 1
+    _sequences[key] = number
+    _used.add(number)
+    return number
+
+
+def reserve(link: str) -> int:
+    """A number for a link a post lists, in page order, before the link is crawled. Same link, same number."""
+    global _next
+    key = public_url(link)
+    if key in _sequences:
+        return _sequences[key]
+    if key not in _slots:
+        _slots[key] = _next
+        _next += 1
+    return _slots[key]
 
 
 def padded(number: int) -> str:
@@ -145,10 +175,10 @@ def format_number(number: int, name: str, mode: str | None = None, ext: str | No
 
 
 def numbered_filename(
-    url: str, original: str, *, enabled: bool | None = None, mode: str | None = None
+    url: str, original: str, *, enabled: bool | None = None, mode: str | None = None, slot: int | None = None
 ) -> tuple[int, str]:
     """Sequence from source order, then the saved filename. Same URL keeps its number."""
-    number = assign(url)
+    number = assign(url, slot)
     if enabled is None:
         enabled = SEQUENCE_PREFIX.get()
     name = format_number(number, original, mode) if enabled else original
@@ -204,3 +234,24 @@ def remember(path: Path, url: str, sequence: int, name: str, method: str) -> Non
         row["job"] = _job
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(row) + "\n")
+
+
+class PostGate:
+    """The scrape and download tasks one post started, and the tasks those started."""
+
+    def __init__(self) -> None:
+        self._tasks: set[asyncio.Task] = set()
+
+    def add(self, task: asyncio.Task) -> None:
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def wait(self) -> None:
+        while self._tasks:
+            await asyncio.wait(list(self._tasks))
+
+
+def track(task: asyncio.Task) -> None:
+    gate = POST_GATE.get()
+    if gate is not None and not task.done():
+        gate.add(task)
