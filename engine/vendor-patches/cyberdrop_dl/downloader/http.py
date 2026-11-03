@@ -199,13 +199,29 @@ class Downloader:
                 return bool(await self.__download_file(media_item))
 
             except DownloadError as e:
+                # NEXDROP patch (3.2.1): a host that only refuses because too many of our downloads are
+                # open (Pixeldrain's "max_concurrent") is waited for, without using up an attempt
+                if steady.connection_cap_wait(media_item, e):
+                    delay = steady.CAP_WAIT_SECONDS
+                    logger.info(f"{self.log_prefix} waits {delay:g} s for a free connection: {media_item.url}")
+                    await asyncio.sleep(delay)
+                    continue
+                # NEXDROP patch (3.2.1): falling back from parts to one stream is the downloader's own
+                # change of plan, not a failed try of the file
+                if getattr(e, "status", None) == "Segment Mismatch" and not media_item.extra_info.get("seg_fallback"):
+                    media_item.extra_info["seg_fallback"] = True
+                    media_item.attempts = max(0, media_item.attempts - 1)
                 # NEXDROP patch (3.2): a reconnect that moved the file forward does not use up an attempt
-                steady.free_reconnect(media_item, e)
+                reconnect = steady.free_reconnect(media_item, e)
                 if not should_retry_download(e, media_item.attempts, self.config.downloads.attempts):
                     raise
 
-                logger.error(f"{self.log_prefix} failed: {media_item.url} with error: {e!s}")
-                delay = retry_delay(e, media_item.attempts)
+                if getattr(e, "status", None) == steady.RECONNECT_STATUS:
+                    # NEXDROP patch (3.2.1): a reconnect is not a failure, and waits a little longer each time
+                    logger.info(f"{self.log_prefix} reconnecting: {media_item.url} ({e!s})")
+                else:
+                    logger.error(f"{self.log_prefix} failed: {media_item.url} with error: {e!s}")
+                delay = steady.reconnect_delay(media_item) if reconnect else retry_delay(e, media_item.attempts)
                 logger.info(
                     "Retrying %s: %s, attempt: %s (in %.1f s)",
                     self.log_prefix.lower(),

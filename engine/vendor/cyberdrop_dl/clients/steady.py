@@ -131,3 +131,32 @@ def free_reconnect(media_item: Any, error: BaseException) -> bool:
     media_item.extra_info["steady_reconnects"] = used + 1
     media_item.attempts = max(0, media_item.attempts - 1)
     return True
+
+
+def reconnect_delay(media_item: Any) -> float:
+    """NEXDROP patch (3.2.1): 1 s, 2 s, 4 s ... up to 30 s between the free reconnects of one file, so a
+    server that keeps dropping the connection gets a breather instead of being asked again at once."""
+    used = int(media_item.extra_info.get("steady_reconnects", 1))
+    return float(min(30, 2 ** max(0, used - 1)))
+
+
+CAP_WAIT_SECONDS: float = 15.0
+MAX_CAP_WAITS: int = 20  # 5 minutes per file at most
+_CAP_MARKERS = ("max_concurrent", "maximum number of open download connections")
+
+
+def is_connection_cap(error: BaseException) -> bool:
+    text = str(error).lower()
+    return any(marker in text for marker in _CAP_MARKERS)
+
+
+def connection_cap_wait(media_item: Any, error: BaseException) -> bool:
+    """True when the host refused only because too many downloads are open: wait and ask again."""
+    if not is_connection_cap(error):
+        return False
+    used = int(media_item.extra_info.get("cap_waits", 0))
+    if used >= MAX_CAP_WAITS:
+        return False
+    media_item.extra_info["cap_waits"] = used + 1
+    media_item.attempts = max(0, media_item.attempts - 1)
+    return True

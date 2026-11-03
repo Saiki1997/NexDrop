@@ -232,8 +232,9 @@ class DownloadClient:
             await aio.to_thread(segments.merge)(media_item.partial_file, layout)
         except segments.SegmentError as error:
             segments.forget_link(media_item.url)
+            # NEXDROP patch (3.2.1): part 1 is the start of the file, read from the checked first answer,
+            # so the one-stream download continues from its end. Only the other parts are thrown away.
             await aio.to_thread(segments.discard)(media_item.partial_file)
-            await _discard_partial(media_item.partial_file)
             raise DownloadError("Segment Mismatch", f"{error}. Downloading it as one stream", retry=True) from None
         await self._post_download_check(media_item)
 

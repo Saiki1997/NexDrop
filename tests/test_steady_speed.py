@@ -155,6 +155,7 @@ class EngineRun(unittest.TestCase):
         cls.urls = {
             "stall": cls.server.url("stall", f"st{stamp}.mp4", size=cls.SIZE),
             "seg-stall": cls.server.url("seg-stall", f"ss{stamp}.mp4", size=cls.SIZE),
+            "seg-busy": cls.server.url("seg-busy", f"sb{stamp}.mp4", size=cls.SIZE),
         }
         cls.started = time.monotonic()
         cls.events = run_bridge(list(cls.urls.values()), cls.folder, attempts=1, stallSeconds=2,
@@ -187,8 +188,80 @@ class EngineRun(unittest.TestCase):
         resumed = self.server.ranges.get(f"seg-stall/{self.name('seg-stall')}", [])
         self.assertTrue(resumed, "the stalled part was not asked again")
 
+    def test_part_refused_mid_way_keeps_part_one_and_continues_as_one_stream(self):
+        self.assertEqual(self.saved_bytes("seg-busy"), content(self.name("seg-busy"), self.SIZE))
+        resumed = self.server.ranges.get(f"seg-busy/{self.name('seg-busy')}", [])
+        self.assertTrue(resumed, "the one-stream download started over from byte 0")
+
+    def test_reconnects_are_not_logged_as_failures(self):
+        errors = [e.get("message", "") for e in self.events if e.get("type") == "log" and e.get("level") == "error"]
+        self.assertFalse([m for m in errors if "Speed dropped" in m or "No data for" in m], errors)
+
     def test_well_before_the_read_timeout(self):
         self.assertLess(self.took, 45)
+
+
+class ConnectionCap(unittest.TestCase):
+    MESSAGE = ("403 Forbidden - You have reached the maximum number of open download connections for "
+               "free/anonymous accounts. If you wish to download more please wait for previous downloads to "
+               "finish. (max_concurrent)")
+
+    def test_pixeldrain_connection_limit_waits_without_using_attempts(self):
+        item = SimpleNamespace(attempts=1, extra_info={})
+        error = DownloadError(403, self.MESSAGE)
+        for _ in range(steady.MAX_CAP_WAITS):
+            item.attempts += 1
+            self.assertTrue(steady.connection_cap_wait(item, error))
+        self.assertFalse(steady.connection_cap_wait(item, error))
+        self.assertFalse(steady.connection_cap_wait(item, DownloadError(403, "Forbidden")))
+
+    def test_classified_as_rate_limited_not_sign_in(self):
+        from error_classes import classify
+
+        self.assertEqual(classify(self.MESSAGE, "https://pixeldrain.com/api/file/x?download"), "rate_limited")
+
+    def test_reconnect_waits_grow_to_thirty_seconds(self):
+        item = SimpleNamespace(extra_info={})
+        waits = []
+        for used in range(1, 9):
+            item.extra_info["steady_reconnects"] = used
+            waits.append(steady.reconnect_delay(item))
+        self.assertEqual(waits, [1, 2, 4, 8, 16, 30, 30, 30])
+
+
+class BridgeRules(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(ROOT / "engine"))
+        import bridge
+
+        cls.bridge = bridge
+
+    def test_only_real_bot_checks_go_to_flaresolverr(self):
+        b = self.bridge
+        self.assertTrue(b._looks_like_bot_check("<title>DDoS-Guard</title>"))
+        self.assertTrue(b._looks_like_bot_check("<title>Just a moment...</title><script src=/cdn-cgi/challenge-platform/>"))
+        self.assertFalse(b._looks_like_bot_check("<html><body>You need to be signed in to view original images</body></html>"))
+        self.assertFalse(b._looks_like_bot_check(""))
+
+    def test_no_split_on_one_connection_servers_or_pixeldrain(self):
+        from cyberdrop_dl.clients import segments
+
+        b = self.bridge
+        b._install_segments(4, 64)
+        slots = b.SERVER_SLOTS
+        old = slots.per_server
+        try:
+            slots.get("c5bu-b.cdn.cr")
+            slots.per_server = 3
+            self.assertTrue(segments.host_ok("c5bu-b.cdn.cr"))
+            slots.per_server = 1
+            self.assertFalse(segments.host_ok("c5bu-b.cdn.cr"))
+            self.assertTrue(segments.host_ok("other.example"))
+            self.assertFalse(segments.host_ok("pixeldrain.com"))
+        finally:
+            slots.per_server = old
+            slots.hosts.pop("c5bu-b.cdn.cr", None)
 
 
 def pd_file(size):

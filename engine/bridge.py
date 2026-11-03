@@ -349,6 +349,15 @@ DUPLICATES = _Duplicates()
 _SEEN: dict[str, bool] = {}
 
 
+_BOT_CHECK_MARKERS = ("ddos-guard", "checking your browser", "just a moment...", "cf-chl", "challenge-platform",
+                      "cf-turnstile", "attention required! | cloudflare", "enable javascript and cookies to continue")
+
+
+def _looks_like_bot_check(text: str) -> bool:
+    low = (text or "").lower()
+    return any(marker in low for marker in _BOT_CHECK_MARKERS)
+
+
 def _install_download_clearance() -> None:
     """Retry a download once through FlareSolverr when the site answers with a bot-check page.
 
@@ -378,7 +387,7 @@ def _install_download_clearance() -> None:
                 text = (await resp.text())[:20000]
                 match = re.search(r"<title[^>]*>(.*?)</title>", text, re.I | re.S)
                 title = " ".join(match.group(1).split())[:120] if match else ""
-                if "ddos-guard" in text.lower() or "checking your browser" in text.lower():
+                if _looks_like_bot_check(text):
                     raise DDOSGuardError(message=f"Bot check page{f' ({title})' if title else ''}") from error
             except (DDOSGuardError,):
                 raise
@@ -400,6 +409,10 @@ def _install_download_clearance() -> None:
         except (InvalidContentTypeError, DDOSGuardError) as error:
             if _is_site_error_page(str(error)):
                 raise  # the site's own error page (deleted or no permission), not a bot check
+            if not isinstance(error, DDOSGuardError):
+                # 3.2.1: an HTML answer without a bot check in it (e-hentai's image servers answer that way
+                # for original images that need an account) is not something FlareSolverr can clear
+                raise
             http = self.http_client
             flare = http.flaresolverr
             url = await media_item.resolve()
@@ -993,6 +1006,13 @@ def _install_segments(parts: int, min_mb: int) -> None:
 
     def host_ok(host: str) -> bool:
         if host in SERVER_SLOTS.reduced:
+            return False
+        # 3.2.1: a server set to one connection (Connections per server = 1) is not split either; Bunkr's
+        # CDN answered the extra connections 429/503. Pixeldrain counts every part against its limit of
+        # open downloads for free accounts ("max_concurrent").
+        if host in SERVER_SLOTS.hosts and SERVER_SLOTS.per_server <= 1:
+            return False
+        if "pixeldrain" in host:
             return False
         return not any(site and site in host and BREAKER.blocked_for(site) for site in list(BREAKER.until))
 
