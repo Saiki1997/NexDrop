@@ -1,4 +1,13 @@
-# NEXDROP (unreleased)
+# NEXDROP 3.2.0
+
+## Download speed
+- **Downloads keep their speed.** A connection that sends nothing for 20 seconds, or slows to under a quarter of the best speed it reached and stays there, is closed. The file carries on from the bytes already on disk over a fresh connection. Before, a silent connection waited out the whole read timeout (60 s) and then counted as a failed attempt. With 2 attempts per file, a big Bunkr or Turbo video that hiccupped twice failed as `999 Timeout`. Reconnects that move the file forward no longer use up attempts (up to 8 per file).
+- **A stuck part of a large file reconnects on its own.** With **Parts per large file**, only the part that stopped is asked again, from where it stopped, while the other parts keep going.
+- The speed-drop check only runs when the server can resume (it accepts ranges) and when no **Speed cap** is set. It never checks a connection in its first 20 seconds, or one that never went above 512 KB/s. **Settings → Speed → Keep download speed steady** turns it off.
+
+## Pixeldrain
+- **Files that don't fit in today's free limit fail at once.** Without an API key, Pixeldrain allows 6 GB of downloads a day per connection. NexDrop now reads what's left before each file (at most once a minute), and counts files already started against it. A file that won't fit fails straight away with *"Pixeldrain's free daily bandwidth limit is used up"* and goes to the retry-later list. Before, it started and then failed partway. With a Pixeldrain API key in **Sign-ins**, nothing changes.
+- Files Pixeldrain locks behind its captcha (*"hotlinking is only supported with a paid subscription"*) still fail up front with that reason. They download with a paid account's API key, or from the browser after solving the captcha.
 
 ## Download order
 - **File numbers follow the post's layout, also for images hosted on other sites.** A post is read left to right, then down. Images uploaded to the forum were already numbered in that order, but images on other sites (jpg5, imgbox, pixhost, Cyberdrop…) got their number when that site answered, so `-001`, `-002`… could come out shuffled. Each link now gets its number when the post lists it, in **Page order** and **Parallel**. A link that turns out to hold several files (an album) gives its first file that number; the rest are numbered after the others. A link that fails leaves a gap in the numbers. **Fastest** is unchanged.

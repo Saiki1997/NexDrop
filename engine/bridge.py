@@ -999,6 +999,17 @@ def _install_segments(parts: int, min_mb: int) -> None:
     segments.host_ok = host_ok
 
 
+def _install_steady(enabled: bool, read_timeout: int, stall_seconds: int = 20) -> None:
+    """Steady speed (engine patch clients/steady.py): a connection that sends nothing for 20 s, or
+    slows to under a quarter of its best speed, reconnects and resumes. Settings > Speed."""
+    try:
+        from cyberdrop_dl.clients import steady
+    except Exception:  # noqa: BLE001
+        return
+    steady.ENABLED = bool(enabled)
+    steady.STALL_SECONDS = float(min(stall_seconds, max(2, int(read_timeout) - 5)))
+
+
 TYPE_FOLDERS = {"image": "Images", "video": "Videos", "audio": "Audio", "other": "Other"}
 
 
@@ -1623,6 +1634,11 @@ def _run() -> int:
     _install_rules(payload.get("rules"), destination)
     _install_quality(payload)
     _install_segments(_bound_int(payload.get("segments"), 0, 8, 4), _bound_int(payload.get("segmentMinMB"), 1, 4096, 64))
+    _install_steady(
+        payload.get("steadySpeed", True) is not False,
+        _bound_int(payload.get("readTimeout"), 30, 300, 60),
+        _bound_int(payload.get("stallSeconds"), 2, 60, 20),  # tests use a short wait
+    )
     _install_last_post_report()
     _install_resume_skip(payload.get("skipUrls") or [])
     if payload.get("previewOnly"):

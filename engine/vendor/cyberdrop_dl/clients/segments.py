@@ -199,19 +199,33 @@ def merge(partial_file: Path, layout: list[tuple[int, int]]) -> None:
     discard(partial_file)
 
 
-async def write_body(resp: Any, path: Path, mode: str, limit: int, chunk_size: int, on_chunk: Callable[[int], Any]) -> int:
-    """Write at most `limit` bytes of `resp` to `path`; returns the number written."""
+async def write_body(
+    resp: Any,
+    path: Path,
+    mode: str,
+    limit: int,
+    chunk_size: int,
+    on_chunk: Callable[[int], Any],
+    watch: Any = None,
+) -> int:
+    """Write at most `limit` bytes of `resp` to `path`; returns the number written.
+
+    NEXDROP patch (3.2): a silent connection raises TimeoutError and `watch` (steady.SpeedWatch) raises
+    SpeedDropped, so the caller can reconnect from the bytes already written."""
     from cyberdrop_dl import aio
+    from cyberdrop_dl.clients import steady
 
     written = 0
     async with aio.open(path, mode=mode) as handle:
-        async for chunk in resp.iter_chunked(chunk_size):
+        async for chunk in steady.chunks(resp, chunk_size):
             if written + len(chunk) > limit:
                 chunk = chunk[: limit - written]
             if chunk:
                 await handle.write(chunk)
                 written += len(chunk)
                 await on_chunk(len(chunk))
+                if watch is not None:
+                    watch.feed(len(chunk))
             if written >= limit:
                 break
     return written
@@ -225,33 +239,61 @@ async def run_parts(
     open_part: Callable[[int, int], Any],
     chunk_size: int,
     on_chunk: Callable[[int], Any],
+    *,
+    steady_speed: bool = True,
 ) -> None:
     """Download every part concurrently. `open_part(start, end)` returns an async context manager
-    with the answer for that range; the answer is checked by the caller-supplied opener."""
+    with the answer for that range; the answer is checked by the caller-supplied opener.
+
+    NEXDROP patch (3.2): a part whose connection stalls, drops or slows right down reconnects on its
+    own from its own size, while the other parts keep going."""
+    from cyberdrop_dl.clients import steady
+
     # The engine reads 10 MB at a time; with up to 4 parts per file that is 40 MB of buffers per
     # file in flight, so parts read in smaller pieces.
     chunk_size = min(chunk_size, PART_CHUNK)
 
+    def size_of(path: Path) -> int:
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
+
+    async def fill(index: int, path: Path, start: int, end: int, first: Any = None) -> None:
+        total = end - start + 1
+        idle = 0
+        reconnects = 0
+        while True:
+            have = min(size_of(path), total)
+            if have >= total:
+                return
+            try:
+                if first is not None:
+                    resp, first = first, None
+                    got = await write_body(resp, path, "ab", total - have, chunk_size, on_chunk, _watch(resp, steady_speed))
+                else:
+                    async with open_part(start + have, end) as resp:
+                        got = await write_body(resp, path, "ab", total - have, chunk_size, on_chunk, _watch(resp, steady_speed))
+            except _RECONNECTABLE as error:
+                now = size_of(path)
+                idle = 0 if now > have else idle + 1
+                reconnects += 1
+                if not (steady.ENABLED and idle < 2 and reconnects <= steady.MAX_RECONNECTS):
+                    if isinstance(error, steady.SpeedDropped):
+                        raise TimeoutError(str(error)) from None
+                    raise
+                logger.info(f"Part {index + 1} of {partial_file.name}: {error or type(error).__name__}. Reconnecting")
+                continue
+            if have + got != total:
+                raise SegmentError(f"Part {index + 1} ended after {start + have + got:,} of {end + 1:,} bytes")
+            return
+
     async def part0() -> None:
-        want = layout[0][1] + 1 - have0
-        got = await write_body(first_resp, partial_file, "ab", want, chunk_size, on_chunk)
-        if got != want:
-            raise SegmentError(f"Part 1 ended after {have0 + got:,} of {layout[0][1] + 1:,} bytes")
+        await fill(0, partial_file, layout[0][0], layout[0][1], first_resp)
 
     async def part(index: int) -> None:
         start, end = layout[index]
-        path = seg_file(partial_file, index)
-        try:
-            have = min(path.stat().st_size, end - start + 1)
-        except OSError:
-            have = 0
-        if have >= end - start + 1:
-            return
-        async with open_part(start + have, end) as resp:
-            want = end - start + 1 - have
-            got = await write_body(resp, path, "ab", want, chunk_size, on_chunk)
-            if got != want:
-                raise SegmentError(f"Part {index + 1} ended after {have + got:,} of {end - start + 1:,} bytes")
+        await fill(index, seg_file(partial_file, index), start, end)
 
     tasks = [asyncio.ensure_future(part0())] + [asyncio.ensure_future(part(i)) for i in range(1, len(layout))]
     try:
@@ -261,3 +303,25 @@ async def run_parts(
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
+
+
+def _watch(resp: Any, enabled: bool) -> Any:
+    from cyberdrop_dl.clients import steady
+
+    return steady.SpeedWatch(enabled=enabled and steady.can_resume(resp.status, resp.headers))
+
+
+def _reconnectable() -> tuple[type[BaseException], ...]:
+    from cyberdrop_dl.clients import steady
+
+    errors: list[type[BaseException]] = [TimeoutError, ConnectionResetError, steady.SpeedDropped]
+    try:
+        from aiohttp import ClientPayloadError, ServerDisconnectedError
+
+        errors += [ClientPayloadError, ServerDisconnectedError]
+    except ImportError:  # pragma: no cover
+        pass
+    return tuple(errors)
+
+
+_RECONNECTABLE = _reconnectable()

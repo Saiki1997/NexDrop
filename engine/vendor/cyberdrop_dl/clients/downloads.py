@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, final
 from aiohttp import hdrs
 
 from cyberdrop_dl import aio, constants, ffmpeg, storage
-from cyberdrop_dl.clients import etag, resume_validators, segments
+from cyberdrop_dl.clients import etag, resume_validators, segments, steady
 from cyberdrop_dl.clients.http import JSON_CHECK, check_http_status
 from cyberdrop_dl.constants import USE_RETRY_PATH, FileExt
 from cyberdrop_dl.exceptions import DownloadError, InvalidContentTypeError, SlowDownloadError
@@ -225,7 +225,10 @@ class DownloadClient:
 
         try:
             async with self._track_speed(hook):
-                await segments.run_parts(resp, media_item.partial_file, layout, have0, open_part, self.chunk_size, on_chunk)
+                await segments.run_parts(
+                    resp, media_item.partial_file, layout, have0, open_part, self.chunk_size, on_chunk,
+                    steady_speed=not self.config.downloads.speed_limit,
+                )
             await aio.to_thread(segments.merge)(media_item.partial_file, layout)
         except segments.SegmentError as error:
             segments.forget_link(media_item.url)
@@ -260,14 +263,23 @@ class DownloadClient:
         await check_free_space(_get_content_length(resp.headers))
         await self._pre_download_check(media_item)
 
-        async with self._track_speed(hook), aio.open(media_item.partial_file, mode="ab") as f:
-            async for chunk in resp.iter_chunked(self.chunk_size):
-                n_bytes = len(chunk)
-                await self.speed_limiter.acquire(n_bytes)
-                await check_free_space()
-                await f.write(chunk)
-                hook.advance(n_bytes)
-                check_download_speed()
+        # NEXDROP patch (3.2): a stalled or slowed-down connection reconnects and resumes (clients/steady.py)
+        watch = steady.SpeedWatch(
+            enabled=not self.config.downloads.speed_limit and steady.can_resume(resp.status, resp.headers)
+        )
+        try:
+            async with self._track_speed(hook), aio.open(media_item.partial_file, mode="ab") as f:
+                async for chunk in steady.chunks(resp, self.chunk_size):
+                    n_bytes = len(chunk)
+                    await self.speed_limiter.acquire(n_bytes)
+                    await check_free_space()
+                    await f.write(chunk)
+                    hook.advance(n_bytes)
+                    check_download_speed()
+                    watch.feed(n_bytes)
+        except steady.SpeedDropped as error:
+            logger.info(f"{media_item.filename}: {error}")
+            raise DownloadError(steady.RECONNECT_STATUS, str(error), retry=True) from None
 
         await self._post_download_check(media_item)
 

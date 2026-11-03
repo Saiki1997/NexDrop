@@ -483,6 +483,7 @@
           <label class="field"><span class="field-label">Longest wait between attempts, s</span><input type="number" id="retry-max-delay" min="2" max="120" value="20"><small class="field-help">Waits grow 2 s, 4 s, 8 s… up to this, with a little randomness.</small></label>
           <label class="field"><span class="field-label">Honour "retry after" up to, s</span><input type="number" id="retry-after-cap" min="5" max="600" value="60"><small class="field-help">When a server says how long to wait. Longer waits move the file to the retry pass.</small></label>
         </div>
+        <label class="switch"><input type="checkbox" id="steady-speed" checked><span class="switch-text">Keep download speed steady<small>A connection that sends nothing for 20 seconds, or slows to under a quarter of its best speed, is reconnected and the file carries on from where it was. These reconnects don't use up the file's attempts. The slow-down check is off while a speed cap is set.</small></span></label>
         <label class="field">
           <span class="field-label">Per-site limits</span>
           <textarea id="site-limits" rows="3" spellcheck="false" placeholder="bunkr.cr = 2&#10;gofile.io = 1"></textarea>
