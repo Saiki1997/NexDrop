@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
+import time
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, final, override
 
 from cyberdrop_dl.clients.http import HTTPConfig
@@ -28,6 +30,7 @@ class File:
     mime_type: str
     hash_sha256: str
     availability: str = ""  # NEXDROP patch: "file_rate_limited_captcha_required" etc.
+    size: int = 0  # NEXDROP patch (3.2): checked against the free transfer limit
 
 
 @dataclasses.dataclass(slots=True)
@@ -276,6 +279,19 @@ class PixelDrainCrawler(Crawler):
         if await self.check_complete_by_hash(src, "sha256", file.hash_sha256):
             return None
 
+        # NEXDROP patch (3.2): without an API key Pixeldrain allows a free amount of transfer per day
+        # (6 GB). A file that no longer fits fails now with the reason, instead of after a long download.
+        if type(file) is File and file.size and not self.api.logged_in:
+            left = await self.api.transfer_left()
+            if left is not None and file.size > left:
+                raise ScrapeError(
+                    509,
+                    f"Pixeldrain's free daily bandwidth limit is used up ({_gb(left)} left, this file is "
+                    f"{_gb(file.size)}). Try again later, or add a Pixeldrain API key in Settings > Sign-ins",
+                )
+            if left is not None:
+                self.api.reserve(file.size)
+
         filename, ext = self.get_filename_and_ext(file.name, mime_type=file.mime_type)
         scrape_item.uploaded_at = self.parse_iso_date(file.date_upload)
         await self.handle_file(
@@ -303,12 +319,36 @@ class PixelDrainCrawler(Crawler):
 class PixelDrainAPI(API):
     def __post_init__(self) -> None:
         self.headers: dict[str, str] = {}
+        self._quota: tuple[float, int | None, int] | None = None
         if api_key := self.config.auth.pixeldrain.api_key:
             self.headers["Authorization"] = basic_auth("Cyberdrop-DL", api_key)
 
     @property
     def logged_in(self) -> bool:
         return bool(self.headers)
+
+    async def transfer_left(self) -> int | None:
+        """NEXDROP patch (3.2): bytes left of the free transfer limit, from /api/misc/rate_limits.
+
+        Asked at most once a minute; None when Pixeldrain does not say (the download then just runs)."""
+        now = time.monotonic()
+        cached = self._quota
+        if cached is not None and now - cached[0] < 60:
+            left, reserved = cached[1], cached[2]
+            return None if left is None else max(0, left - reserved)
+        try:
+            data = json.loads(await self.text(self.origin / "api/misc/rate_limits"))
+            left = int(data["transfer_limit"]) - int(data["transfer_limit_used"]) if data.get("transfer_limit") else None
+        except Exception:  # noqa: BLE001
+            left = None
+        self._quota = (now, left, 0)
+        return left
+
+    def reserve(self, n_bytes: int) -> None:
+        """Count a file that is about to download against the cached limit, so a batch is not all let through."""
+        cached = self._quota
+        if cached is not None and cached[1] is not None:
+            self._quota = (cached[0], cached[1], cached[2] + n_bytes)
 
     async def file(self, file_id: str) -> File:
         api_url = self.origin / "api/file" / file_id / "info"
@@ -332,6 +372,10 @@ class PixelDrainAPI(API):
         if type(file) is File:
             return (self.origin / "api/file" / file.id).with_query("download")
         return (self.origin / "api/filesystem" / file.path.removeprefix("/")).with_query("attach")
+
+
+def _gb(n_bytes: int) -> str:
+    return f"{n_bytes / 1_000_000_000:.2f} GB"
 
 
 def _filter_files(files: list[File], fragment: str) -> list[File]:

@@ -21,6 +21,8 @@ file holds exactly one version of one file. Routes, all GET:
   /page/<name>                      an HTML album page: og:title, og:site_name, author and 3 distinct file links
   /seg-wrong/<name>?size=N          like /ok, but a range starting after byte 0 is answered from byte 0
   /seg-drop/<name>?size=N           like /ok, but the first range starting after byte 0 drops half way
+  /stall/<name>?size=N              the first request sends half, then keeps the connection open and silent
+  /seg-stall/<name>?size=N          like /ok, but the first range starting after byte 0 goes silent half way
 
 `server.hits[path]` counts the requests per path and `server.headers[path]` keeps the last
 request headers.
@@ -156,11 +158,25 @@ class LocalServer:
                     return await self._send(request, data, etag='"s1"', drop_at=middle)
                 self.ranges.setdefault(key, []).append(wanted)
             return await self._send(request, data, etag='"s1"')
+        if route == "stall":  # the first answer goes silent half way and never closes
+            return await self._send(request, content(name, size), etag='"st1"', stall_at=size // 2 if n == 1 else None)
+        if route == "seg-stall":  # the first range request after byte 0 goes silent half way through its part
+            data = content(name, size)
+            wanted = request.headers.get("Range", "")
+            if wanted.startswith("bytes=") and not wanted.startswith("bytes=0-"):
+                self.ranged[key] += 1
+                if self.ranged[key] == 1:
+                    first, _, last = wanted[6:].partition("-")
+                    middle = (int(first) + int(last or size - 1)) // 2
+                    return await self._send(request, data, etag='"ss1"', stall_at=middle)
+                self.ranges.setdefault(key, []).append(wanted)
+            return await self._send(request, data, etag='"ss1"')
         same = request.query.get("as", name)  # /ok/<name>?as=<other> serves <other>'s bytes
         return await self._send(request, content(same, size), etag=f'"{same}-{size}"')
 
     async def _send(self, request: web.Request, data: bytes, *, etag: str | None, drop_at: int | None = None,
-                    ranges: bool = True, force_range_start: int | None = None) -> web.StreamResponse:
+                    ranges: bool = True, force_range_start: int | None = None,
+                    stall_at: int | None = None) -> web.StreamResponse:
         size = len(data)
         start = 0
         status = 200
@@ -189,6 +205,13 @@ class LocalServer:
             await response.write(body[: drop_at - start])
             await asyncio.sleep(0.5)  # let the client read what was sent before the drop
             request.transport.close()  # the client sees a broken transfer
+            return response
+        if stall_at is not None and stall_at - start > 0:
+            await response.write(body[: stall_at - start])
+            try:
+                await asyncio.sleep(8)  # silent, like a server that stopped sending without hanging up
+            finally:
+                request.transport.close()
             return response
         rate = int(request.query.get("rate", "0") or 0)  # bytes per second for this connection, like a host's cap
         sent_at = time.monotonic()

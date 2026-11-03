@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, ClassVar, final
 from aiohttp import ClientConnectorError, ClientError, ClientResponseError
 
 from cyberdrop_dl import aio, constants, env, ffmpeg, storage
+from cyberdrop_dl.clients import steady
 from cyberdrop_dl.clients.downloads import filter_by_duration, resolve_download_dir
 from cyberdrop_dl.downloader import hls
 from cyberdrop_dl.exceptions import (
@@ -198,6 +199,8 @@ class Downloader:
                 return bool(await self.__download_file(media_item))
 
             except DownloadError as e:
+                # NEXDROP patch (3.2): a reconnect that moved the file forward does not use up an attempt
+                steady.free_reconnect(media_item, e)
                 if not should_retry_download(e, media_item.attempts, self.config.downloads.attempts):
                     raise
 

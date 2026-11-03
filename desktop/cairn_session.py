@@ -1497,6 +1497,7 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         "skipUrls": [str(u) for u in (config.get("skipUrls") or [])][:200_000],
         "connectionTimeout": _int(config.get("connectionTimeout"), 15, 10, 30),
         "readTimeout": _int(config.get("readTimeout"), 60, 30, 300),
+        "steadySpeed": config.get("steadySpeed", True) is not False,
         "threadDepth": _int(config.get("threadDepth"), 0, 0, 3),
         "speedLimit": _int(config.get("speedLimit"), 0, 0, 10_000 * 1024 * 1024),
         "proxy": proxy,

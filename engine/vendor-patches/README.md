@@ -193,3 +193,19 @@ Unreleased (page order):
   title folders; part of the fingerprint as `.nd` so names kept from an older run are made again) and "Folder for each post
   or album" (`contextFolders`, `context_folder()`: the post title, caption or album title of a file that would otherwise
   get no folder, when it scores as a real title).
+
+3.2.0:
+- `cyberdrop_dl/clients/steady.py` (new file): steady download speed. `chunks()` reads a response and raises TimeoutError
+  when it is silent for `STALL_SECONDS` (20 s; the bridge sets it from "Keep download speed steady" and the read timeout).
+  `SpeedWatch` raises `SpeedDropped` when a resumable connection stays under a quarter of its best speed for 15 s, after a
+  20 s warm-up, never under 512 KB/s and never with a speed cap. `free_reconnect` gives back the attempt of a status-999
+  retry (the file moved forward), up to 8 per file.
+- `cyberdrop_dl/clients/downloads.py`: one-stream downloads read through `steady.chunks` and a `SpeedWatch`. A speed drop
+  becomes a status-999 retry, which resumes from the `.part` file.
+- `cyberdrop_dl/clients/segments.py`: each part of a split file reads through `steady.chunks` and its own `SpeedWatch`. A
+  part that stalls, drops (ClientPayloadError, ServerDisconnectedError, ConnectionResetError) or slows down reconnects by
+  itself from its own size, up to 8 times, and gives up after two reconnects in a row that brought no bytes.
+- `cyberdrop_dl/downloader/http.py`: the retry loop calls `steady.free_reconnect` before counting the attempt.
+- `cyberdrop_dl/crawlers/pixeldrain.py`: without an API key, a file bigger than what is left of the free daily transfer
+  limit (`/api/misc/rate_limits`, read at most once a minute, files already started counted) fails up front with 509
+  "free daily bandwidth limit is used up", which the desktop classifies as a quota error (retry later).
