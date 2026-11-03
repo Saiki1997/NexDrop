@@ -1,3 +1,12 @@
+# NEXDROP 3.2.2
+
+## Pixeldrain
+- **The same up-front checks as upstream cyberdrop-dl.** Besides captcha-locked files, these now fail before downloading, with Pixeldrain's own reason:
+  - files that went over their download limit for the day (`*_limit_exceeded`)
+  - files taken down for legal reasons (451)
+
+  Captcha-locked and over-limit files still download with a paid account's API key.
+
 # NEXDROP 3.2.1
 
 Fixes from a 3.2.0 run of a large SimpCity thread (5,574 saved, 3,011 failed).
