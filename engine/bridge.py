@@ -202,12 +202,14 @@ class _LogBridge(logging.Handler):
                 if inner:
                     message = f"Scrape Failed: {_http_url(message) or ''} ({inner})"
             emit({"type": "scrape_failed", "url": _http_url(message) or "", "message": message[:500]})
+            SAME_CONTENT.failed(message)
             return
         if record.levelno >= logging.ERROR:
             failure = _FAIL_RE.match(message)
             if failure and "Scrape" not in failure.group("prefix"):
                 emit({"type": "failed", "url": failure.group("url").rstrip(").,;"), "reason": failure.group("reason")[:200],
                       "referer": failure.group("referer") or ""})
+                SAME_CONTENT.failed(message)
                 return
         if message.startswith("Retrying "):
             emit({"type": "retry", "url": _http_url(message) or "", "message": message[:300]})
@@ -1299,6 +1301,80 @@ def _install_resume_skip(urls: list) -> None:
     Downloader._check_skip_by_config = check
 
 
+class _SameContent:
+    """NEXDROP patch (3.2.2): one download per content in a run, even under other names or sites.
+
+    Many hosts publish a file's hash before it is downloaded (Pixeldrain, GoFile, Kemono, Mediafire,
+    OneDrive, archive.org ...). The engine already skips a hash it has on record from an earlier file,
+    but two links to the same content in one run both started downloading, because neither copy had
+    finished yet. Now the first link claims the hash and the others are skipped.
+
+    If the first link then fails, the links it held back are reported as failed too, so Retry failed
+    still gets the file."""
+
+    def __init__(self) -> None:
+        self.claims: dict[tuple[str, str], str] = {}
+        self.held: dict[str, list[str]] = {}
+        self.lock = threading.Lock()
+
+    def claim(self, algo: str, checksum: str, url: str) -> str | None:
+        """None when `url` may download this content, else the link that already claimed it."""
+        key = (algo.lower(), checksum.strip().lower())
+        with self.lock:
+            first = self.claims.setdefault(key, url)
+            if first == url:
+                return None
+            self.held.setdefault(first, []).append(url)
+            return first
+
+    def failed(self, message: str) -> None:
+        """A failure was reported: release the links held back by the link that failed."""
+        with self.lock:
+            hit = [first for first in self.held if first in message or _file_id(first) in message]
+            released = [(first, self.held.pop(first)) for first in hit]
+            for first in hit:
+                for key in [k for k, v in self.claims.items() if v == first]:
+                    del self.claims[key]
+        for first, urls in released:
+            for url in urls:
+                emit({"type": "failed", "url": url, "referer": "",
+                      "reason": f"held back for {shown_url(first)} (same content), which failed"})
+
+
+def _file_id(url: str) -> str:
+    """The last path segment of a link, when it is long enough to name one file (an id or a hash)."""
+    tail = url.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+    return tail if len(tail) >= 6 else "\0"
+
+
+SAME_CONTENT = _SameContent()
+
+
+def _install_same_content() -> None:
+    try:
+        from cyberdrop_dl.crawlers.crawler import Crawler
+    except Exception:  # noqa: BLE001
+        return
+    original = Crawler.check_complete_by_hash
+
+    async def check_complete_by_hash(self, url, hash_algo, checksum):
+        if await original(self, url, hash_algo, checksum):
+            return True
+        if self.config.ignore_hashes or not checksum:
+            return False
+        first = SAME_CONTENT.claim(hash_algo, str(checksum), str(url))
+        if first is None:
+            return False
+        emit({"type": "skipped", "url": str(url), "reason": f"same content as {shown_url(first)} in this run"})
+        try:
+            self.tui.files.stats.prev_completed += 1
+        except Exception:  # noqa: BLE001
+            pass
+        return True
+
+    Crawler.check_complete_by_hash = check_complete_by_hash
+
+
 RESERVE_MB = 16
 
 
@@ -1661,6 +1737,7 @@ def _run() -> int:
     )
     _install_last_post_report()
     _install_resume_skip(payload.get("skipUrls") or [])
+    _install_same_content()
     if payload.get("previewOnly"):
         # 3.1 naming preview: pages are crawled and every file is named, nothing is downloaded
         from cyberdrop_dl.crawlers import SKIP_DOWNLOAD

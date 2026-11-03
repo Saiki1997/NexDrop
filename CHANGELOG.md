@@ -7,6 +7,11 @@
 
   Captcha-locked and over-limit files still download with a paid account's API key.
 
+## Same content, one download
+- **Two links to the same file in one run now download it once**, even under another name or from another site. Many hosts publish a file's hash before it downloads (Pixeldrain, GoFile, Kemono, Mediafire, OneDrive, archive.org and others). The first link takes the file and the others are listed as *Skipped: same content as …*. If that first link fails, the links it held back are listed as failed too, so **Retry failed** still gets the file.
+- Files from earlier runs with a known hash were already skipped before downloading.
+- Hosts that don't publish a hash (Bunkr, Cyberdrop and others) can only be compared after the download. For those, set **Settings > Downloads > Same content as an earlier file** to *Skip*: the new copy is moved to a `_duplicates` folder, so your library keeps one copy.
+
 # NEXDROP 3.2.1
 
 Fixes from a 3.2.0 run of a large SimpCity thread (5,574 saved, 3,011 failed).
