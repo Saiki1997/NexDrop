@@ -209,3 +209,14 @@ Unreleased (page order):
 - `cyberdrop_dl/crawlers/pixeldrain.py`: without an API key, a file bigger than what is left of the free daily transfer
   limit (`/api/misc/rate_limits`, read at most once a minute, files already started counted) fails up front with 509
   "free daily bandwidth limit is used up", which the desktop classifies as a quota error (retry later).
+
+3.2.1:
+- `cyberdrop_dl/clients/steady.py`: `reconnect_delay` (1 s doubling to 30 s between the free reconnects of one file) and
+  `connection_cap_wait` (a "max_concurrent" refusal waits 15 s, up to 20 times, without using an attempt).
+- `cyberdrop_dl/downloader/http.py`: the retry loop waits for a connection cap, logs status-999 reconnects at info level,
+  and gives one free attempt for the fall-back from parts to one stream.
+- `cyberdrop_dl/clients/downloads.py`: a `SegmentError` keeps the `.part` file (part 1, from the checked first answer) and
+  only discards the other parts, so the one-stream retry resumes from part 1's end.
+Also from `engine/bridge.py`: no split for Pixeldrain hosts or for a server-locked host when Connections per server is 1;
+FlareSolverr only for answers that contain a DDoS-Guard or Cloudflare check.
+

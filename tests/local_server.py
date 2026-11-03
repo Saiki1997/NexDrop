@@ -23,6 +23,8 @@ file holds exactly one version of one file. Routes, all GET:
   /seg-drop/<name>?size=N           like /ok, but the first range starting after byte 0 drops half way
   /stall/<name>?size=N              the first request sends half, then keeps the connection open and silent
   /seg-stall/<name>?size=N          like /ok, but the first range starting after byte 0 goes silent half way
+  /seg-busy/<name>?size=N           a part range (bytes=A-B, A > 0) drops half way the first time and is
+                                    answered 503 after that; open-ended ranges (bytes=A-) work
 
 `server.hits[path]` counts the requests per path and `server.headers[path]` keeps the last
 request headers.
@@ -160,6 +162,19 @@ class LocalServer:
             return await self._send(request, data, etag='"s1"')
         if route == "stall":  # the first answer goes silent half way and never closes
             return await self._send(request, content(name, size), etag='"st1"', stall_at=size // 2 if n == 1 else None)
+        if route == "seg-busy":
+            data = content(name, size)
+            wanted = request.headers.get("Range", "")
+            first, _, last = wanted[6:].partition("-") if wanted.startswith("bytes=") else ("", "", "")
+            if first and first != "0" and last:
+                self.ranged[key] += 1
+                if self.ranged[key] == 1:
+                    middle = (int(first) + int(last)) // 2
+                    return await self._send(request, data, etag='"sb1"', drop_at=middle)
+                return web.Response(status=503, headers={"Retry-After": "0"}, text="busy")
+            if first and first != "0":
+                self.ranges.setdefault(key, []).append(wanted)
+            return await self._send(request, data, etag='"sb1"')
         if route == "seg-stall":  # the first range request after byte 0 goes silent half way through its part
             data = content(name, size)
             wanted = request.headers.get("Range", "")
@@ -211,7 +226,8 @@ class LocalServer:
             try:
                 await asyncio.sleep(8)  # silent, like a server that stopped sending without hanging up
             finally:
-                request.transport.close()
+                if request.transport is not None:
+                    request.transport.close()
             return response
         rate = int(request.query.get("rate", "0") or 0)  # bytes per second for this connection, like a host's cap
         sent_at = time.monotonic()

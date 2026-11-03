@@ -128,7 +128,8 @@ def classify(reason: str, url: str = "") -> str:
     if "509" in text or "bandwidth limit" in low:
         return "quota"
     status = _status(text)
-    if status == 429 or "too many requests" in low or "kept asking to slow down" in low:
+    if status == 429 or "too many requests" in low or "kept asking to slow down" in low \
+            or "max_concurrent" in low or "maximum number of open download connections" in low:
         return "rate_limited"
     if status in (403, 410) and looks_temporary_link(url):
         return "expired_url"
