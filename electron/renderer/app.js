@@ -318,6 +318,8 @@
     }
   }
 
+  let pendingRetry = null; // 3.2.4: the folders Retry failed loaded, for the job started from the box
+
   function jobFromInput() {
     const { urls, unsupported } = fmt.parseLinks(urlsBox.value);
     if (!urls.length && !unsupported.length) {
@@ -334,6 +336,8 @@
     }
     const { duplicates } = fmt.parseLinks(urlsBox.value);
     if (duplicates.length) log("info", `${duplicates.length} duplicate ${duplicates.length === 1 ? "link was" : "links were"} left out (the same link with other tracking parameters).`);
+    const retry = pendingRetry && urls.some((u) => pendingRetry.urls.has(u)) ? pendingRetry.folders : null;
+    pendingRetry = null;
     return {
       id: newJobId(),
       urls,
@@ -342,6 +346,7 @@
       startPage,
       endPage,
       redownload: $("#redownload").checked,
+      ...(retry ? { retryFolders: retry } : {}),
     };
   }
 
@@ -476,6 +481,7 @@
       fileTypes: { images: prefs.typeImages, videos: prefs.typeVideos, audio: prefs.typeAudio, other: prefs.typeOther },
       minImageKB: prefs.minImageKB,
       skipUrls: job.doneUrls || [],
+      retryFolders: job.retryFolders || {},
       speedLimit: speedMB * 1024 * 1024,
       proxy: prefs.proxy || "",
       proxyScope: prefs.proxyScope === "simpcity" ? "simpcity" : "all",
@@ -2194,12 +2200,23 @@
     scheduleRender();
   });
   $("#btn-retry-failed").addEventListener("click", () => {
-    const failed = run.order.filter((r) => (r.state === "failed" || r.state === "cancelled") && /^https?:/.test(r.url)).map((r) => r.url);
-    if (!failed.length) return;
-    urlsBox.value = failed.join("\n");
+    const rows = run.order.filter((r) => (r.state === "failed" || r.state === "cancelled") && /^https?:/.test(r.url));
+    if (!rows.length) return;
+    // 3.2.4: each file is asked for again from the page it came from (fresh download links), and saved into
+    // the folder it was meant for, so a half-finished file continues there instead of starting elsewhere.
+    const targets = [...new Set(rows.map((r) => (/^https?:/.test(r.referer || "") ? r.referer : r.url)))];
+    const folders = {};
+    for (const r of rows) {
+      if (!r.folder) continue;
+      folders[r.url] = r.folder;
+      if (r.referer && !folders[r.referer]) folders[r.referer] = r.folder;
+    }
+    pendingRetry = Object.keys(folders).length ? { urls: new Set(targets), folders } : null;
+    urlsBox.value = targets.join("\n");
     autoGrow();
     urlsBox.focus();
-    log("info", `Loaded ${failed.length} unfinished links. Press Start to try them again.`);
+    const kept = rows.filter((r) => r.folder).length;
+    log("info", `Loaded ${rows.length} unfinished ${rows.length === 1 ? "file" : "files"} (${targets.length} ${targets.length === 1 ? "link" : "links"}). Press Start to try them again.${kept ? ` ${kept === rows.length ? "They" : `${kept} of them`} go back into their own folders, and half-finished files continue.` : ""}`);
   });
 
   // ─── activity log ─────────────────────────────────────────────────────────

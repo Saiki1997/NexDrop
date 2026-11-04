@@ -1493,6 +1493,60 @@ def _install_bunkr_status() -> None:
     Downloader._check_skip_by_config = check
 
 
+def _plain(url: str) -> str:
+    return url.split("#", 1)[0].split("?", 1)[0]
+
+
+def _base_folder(folder: Path) -> Path:
+    """The folder without the Images / Videos / Audio / Other folder that type folders add."""
+    return folder.parent if folder.name in TYPE_FOLDERS.values() else folder
+
+
+def _install_retry_folders(raw: object, root: Path) -> None:
+    """NEXDROP patch (3.2.4): Retry failed saves into the folder the file was meant for.
+
+    Every file reports where it goes (an "origin" event: its folder and the page it came from).
+    Retry failed sends those folders back as `retryFolders` {file link or page link: folder}, so a
+    retried file lands in its thread's folder under the same name: a half-finished `.part` there
+    continues, and nothing is saved twice somewhere else."""
+    try:
+        from cyberdrop_dl.downloader.http import Downloader
+    except Exception:  # noqa: BLE001
+        return
+    folders: dict[str, Path] = {}
+    if isinstance(raw, dict):
+        for key, value in list(raw.items())[:20_000]:
+            try:
+                folder = Path(str(value))
+            except (TypeError, ValueError):
+                continue
+            if str(key).startswith(("http://", "https://")) and folder.is_absolute() and ".." not in folder.parts:
+                folders[str(key)] = folder
+                folders.setdefault(_plain(str(key)), folder)
+    reported: set[str] = set()
+    original = Downloader._download
+
+    async def download(self, media_item):
+        if not getattr(media_item, "is_segment", False):
+            url = shown_url(str(media_item.url))
+            referer = shown_url(str(getattr(media_item, "referer", "") or ""))
+            if folders:
+                for key in (url, _plain(url), referer, _plain(referer)):
+                    target = folders.get(key) if key else None
+                    if target is not None:
+                        if _base_folder(Path(media_item.download_folder)) != target:
+                            media_item.download_folder = target
+                        break
+            if url not in reported:
+                reported.add(url)
+                folder = _base_folder(Path(media_item.download_folder))
+                emit({"type": "origin", "url": url, "referer": referer if referer.startswith("http") else "",
+                      "folder": str(folder)})
+        return await original(self, media_item)
+
+    Downloader._download = download
+
+
 RESERVE_MB = 16
 
 
@@ -1857,6 +1911,7 @@ def _run() -> int:
     _install_resume_skip(payload.get("skipUrls") or [])
     _install_same_content()
     _install_bunkr_status()
+    _install_retry_folders(payload.get("retryFolders"), destination)
     if payload.get("previewOnly"):
         # 3.1 naming preview: pages are crawled and every file is named, nothing is downloaded
         from cyberdrop_dl.crawlers import SKIP_DOWNLOAD

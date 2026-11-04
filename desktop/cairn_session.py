@@ -216,6 +216,21 @@ class FileTable:
         self.counts = {state: 0 for state in FINAL_STATES}
         self.on_change = None  # callback(row) when a row changes state
 
+    def folders(self, urls: list[str], referers: dict[str, str] | None = None) -> dict[str, str]:
+        """{file link or page link: folder} for files whose folder is known (3.2.4, retries)."""
+        out: dict[str, str] = {}
+        with self.lock:
+            for url in urls:
+                row = self.rows.get(url) or {}
+                folder = row.get("folder")
+                if not folder:
+                    continue
+                out[url] = folder
+                page = row.get("referer") or (referers or {}).get(url)
+                if page:
+                    out.setdefault(page, folder)
+        return out
+
     def update(self, url: str, **fields) -> None:
         if not url:
             return
@@ -1174,6 +1189,17 @@ def is_transient(reason: str, url: str = "") -> bool:
     return error_classes.is_retryable(error_classes.classify(reason, url))
 
 
+def retry_folders(raw: object) -> dict[str, str]:
+    """{link: absolute folder} from the window's Retry failed; anything else is dropped."""
+    out: dict[str, str] = {}
+    if isinstance(raw, dict):
+        for key, value in list(raw.items())[:20_000]:
+            key, value = str(key), str(value or "")
+            if key.startswith(("http://", "https://")) and value and Path(value).is_absolute():
+                out[key] = value
+    return out
+
+
 def retry_pass(failed: list[str], referers: dict[str, str], payload: dict, engine_pass, direct_fetch, direct: set[str]) -> None:
     """Try files that failed with a temporary error once more, after a short pause.
 
@@ -1202,7 +1228,9 @@ def retry_pass(failed: list[str], referers: dict[str, str], payload: dict, engin
     by_engine = [u for u in targets if u not in direct]
     if by_engine:
         retry_log = str(ENGINE_LOG_PATH).replace(".engine.log", ".retry.engine.log") if ENGINE_LOG_PATH else ""
-        engine_pass({**payload, "urls": by_engine, "ignoreHistory": False, "startPage": 1, "endPage": None, "engineLog": retry_log})
+        folders = {**(payload.get("retryFolders") or {}), **FILES.folders(retry_files, referers)}
+        engine_pass({**payload, "urls": by_engine, "ignoreHistory": False, "startPage": 1, "endPage": None, "engineLog": retry_log,
+                     "retryFolders": folders})
     for url in retry_files:
         if url in direct and not STOP.is_set():
             direct_fetch(url)
@@ -1495,6 +1523,8 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
         "fileTypes": config.get("fileTypes") if isinstance(config.get("fileTypes"), dict) else {},
         "minImageKB": _int(config.get("minImageKB"), 0, 0, 100_000),
         "skipUrls": [str(u) for u in (config.get("skipUrls") or [])][:200_000],
+        # 3.2.4: Retry failed puts each file back into the folder it was meant for
+        "retryFolders": retry_folders(config.get("retryFolders")),
         "connectionTimeout": _int(config.get("connectionTimeout"), 15, 10, 30),
         "readTimeout": _int(config.get("readTimeout"), 60, 30, 300),
         "steadySpeed": config.get("steadySpeed", True) is not False,
@@ -1621,6 +1651,11 @@ def run(config: dict) -> int:  # noqa: C901, PLR0912, PLR0915
                     if isinstance(event.get("identity"), dict):
                         row = {**row, "identity": event["identity"]}  # job database only, not the manifest
                     NAMING_ROWS[url] = row
+            elif kind == "origin":
+                # 3.2.4: where the file goes and the page it came from, so Retry failed can use the same folder
+                url = str(event.get("url") or "")
+                if url and event.get("folder"):
+                    FILES.update(url, folder=str(event["folder"]), referer=str(event.get("referer") or "") or None)
             elif kind == "renamed":
                 # "Read titles inside files" renamed a finished file
                 url = str(event.get("url") or "")
