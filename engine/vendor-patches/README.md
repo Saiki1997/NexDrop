@@ -220,3 +220,7 @@ Unreleased (page order):
 Also from `engine/bridge.py`: no split for Pixeldrain hosts or for a server-locked host when Connections per server is 1;
 FlareSolverr only for answers that contain a DDoS-Guard or Cloudflare check.
 
+3.2.2:
+- `cyberdrop_dl/crawlers/pixeldrain.py`: `_check_available`, after upstream's `_check_file_is_available`: 451 for
+  `unavailable_for_legal_reasons`, and without an API key 403 for `*_captcha_required` and `*_limit_exceeded`, with
+  Pixeldrain's `availability_message`.

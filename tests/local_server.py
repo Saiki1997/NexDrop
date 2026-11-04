@@ -219,7 +219,8 @@ class LocalServer:
         if drop_at is not None and drop_at - start > 0:
             await response.write(body[: drop_at - start])
             await asyncio.sleep(0.5)  # let the client read what was sent before the drop
-            request.transport.close()  # the client sees a broken transfer
+            if request.transport is not None:
+                request.transport.close()  # the client sees a broken transfer
             return response
         if stall_at is not None and stall_at - start > 0:
             await response.write(body[: stall_at - start])

@@ -54,6 +54,31 @@ class PixeldrainCaptcha(unittest.IsolatedAsyncioTestCase):
             c.check_complete_by_hash.assert_awaited_once()
 
 
+class PixeldrainAvailability(unittest.IsolatedAsyncioTestCase):
+    """3.2.2: the same up-front checks as upstream cyberdrop-dl."""
+
+    def crawler(self, logged_in=False):
+        return PixeldrainCaptcha.crawler(None, logged_in)
+
+    async def test_limit_exceeded_and_legal_takedown_fail_up_front(self):
+        for availability, logged_in, code in (("file_download_limit_exceeded", False, 403),
+                                              ("unavailable_for_legal_reasons", False, 451),
+                                              ("unavailable_for_legal_reasons", True, 451)):
+            c = self.crawler(logged_in)
+            f = pd_file(availability)
+            f.availability_message = "Pixeldrain says why"
+            with self.assertRaises(ScrapeError) as caught:
+                await PixelDrainCrawler._file(c, SimpleNamespace(), f)
+            self.assertEqual(caught.exception.status, code)
+            self.assertIn("Pixeldrain says why", str(caught.exception))
+            c.check_complete_by_hash.assert_not_awaited()
+
+    async def test_api_key_downloads_a_limited_file(self):
+        c = self.crawler(logged_in=True)
+        await PixelDrainCrawler._file(c, SimpleNamespace(), pd_file("file_download_limit_exceeded"))
+        c.check_complete_by_hash.assert_awaited_once()
+
+
 class TikTokSounds(unittest.TestCase):
     def test_us_signed_sound_uses_the_global_music_cdn(self):
         signed = AbsoluteHttpURL("https://sf16-sign.tiktokcdn-us.com/obj/musically-maliva-obj/6949008446637345541.mp3"

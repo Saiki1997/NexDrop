@@ -30,6 +30,7 @@ class File:
     mime_type: str
     hash_sha256: str
     availability: str = ""  # NEXDROP patch: "file_rate_limited_captcha_required" etc.
+    availability_message: str = ""  # NEXDROP patch (3.2.2): Pixeldrain's own explanation, as upstream shows it
     size: int = 0  # NEXDROP patch (3.2): checked against the free transfer limit
 
 
@@ -264,12 +265,10 @@ class PixelDrainCrawler(Crawler):
 
         # NEXDROP patch: Pixeldrain locks popular files behind a captcha for free downloads.
         # Say so up front instead of downloading into a 403 and retrying it.
-        if type(file) is File and file.availability.endswith("captcha_required") and not self.api.logged_in:
-            raise ScrapeError(
-                403,
-                "Pixeldrain wants a captcha for this file. Open the link in a browser to download it, "
-                "or add a Pixeldrain API key from a paid account in Settings > Sign-ins",
-            )
+        # 3.2.2, as upstream cyberdrop-dl does: also files over their download limit ("_limit_exceeded") and
+        # files taken down for legal reasons (451), with Pixeldrain's own message.
+        if type(file) is File:
+            _check_available(file, logged_in=self.api.logged_in)
 
         if "text/plain" in file.mime_type:
             scrape_item.setup_as_album(self.create_title(file.name, file.id))
@@ -372,6 +371,23 @@ class PixelDrainAPI(API):
         if type(file) is File:
             return (self.origin / "api/file" / file.id).with_query("download")
         return (self.origin / "api/filesystem" / file.path.removeprefix("/")).with_query("attach")
+
+
+def _check_available(file: File, *, logged_in: bool) -> None:
+    availability = file.availability or ""
+    if availability == "unavailable_for_legal_reasons":
+        raise ScrapeError(451, file.availability_message or "Pixeldrain took this file down for legal reasons")
+    if logged_in:
+        return
+    if availability.endswith("captcha_required"):
+        raise ScrapeError(
+            403,
+            "Pixeldrain wants a captcha for this file. Open the link in a browser to download it, "
+            "or add a Pixeldrain API key from a paid account in Settings > Sign-ins",
+        )
+    if availability.endswith("_limit_exceeded"):
+        reason = file.availability_message or "This file went over its download limit for today"
+        raise ScrapeError(403, f"Pixeldrain: {reason}. Try again later, or add a Pixeldrain API key in Settings > Sign-ins")
 
 
 def _gb(n_bytes: int) -> str:
