@@ -231,3 +231,7 @@ FlareSolverr only for answers that contain a DDoS-Guard or Cloudflare check.
   part per connection. `run_parts` starts `workers_for(layout)` connections that each take the next piece from a queue, so a
   slow connection holds back only its piece. Older layouts (one part per connection) resume unchanged. `discard` deletes
   part files by the names in the layout (up to 95), or `.seg1`..`.seg16` without one.
+
+3.2.4:
+- `cyberdrop_dl/downloader/http.py`: a "Segment Mismatch" (parts fall back to one stream) is logged at info as
+  "switching to one stream", not as a failed download.

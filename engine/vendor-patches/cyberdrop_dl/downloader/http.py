@@ -219,6 +219,9 @@ class Downloader:
                 if getattr(e, "status", None) == steady.RECONNECT_STATUS:
                     # NEXDROP patch (3.2.1): a reconnect is not a failure, and waits a little longer each time
                     logger.info(f"{self.log_prefix} reconnecting: {media_item.url} ({e!s})")
+                elif getattr(e, "status", None) == "Segment Mismatch":
+                    # NEXDROP patch (3.2.4): switching from parts to one stream is a change of plan, not an error
+                    logger.info(f"{self.log_prefix} switching to one stream: {media_item.url} ({e!s})")
                 else:
                     logger.error(f"{self.log_prefix} failed: {media_item.url} with error: {e!s}")
                 delay = steady.reconnect_delay(media_item) if reconnect else retry_delay(e, media_item.attempts)
