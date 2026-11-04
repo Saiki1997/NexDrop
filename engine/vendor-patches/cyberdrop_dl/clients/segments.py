@@ -15,6 +15,11 @@ for exactly the requested bytes of a file with the same size and validators. Whe
 is there the parts are appended to the `.part` file in order and the normal checks (exact size,
 web page instead of file) run on the result.
 
+NEXDROP patch (3.2.3): the file is cut into more pieces than there are connections (about 4 per
+connection, 8-64 MB each, like Lysagxra/BunkrDownloader). Each connection takes the next piece when
+it finishes one, so a slow connection only holds back its own small piece instead of a quarter of
+the file. Piece 1 is the first answer, written into the `.part` file; piece N is `<name>.part.segN`.
+
 The layout is saved in the `.part.nxmeta` sidecar, so after a crash or a pause each part
 resumes from its own size. Anything unexpected (a 200 instead of 206, another range, a changed
 file) deletes the parts, remembers that this link must not be split, and the retry downloads it
@@ -24,6 +29,7 @@ as one stream.
 from __future__ import annotations
 
 import asyncio
+import collections
 import json
 import logging
 from typing import TYPE_CHECKING, Any
@@ -40,8 +46,12 @@ MIN_SIZE = 64 * 1024 * 1024  # files smaller than this are faster as one stream
 MIN_PART = 16 * 1024 * 1024
 MAX_PARTS = 4  # set by the bridge from the download mode; 0 or 1 turns splitting off
 PART_CHUNK = 1024 * 1024
-SEG_FILES_MAX = 16  # part files ever written are .seg1 ... .seg(MAX_PARTS - 1); the setting goes up to 8
+SEG_FILES_MAX = 16  # most connections per file (the setting goes up to 8); older layouts had this many parts
 COPY_CHUNK = 1024 * 1024
+UNITS_PER_PART = 4  # pieces per connection
+MIN_UNIT = 8 * 1024 * 1024
+MAX_UNIT = 64 * 1024 * 1024
+MAX_UNITS = 96  # most pieces in one file (and part files ever written: .seg1 ... .seg95)
 
 # The bridge replaces this with a check of the hosts that asked to slow down
 host_ok: Callable[[str], bool] = lambda host: True  # noqa: E731
@@ -69,6 +79,23 @@ def plan(size: int, parts: int) -> list[tuple[int, int]]:
         ranges.append((start, end))
         start = end + 1
     return ranges
+
+
+def plan_units(size: int, parts: int) -> list[tuple[int, int]]:
+    """Inclusive byte ranges that cover 0..size-1 in pieces for `parts` connections to share."""
+    if parts <= 1:
+        return plan(size, 1)
+    unit = -(-size // (parts * UNITS_PER_PART))
+    unit = max(MIN_UNIT, min(MAX_UNIT, unit))
+    count = max(parts, min(MAX_UNITS, -(-size // unit)))
+    return plan(size, count)
+
+
+def workers_for(layout: list[tuple[int, int]]) -> int:
+    """How many connections share the pieces of `layout` (a resumed file follows today's setting)."""
+    if len(layout) <= 1:
+        return 1
+    return max(1, min(len(layout), parts_for(layout[-1][1] + 1)))
 
 
 def _key(url: Any) -> str:
@@ -130,7 +157,9 @@ def discard(partial_file: Path | None) -> None:
     if partial_file is None:
         return
     # By name, not by listing the folder: a glob per file made each download slower as the folder filled.
-    for index in range(1, SEG_FILES_MAX + 1):
+    # 3.2.3: a file has up to MAX_UNITS pieces, named in its layout; older layouts had up to 16 parts.
+    layout = load_layout(partial_file)
+    for index in range(1, max(len(layout), SEG_FILES_MAX + 1)):
         try:
             seg_file(partial_file, index).unlink(missing_ok=True)
         except OSError:
@@ -295,7 +324,17 @@ async def run_parts(
         start, end = layout[index]
         await fill(index, seg_file(partial_file, index), start, end)
 
-    tasks = [asyncio.ensure_future(part0())] + [asyncio.ensure_future(part(i)) for i in range(1, len(layout))]
+    # NEXDROP patch (3.2.3): `workers` connections share the pieces; each takes the next one when free.
+    pending = collections.deque(range(1, len(layout)))
+    workers = workers_for(layout)
+
+    async def worker(first: bool) -> None:
+        if first:
+            await part0()
+        while pending:
+            await part(pending.popleft())
+
+    tasks = [asyncio.ensure_future(worker(i == 0)) for i in range(max(1, workers))]
     try:
         await asyncio.gather(*tasks)
     except BaseException:

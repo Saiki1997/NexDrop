@@ -35,6 +35,77 @@ class Plan(unittest.TestCase):
             for (a, b), (c, _) in zip(layout, layout[1:]):
                 self.assertEqual(b + 1, c)
 
+    def test_pieces_cover_the_file_and_outnumber_the_connections(self):
+        gb = 1024 * MB
+        for size, parts in ((int(1.68 * gb), 4), (64 * MB, 4), (100 * gb, 8), (200 * MB, 2)):
+            layout = segments.plan_units(size, parts)
+            self.assertEqual(layout[0][0], 0)
+            self.assertEqual(layout[-1][1], size - 1)
+            self.assertTrue(all(layout[i][1] + 1 == layout[i + 1][0] for i in range(len(layout) - 1)))
+            self.assertGreaterEqual(len(layout), parts)
+            self.assertLessEqual(len(layout), segments.MAX_UNITS)
+            pieces = {b - a + 1 for a, b in layout}
+            if len(layout) < segments.MAX_UNITS:
+                self.assertLessEqual(max(pieces), segments.MAX_UNIT + 1)
+        self.assertEqual(len(segments.plan_units(int(1.68 * gb), 4)), 27)  # 64 MB pieces
+        self.assertEqual(segments.plan_units(10 * MB, 1), [(0, 10 * MB - 1)])
+
+    def test_connections_for_a_layout_follow_the_setting(self):
+        layout = segments.plan_units(1024 * MB, 4)
+        saved = segments.MAX_PARTS
+        try:
+            segments.MAX_PARTS = 4
+            self.assertEqual(segments.workers_for(layout), 4)
+            segments.MAX_PARTS = 2
+            self.assertEqual(segments.workers_for(layout), 2)
+            self.assertEqual(segments.workers_for(segments.plan(1024 * MB, 4)), 2)  # a 3.2.2 layout resumes too
+        finally:
+            segments.MAX_PARTS = saved
+
+    def test_free_connections_take_the_next_piece(self):
+        """A slow piece holds back only itself: the other connection finishes the rest."""
+        import asyncio
+        import contextlib
+
+        with tempfile.TemporaryDirectory() as tmp:
+            partial = Path(tmp) / "f.mp4.part"
+            layout = segments.plan(80, 8)
+            served: list[int] = []
+
+            class Resp:
+                status, headers = 206, {}
+
+                def __init__(self, data, delay):
+                    self.data, self.delay = data, delay
+
+                def iter_chunked(self, _n):
+                    async def gen():
+                        await asyncio.sleep(self.delay)
+                        yield self.data
+                    return gen()
+
+            body = bytes(range(80))
+
+            @contextlib.asynccontextmanager
+            async def open_part(start, end):
+                served.append(start)
+                yield Resp(body[start:end + 1], 0.3 if start == 10 else 0.0)
+
+            async def on_chunk(_n):
+                return None
+
+            saved = segments.MAX_PARTS, segments.MIN_SIZE, segments.MIN_PART
+            segments.MAX_PARTS, segments.MIN_SIZE, segments.MIN_PART = 2, 1, 1
+            try:
+                first = Resp(body[0:10], 0.0)
+                asyncio.run(segments.run_parts(first, partial, layout, 0, open_part, 1024, on_chunk, steady_speed=False))
+                segments.merge(partial, layout)
+            finally:
+                segments.MAX_PARTS, segments.MIN_SIZE, segments.MIN_PART = saved
+            self.assertEqual(partial.read_bytes(), body)
+            self.assertEqual(served[0], 10)
+            self.assertEqual(served[-1], 70)  # piece 2 was slow, so the first connection served pieces 3-8
+
     def test_small_files_and_mode_off_use_one_stream(self):
         self.assertEqual(segments.parts_for(10 * MB, 4), 1)
         self.assertEqual(segments.parts_for(500 * MB, 0), 1)
@@ -193,7 +264,7 @@ class EngineSegments(unittest.TestCase):
 
     def test_large_file_downloads_in_parts_and_is_whole(self):
         self.assertEqual(self.saved_bytes("split"), content(self.name("split"), self.SIZE))
-        self.assertGreaterEqual(self.server.hits[f"ok/{self.name('split')}"], 4)
+        self.assertGreaterEqual(self.server.hits[f"ok/{self.name('split')}"], 9)  # 3.2.3: 12 pieces of 256 KB
         ranged = [h for k, h in self.server.headers.items() if k == f"ok/{self.name('split')}"]
         self.assertTrue(ranged and ranged[0].get("If-Range") == f'"{self.name("split")}-{self.SIZE}"', ranged)
 
@@ -203,7 +274,11 @@ class EngineSegments(unittest.TestCase):
     def test_dropped_part_resumes_from_its_own_size(self):
         self.assertEqual(self.saved_bytes("drop"), content(self.name("drop"), self.SIZE))
         resumed = self.server.ranges.get(f"seg-drop/{self.name('drop')}", [])
-        layout = segments.plan(self.SIZE, 4)
+        saved_unit, segments.MIN_UNIT = segments.MIN_UNIT, 256 * 1024  # as the bridge sets it for segmentMinMB=1
+        try:
+            layout = segments.plan_units(self.SIZE, 4)
+        finally:
+            segments.MIN_UNIT = saved_unit
         starts = {f"bytes={a}-{b}" for a, b in layout[1:]}
         self.assertTrue(any(r not in starts for r in resumed), resumed)  # one part asked from its middle
 
