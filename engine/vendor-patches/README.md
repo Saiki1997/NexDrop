@@ -224,3 +224,10 @@ FlareSolverr only for answers that contain a DDoS-Guard or Cloudflare check.
 - `cyberdrop_dl/crawlers/pixeldrain.py`: `_check_available`, after upstream's `_check_file_is_available`: 451 for
   `unavailable_for_legal_reasons`, and without an API key 403 for `*_captcha_required` and `*_limit_exceeded`, with
   Pixeldrain's `availability_message`.
+
+3.2.3:
+- `cyberdrop_dl/clients/segments.py`, `cyberdrop_dl/clients/downloads.py`: a split file is planned as `plan_units` pieces
+  (about `UNITS_PER_PART` = 4 per connection, `MIN_UNIT`..`MAX_UNIT` = 8..64 MB, at most `MAX_UNITS` = 96) instead of one
+  part per connection. `run_parts` starts `workers_for(layout)` connections that each take the next piece from a queue, so a
+  slow connection holds back only its piece. Older layouts (one part per connection) resume unchanged. `discard` deletes
+  part files by the names in the layout (up to 95), or `.seg1`..`.seg16` without one.

@@ -1,3 +1,15 @@
+# NEXDROP 3.2.3
+
+Two ideas from [Lysagxra/BunkrDownloader](https://github.com/Lysagxra/BunkrDownloader).
+
+## Large files finish sooner
+- **A split file is now cut into small pieces** of 8–64 MB, about 4 for each connection. Each connection takes the next piece as soon as it finishes one. Before, a file was cut into 4 fixed parts, so near the end a single slow connection could be left downloading a quarter of the file on its own. Now a slow connection holds back only its own small piece.
+- A file paused with 3.2.2 or earlier resumes with its old parts.
+- **Connections per server** still decides how many connections one file uses. With 1 nothing is split.
+
+## Bunkr servers that are down
+- NexDrop reads Bunkr's status page (status.bunkr.ru) at most every 10 minutes. A file on a server listed as not working fails at once as *Server busy* and goes to the retry-later list, instead of using up its attempts on a dead server. If the status page can't be read, nothing changes.
+
 # NEXDROP 3.2.2
 
 ## Pixeldrain

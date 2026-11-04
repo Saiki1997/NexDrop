@@ -182,9 +182,9 @@ class DownloadClient:
             media_item.url, media_item.url.host or "", resp.headers, media_item.size, impersonated=impersonated
         ):
             return []
-        layout = segments.plan(media_item.size, segments.parts_for(media_item.size))
+        layout = segments.plan_units(media_item.size, segments.parts_for(media_item.size))
         segments.save_layout(media_item.partial_file, layout)
-        logger.info(f"Downloading {media_item.filename} in {len(layout)} parts at once")
+        logger.info(f"Downloading {media_item.filename} over {segments.workers_for(layout)} connections ({len(layout)} pieces)")
         return layout
 
     async def _append_segments(

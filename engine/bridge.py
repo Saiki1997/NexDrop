@@ -1005,6 +1005,7 @@ def _install_segments(parts: int, min_mb: int) -> None:
     segments.MAX_PARTS = max(0, min(int(parts), segments.SEG_FILES_MAX))
     segments.MIN_SIZE = min_mb * 1024 * 1024
     segments.MIN_PART = max(256 * 1024, segments.MIN_SIZE // 4)
+    segments.MIN_UNIT = max(256 * 1024, segments.MIN_SIZE // 8)  # 3.2.3: pieces of 8 MB with the 64 MB default
 
     def host_ok(host: str) -> bool:
         if host in SERVER_SLOTS.reduced:
@@ -1375,6 +1376,123 @@ def _install_same_content() -> None:
     Crawler.check_complete_by_hash = check_complete_by_hash
 
 
+class _BunkrStatus:
+    """NEXDROP patch (3.2.3): Bunkr lists its file servers on status.bunkr.ru (as Lysagxra/BunkrDownloader
+    reads it). A file on a server marked anything but "Operational" fails at once as *Server busy*,
+    so it goes to the retry-later list instead of using up its attempts on a server that is down.
+
+    The page is read at most every REFRESH seconds. If it can't be read, nothing is skipped."""
+
+    URL = "https://status.bunkr.ru/"
+    REFRESH = 600.0
+
+    def __init__(self) -> None:
+        self.servers: dict[str, str] = {}
+        self.read_at = float("-inf")
+        self.lock = threading.Lock()
+
+    @staticmethod
+    def parse(html: str) -> dict[str, str]:
+        """{server name: status} from the page: each server is a row with its name in a <p> and its
+        status in a <span>."""
+        from html.parser import HTMLParser
+
+        servers: dict[str, str] = {}
+
+        class Rows(HTMLParser):
+            def __init__(self) -> None:
+                super().__init__()
+                self.depth = 0  # <div> depth inside a server row, 0 outside
+                self.field = ""
+                self.name = self.status = ""
+
+            def handle_starttag(self, tag, attrs):
+                if tag == "div":
+                    classes = (dict(attrs).get("class") or "").split()
+                    if self.depth:
+                        self.depth += 1
+                    elif {"py-4", "border-b"} <= set(classes):
+                        self.depth, self.name, self.status = 1, "", ""
+                elif self.depth and tag == "p" and not self.name:
+                    self.field = "name"
+                elif self.depth and tag == "span" and not self.status:
+                    self.field = "status"
+
+            def handle_endtag(self, tag):
+                if tag in ("p", "span"):
+                    self.field = ""
+                elif tag == "div" and self.depth:
+                    self.depth -= 1
+                    if not self.depth and self.name and self.status:
+                        servers[self.name.strip().lower()] = self.status.strip()
+
+            def handle_data(self, data):
+                if self.field:
+                    setattr(self, self.field, getattr(self, self.field) + data)
+
+        try:
+            Rows().feed(html)
+        except Exception:  # noqa: BLE001
+            return {}
+        return servers
+
+    def refresh(self) -> None:
+        import urllib.request
+
+        with self.lock:
+            if time.monotonic() - self.read_at < self.REFRESH:
+                return
+            self.read_at = time.monotonic()
+        try:
+            request = urllib.request.Request(self.URL, headers={"User-Agent": "Mozilla/5.0 NexDrop"})
+            with urllib.request.urlopen(request, timeout=8) as answer:  # noqa: S310 - fixed https URL
+                servers = self.parse(answer.read(2_000_000).decode("utf-8", "replace"))
+        except Exception:  # noqa: BLE001 - a status check never costs a download
+            return
+        if servers:
+            self.servers = servers
+            down = sorted(name for name, status in servers.items() if status.lower() != "operational")
+            if down:
+                emit({"type": "log", "level": "info",
+                      "message": f"Bunkr's status page lists these servers as not working: {', '.join(down)}. "
+                                 "Their files will be tried again later."})
+
+    def down(self, host: str) -> str | None:
+        """The status of the server for `host` (e.g. c5bu-b.cdn.cr) when it isn't operational."""
+        status = self.servers.get(host.split(".", 1)[0].lower())
+        return status if status and status.lower() != "operational" else None
+
+
+BUNKR_STATUS = _BunkrStatus()
+
+
+def _install_bunkr_status() -> None:
+    try:
+        import asyncio
+
+        from cyberdrop_dl.downloader.http import Downloader
+        from cyberdrop_dl.exceptions import DownloadError
+    except Exception:  # noqa: BLE001
+        return
+    original = Downloader._check_skip_by_config
+
+    async def check(self, media_item):
+        if getattr(media_item, "domain", "") == "bunkr" and not getattr(media_item, "is_segment", False):
+            await asyncio.to_thread(BUNKR_STATUS.refresh)
+            host = media_item.url.host or ""
+            status = BUNKR_STATUS.down(host)
+            if status:
+                raise DownloadError(
+                    "Server Down",
+                    f"Service unavailable: Bunkr lists its server {host.split('.', 1)[0]} as \"{status}\" "
+                    "on status.bunkr.ru. Try again later",
+                    origin=media_item,
+                )
+        return await original(self, media_item)
+
+    Downloader._check_skip_by_config = check
+
+
 RESERVE_MB = 16
 
 
@@ -1738,6 +1856,7 @@ def _run() -> int:
     _install_last_post_report()
     _install_resume_skip(payload.get("skipUrls") or [])
     _install_same_content()
+    _install_bunkr_status()
     if payload.get("previewOnly"):
         # 3.1 naming preview: pages are crawled and every file is named, nothing is downloaded
         from cyberdrop_dl.crawlers import SKIP_DOWNLOAD
