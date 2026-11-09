@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, ClassVar, final, override
 
 from cyberdrop_dl.crawlers.crawler import Crawler, SupportedDomains, SupportedPaths
 from cyberdrop_dl.crawlers.twitter.api import FXTwitterAPI, TwitterAPI, TwitterGQLSearchFilter
-from cyberdrop_dl.exceptions import ScrapeError
+from cyberdrop_dl.exceptions import DownloadError, ScrapeError
 from cyberdrop_dl.mediaprops import Resolution
 from cyberdrop_dl.signature import simple_repr
 from cyberdrop_dl.url_objects import AbsoluteHttpURL, MediaItem
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Generator, Iterable
 
     from cyberdrop_dl.config.crawlers import TwitterConfig
-    from cyberdrop_dl.crawlers.twitter.models import Broadcast, Tweet
+    from cyberdrop_dl.crawlers.twitter.models import Broadcast, Tweet, Video
     from cyberdrop_dl.url_objects import ScrapeItem
 
 
@@ -221,8 +221,71 @@ class TwitterCrawler(Crawler):
                 continue
 
             new_item = scrape_item.create_child(self.parse_url(file.url))
-            self.handle_external_links(new_item, reset=file.type not in {"photo", "video"})
+            if file.video is not None and len(file.video.formats) > 1:
+                # NEXDROP patch (3.2.5): check the video file before queueing it, see _video()
+                self.create_task(self._video(new_item, file.video, scrape_item.url))
+            else:
+                self.handle_external_links(new_item, reset=file.type not in {"photo", "video"})
             scrape_item.add_children()
+
+    async def _video(self, scrape_item: ScrapeItem, video: Video, tweet_url: AbsoluteHttpURL) -> None:
+        """NEXDROP patch (3.2.5): X answers some videos' best MP4 with 503 every time.
+
+        Long videos (several hours, 2 GB and more) often have no working full-size MP4 on
+        video.twimg.com: the same files failed with 503 Service Unavailable on every run and every
+        retry, days apart, and their failures paused the whole site. Each video's best MP4 is checked
+        first. If X won't serve it, the next MP4 is tried, then the HLS stream the X app plays.
+        Videos whose best MP4 works are queued exactly as before, so files already downloaded are
+        still recognised."""
+        with self.catch_errors(scrape_item.url):
+            mp4s = sorted((f for f in video.formats if f.container != "m3u8"), key=lambda f: f.score, reverse=True)
+            streams = [f for f in video.formats if f.container == "m3u8"]
+            refused: list[str] = []
+            for index, fmt in enumerate(mp4s):
+                status = await self._probe(fmt.url)
+                if status is None:
+                    if index == 0:
+                        self.handle_external_links(scrape_item, reset=False)
+                        return
+                    self.log.info("X won't serve the best MP4 of %s (%s). Using a smaller one: %s",
+                                  tweet_url, ", ".join(refused), fmt.url)
+                    new_item = scrape_item.create_child(fmt.url)
+                    self.handle_external_links(new_item, reset=False)
+                    return
+                refused.append(str(status))
+            if not streams:
+                raise ScrapeError(int(refused[0]) if refused and refused[0].isdigit() else 503,
+                                  "X won't serve this video's file")
+            m3u8_url = max(streams, key=lambda f: f.bitrate or 0).url
+            self.log.info("X won't serve any MP4 of %s (%s). Downloading its HLS stream instead: %s",
+                          tweet_url, ", ".join(refused) or "none listed", m3u8_url)
+            m3u8, _ = await self.request_m3u8(m3u8_url, headers={"Referer": "https://x.com/"})
+            stem = Path(video.url.name or m3u8_url.name).stem or (video.id or "video")
+            filename, ext = f"{stem}.mp4", ".mp4"
+            await self.handle_file(
+                video.url, scrape_item, filename, ext, m3u8=m3u8, referer=tweet_url,
+                custom_filename=self.create_custom_filename(stem, ext, resolution=Resolution(video.width, video.height)),
+            )
+
+    async def _probe(self, url: AbsoluteHttpURL) -> int | None:
+        """The status X answers for this file, or None when it can be downloaded (or can't be checked)."""
+        try:
+            async with self.request(url, method="HEAD", headers={"Referer": "https://x.com/"}, impersonate="chrome"):
+                return None
+        except DownloadError as error:
+            status = getattr(error, "status", None)
+            if isinstance(status, int) and (status in (404, 410) or 500 <= status <= 504):
+                return status
+            return None
+        except Exception:  # noqa: BLE001  network trouble: keep the old behaviour and let the download try
+            return None
+
+    @override
+    def _prepare_media_item(self, media_item: MediaItem) -> None:
+        # NEXDROP patch (3.2.5): the HLS fallback downloads from video.twimg.com, which wants X as the referer
+        if "twimg.com" in (media_item.url.host or ""):
+            media_item.headers["Referer"] = "https://x.com/"
+            media_item.extra_info["impersonate"] = "chrome"
 
     @error_handling_wrapper
     async def user(self, scrape_item: ScrapeItem, user: str, *, media_only: bool) -> None:
@@ -246,14 +309,20 @@ class TwitterCrawler(Crawler):
             ),
         )
 
-        with self.catch_errors((self.PRIMARY_URL / "search").with_query(api_url.query)):
-            self.log.info(
-                "Starting manual search for posts of %s (feed: '%s', raw_query: '%s')",
-                user,
-                feed,
-                api_url.query["q"],
-            )
+        self.log.info(
+            "Starting manual search for posts of %s (feed: '%s', raw_query: '%s')",
+            user,
+            feed,
+            api_url.query["q"],
+        )
+        try:
             await self._iter_tweets(scrape_item, tweets_filter(self.api.pager(api_url)))
+        except DownloadError as error:
+            # NEXDROP patch (3.2.5): X blocks search for logged-out readers. The profile's media and
+            # posts were already read above, so this extra pass failing is not a failed link.
+            if getattr(error, "status", None) not in (403, 404):
+                raise
+            self.log.info("X search is blocked, so only the profile's own pages were read for @%s", user)
 
     @error_handling_wrapper
     async def search(self, scrape_item: ScrapeItem, query: str, feed: str | None = None) -> None:
@@ -379,6 +448,7 @@ class File:
     url: AbsoluteHttpURL
     type: str
     download: bool = True
+    video: Video | None = None
 
 
 def _extract_files(tweet: Tweet, config: TwitterConfig) -> Generator[File]:
@@ -387,7 +457,7 @@ def _extract_files(tweet: Tweet, config: TwitterConfig) -> Generator[File]:
         yield File(photo.url, "photo")
 
     for video in media.videos:
-        yield File(video.best_format.url, "video")
+        yield File(video.best_format.url, "video", video=video)
 
     if media.external:
         yield File(media.external.url, "external")

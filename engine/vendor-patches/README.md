@@ -235,3 +235,9 @@ FlareSolverr only for answers that contain a DDoS-Guard or Cloudflare check.
 3.2.4:
 - `cyberdrop_dl/downloader/http.py`: a "Segment Mismatch" (parts fall back to one stream) is logged at info as
   "switching to one stream", not as a failed download.
+
+3.2.5:
+- `cyberdrop_dl/crawlers/twitter/crawler.py`: a video with several formats is checked (HEAD) before queueing. If X answers
+  its best MP4 with 404/410/5xx, the next MP4 is queued, then the HLS stream (`request_m3u8`, downloaded by the Twitter
+  crawler with an x.com Referer). A working best MP4 still goes to the twimg handler as before, so history matches.
+  The profile's extra search pass ignores X's 403 "search blocked" instead of reporting a failed link.
