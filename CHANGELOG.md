@@ -1,3 +1,11 @@
+# NEXDROP 3.2.6
+
+Fix from the SimpCity (CocoPie) run of 10 November.
+
+## Saint videos posted as BB code now download
+- **SimpCity posts whose Saint videos show up as `[MEDIA=saint_vid]…[/MEDIA]` now download those videos.** The forum left the embed code unrendered, so NexDrop read it as a page on simpcity.cr and logged *No downloader for this kind of link: https://simpcity.cr/%5BMEDIA=saint_vid%5D…*. 104 videos were skipped this way across your runs. Each tag is now turned into its Saint video link (turbo.cr) and downloaded in its place in the post.
+- The same applies to other forum media tags such as YouTube, RedGIFs, X, Imgur and Streamable. A tag for a site NexDrop doesn't know is noted in the log and skipped, instead of being queued as a broken SimpCity link.
+
 # NEXDROP 3.2.5
 
 Fixes from the x.com/RoshyTV runs of 6–8 November.
