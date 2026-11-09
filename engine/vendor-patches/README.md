@@ -241,3 +241,9 @@ FlareSolverr only for answers that contain a DDoS-Guard or Cloudflare check.
   its best MP4 with 404/410/5xx, the next MP4 is queued, then the HLS stream (`request_m3u8`, downloaded by the Twitter
   crawler with an x.com Referer). A working best MP4 still goes to the twimg handler as before, so history matches.
   The profile's extra search pass ignores X's 403 "search blocked" instead of reporting a failed link.
+
+3.2.6:
+- `cyberdrop_dl/crawlers/_forum.py`: XenForo media BB code left unrendered in a post (`[MEDIA=saint_vid]ID[/MEDIA]`, in an
+  href, an embed or the post text, raw or %-encoded) becomes the site's link (`MEDIA_SITE_URLS`; Saint goes to
+  `https://turbo.cr/embed/ID`) at its place in the post. `pre_process_child` never returns BB code, so it is no longer
+  queued as `https://simpcity.cr/%5BMEDIA=...`. Tags for unknown sites are logged and skipped.

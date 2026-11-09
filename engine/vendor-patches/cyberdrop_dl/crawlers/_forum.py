@@ -13,6 +13,7 @@ import base64
 import dataclasses
 import datetime
 import re
+import urllib.parse
 from abc import abstractmethod
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, final
@@ -37,6 +38,26 @@ LINK_TRASH_MAPPING = {".th.": ".", ".md.": ".", "ifr": "watch"}
 HTTP_REGEX_LINKS = re.compile(
     r"https?://(www\.)?[-a-zA-Z0-9@:%._+~#=]{2,256}\.[a-z]{2,12}\b([-a-zA-Z0-9@:%_+.~#?&/=]*)"
 )
+# NEXDROP patch (3.2.6): XenForo media BB code that reached the page unrendered, e.g. a link whose
+# href is "[MEDIA=saint_vid]ID[/MEDIA]". Without this it became https://simpcity.cr/%5BMEDIA=...
+MEDIA_BBCODE = re.compile(r"\[MEDIA=([A-Za-z0-9_]+)\]\s*([^\[\]\s]+?)\s*\[/MEDIA\]", re.IGNORECASE)
+MEDIA_SITE_URLS: dict[str, str] = {
+    "saint": "https://turbo.cr/embed/{}",
+    "saint_vid": "https://turbo.cr/embed/{}",
+    "saint_video": "https://turbo.cr/embed/{}",
+    "turbo": "https://turbo.cr/embed/{}",
+    "turbo_vid": "https://turbo.cr/embed/{}",
+    "turbovid": "https://turbo.cr/embed/{}",
+    "youtube": "https://www.youtube.com/watch?v={}",
+    "vimeo": "https://vimeo.com/{}",
+    "dailymotion": "https://www.dailymotion.com/video/{}",
+    "streamable": "https://streamable.com/{}",
+    "redgifs": "https://www.redgifs.com/watch/{}",
+    "twitter": "https://x.com/i/status/{}",
+    "instagram": "https://www.instagram.com/p/{}/",
+    "giphy": "https://giphy.com/gifs/{}",
+    "pixeldrain": "https://pixeldrain.com/u/{}",
+}
 FORUM_PAGE_START: ContextVar[int] = ContextVar("FORUM_PAGE_START", default=1)
 FORUM_PAGE_END: ContextVar[int | None] = ContextVar("FORUM_PAGE_END", default=None)
 
@@ -529,7 +550,31 @@ class HTMLMessageBoardCrawler(MessageBoardCrawler, is_abc=True):
                 text = str(url)
                 if text not in discovered:
                     discovered.append(text)
-        return order_urls(str(post.content) + str(post.article), discovered)
+        for tag in self._media_bbcode(post):  # NEXDROP patch: BB code left as plain text
+            if tag not in discovered:
+                discovered.append(tag)
+        ordered = order_urls(str(post.content) + str(post.article), discovered)
+        # NEXDROP patch: an entry holding [MEDIA=site]id[/MEDIA] becomes the site's link, in place
+        expanded: list[str] = []
+        for text in ordered:
+            for url in self._expand_media_bbcode(text):
+                if url not in expanded:
+                    expanded.append(url)
+        return expanded
+
+    @classmethod
+    def _media_bbcode(cls, post: ForumPostProtocol) -> Iterable[str]:
+        text = post.content.get_text(" ")
+        for match in MEDIA_BBCODE.finditer(text):
+            yield match.group(0)
+
+    def _expand_media_bbcode(self, text: str) -> list[str]:
+        if not has_media_bbcode(text):
+            return [text]
+        urls, unknown = media_bbcode_urls(text)
+        for tag in unknown:
+            self.log.warning("Forum media embed has no known site, skipped: %s", tag)
+        return urls
 
     def _embedded_urls(self, post: ForumPostProtocol) -> set[str]:
         found: set[str] = set()
@@ -772,8 +817,35 @@ def is_confirmation_link(link: AbsoluteHttpURL) -> bool:
     )
 
 
+def has_media_bbcode(text: str) -> bool:
+    return "[/media]" in text.lower() or "%5b/media%5d" in text.lower()
+
+
+def media_bbcode_urls(text: str) -> tuple[list[str], list[str]]:
+    """Links for each [MEDIA=site]id[/MEDIA] in text (raw or %-encoded), and the tags of unknown sites."""
+    text = urllib.parse.unquote(text)
+    urls: list[str] = []
+    unknown: list[str] = []
+    for match in MEDIA_BBCODE.finditer(text):
+        site, media_id = match.group(1).lower(), match.group(2)
+        template = MEDIA_SITE_URLS.get(site)
+        if site == "imgur":
+            # XenForo stores imgur albums as "a:ID" and galleries as "gallery:ID"
+            urls.append("https://imgur.com/" + media_id.replace(":", "/", 1))
+        elif site == "reddit":
+            urls.append("https://www.reddit.com/r/" + media_id.lstrip("/"))
+        elif template:
+            urls.append(template.format(media_id))
+        else:
+            unknown.append(match.group(0))
+    return urls, unknown
+
+
 def pre_process_child(link_str: str, *, embeds: bool = False) -> str | None:
     assert isinstance(link_str, str)
+    if has_media_bbcode(link_str):  # NEXDROP patch: never queue BB code as a page on the forum
+        urls, _ = media_bbcode_urls(link_str)
+        return urls[0] if urls else None
     if embeds:
         link_str = extract_embed_url(link_str)
 
