@@ -442,6 +442,13 @@ def _install_download_clearance() -> None:
         if UNREACHABLE.is_down(site):
             raise DownloadError("Server unreachable", f"{site}'s file servers could not be reached earlier in this run")
         wait = BREAKER.blocked_for(site)
+        waited = 0.0
+        while wait and waited + wait <= BREAKER.max_wait:
+            # 3.2.5: a short pause is waited out instead of failing every queued file at once. One run
+            # of an X profile failed 850 files as "Site Paused" because a handful of videos kept answering 503.
+            await asyncio.sleep(wait)
+            waited += wait
+            wait = BREAKER.blocked_for(site)
         if wait:
             raise DownloadError("Site Paused", f"{site} is paused for {int(wait)} s after repeated server errors")
         try:
@@ -458,7 +465,7 @@ def _install_download_clearance() -> None:
                 emit({"type": "log", "level": "warning", "message": (
                     f"Can't connect to {site}'s file servers: {UNREACHABLE.limit} downloads in a row timed out before the server answered. "
                     f"Skipping the rest of {site}'s files this run, so they show as failed and Retry unfinished can get them later.")})
-            opened = BREAKER.failed(site, text)
+            opened = BREAKER.failed(site, text, url=str(getattr(media_item, "url", "") or ""))
             if opened:
                 emit({"type": "log", "level": "warning", "message": (
                     f"{site} failed {BREAKER.threshold} downloads in a row with server errors. Pausing it for {int(opened)} s; "
@@ -830,7 +837,12 @@ class _SiteBreaker:
     (429, 5xx), the site is paused: its files fail at once as "Site Paused" for `cooldown`
     seconds (doubling on each new pause, at most 10 minutes) and the retry pass gets them later.
     When the pause ends, the next download is a probe: one success closes the breaker, one more
-    failure opens it again."""
+    failure opens it again.
+
+    3.2.5: only different files count. A file that already failed with a server error in this run
+    doesn't count again, so a few files the site never serves (X answers some long videos with 503
+    every time) can't keep the whole site paused while the retry pass asks for them again. Files
+    waiting for a pause of up to `max_wait` seconds wait it out instead of failing."""
 
     _SERVER_ERRORS = re.compile(r"\b(429|500|502|503|504|52[0-4])\b")
 
@@ -841,6 +853,8 @@ class _SiteBreaker:
         self.streak: dict[str, int] = {}
         self.opens: dict[str, int] = {}
         self.until: dict[str, float] = {}
+        self.max_wait = 90.0
+        self.failed_files: dict[str, set[str]] = {}
 
     def blocked_for(self, site: str, now: float | None = None) -> float:
         until = self.until.get(site)
@@ -849,12 +863,18 @@ class _SiteBreaker:
         left = until - (time.monotonic() if now is None else now)
         return left if left > 0 else 0.0
 
-    def failed(self, site: str, text: str, now: float | None = None) -> float:
+    def failed(self, site: str, text: str, now: float | None = None, url: str = "") -> float:
         """Count one failure; returns the pause in seconds when this one opens the breaker."""
         if not site or not self._SERVER_ERRORS.search(text or "") or "Site Paused" in (text or ""):
             if site and "Site Paused" not in (text or ""):
                 self.streak.pop(site, None)
             return 0.0
+        if url:
+            seen = self.failed_files.setdefault(site, set())
+            if url in seen:
+                return 0.0  # the same file again: says nothing new about the site
+            if len(seen) < 50_000:
+                seen.add(url)
         self.streak[site] = self.streak.get(site, 0) + 1
         probing = site in self.until  # a failure right after a pause ends opens it again
         if self.streak[site] < self.threshold and not probing:
